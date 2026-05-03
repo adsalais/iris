@@ -14,6 +14,8 @@ def settings() -> LDAPSettings:
         url="fake://offline",
         bind_dn_template="uid={username},ou=people,dc=corp,dc=local",
         group_base_dn="ou=groups,dc=corp,dc=local",
+        require_tls=False,
+        ca_cert_path=None,
     )
 
 

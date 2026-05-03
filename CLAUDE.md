@@ -142,6 +142,8 @@ OIDC_SCOPES=openid profile email groups
 LDAP_URL=ldaps://ldap.example.com:636
 LDAP_BIND_DN_TEMPLATE=uid={username},ou=people,dc=corp,dc=local
 LDAP_GROUP_BASE_DN=ou=groups,dc=corp,dc=local
+LDAP_REQUIRE_TLS=true                # reject ldap:// at startup
+LDAP_CA_CERT_PATH=                   # optional: PEM bundle for cert validation
 
 # Mock (for tests; AUTH_METHOD=mock)
 MOCK_USERNAME=alice
@@ -207,7 +209,6 @@ Provider tests are offline:
 
 - LDAP injection: the `bind_dn_template.format(username=...)` substitution doesn't validate `username` against a charset whitelist. An attacker who knows valid LDAP creds elsewhere in the directory could pollute `User.subject` with controlled DN components and influence the `(member=...)` group filter. Mitigation: regex-validate username before formatting; `ldap3.utils.conv.escape_filter_chars` the DN before substituting into the filter.
 - LDAP exception classification uses substring matching on the exception message (locale-dependent). Switch to typed `ldap3.core.exceptions.LDAPInvalidCredentialsResult` etc.
-- LDAP TLS: `LDAPSettings` has no TLS-config fields (StartTLS / CA cert path). Plaintext `LDAP_URL=ldap://...` sends credentials in cleartext.
 - OAuth state cookie's `secure=False` is hardcoded. Should track `cookie_secure` from settings.
 - OIDC discovery is synchronous at app construction — slow IdPs stall startup up to 10s.
 - No `id_token` JWT signature verification — relies on userinfo endpoint's HTTPS+access-token authentication (OIDC-standard but worth tightening if audience/issuer claims need asserting).

@@ -55,6 +55,8 @@ class LDAPSettings:
     url: str
     bind_dn_template: str
     group_base_dn: str
+    require_tls: bool
+    ca_cert_path: str | None
 
 
 @dataclass(frozen=True)
@@ -96,10 +98,20 @@ class AuthSettings:
                 scopes=_split_ws(os.environ.get("OIDC_SCOPES", "openid profile email groups")),
             )
         elif method == "ldap":
+            url = _get_required("LDAP_URL")
+            require_tls = _get_bool("LDAP_REQUIRE_TLS", True)
+            if require_tls and not url.startswith("ldaps://"):
+                raise ValueError(
+                    f"LDAP_URL must use ldaps:// when LDAP_REQUIRE_TLS=true; "
+                    f"got {url!r}. Set LDAP_REQUIRE_TLS=false to allow plaintext "
+                    f"(development only)."
+                )
             ldap = LDAPSettings(
-                url=_get_required("LDAP_URL"),
+                url=url,
                 bind_dn_template=_get_required("LDAP_BIND_DN_TEMPLATE"),
                 group_base_dn=_get_required("LDAP_GROUP_BASE_DN"),
+                require_tls=require_tls,
+                ca_cert_path=os.environ.get("LDAP_CA_CERT_PATH") or None,
             )
         elif method == "mock":
             username = _get_required("MOCK_USERNAME")

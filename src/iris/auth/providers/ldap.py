@@ -89,7 +89,15 @@ class LDAPProvider:
                 raise _BindFailed()
             return conn
         try:
-            server = Server(self._settings.url, get_info=None)
+            tls = None
+            if self._settings.ca_cert_path:
+                import ssl
+                from ldap3 import Tls
+                tls = Tls(
+                    validate=ssl.CERT_REQUIRED,
+                    ca_certs_file=self._settings.ca_cert_path,
+                )
+            server = Server(self._settings.url, get_info=None, tls=tls)
             conn = Connection(server, user=bind_dn, password=password, auto_bind=True)
             return conn
         except Exception as exc:  # ldap3 raises various subclasses; treat as unreachable vs auth
