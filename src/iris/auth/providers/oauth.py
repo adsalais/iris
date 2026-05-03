@@ -43,9 +43,9 @@ class OAuthProvider:
         # requires app restart (acceptable for v1; revisit if rotation matters).
         self._jwks: jwt.PyJWKSet | None = None
 
-    def _ensure_discovered(self) -> None:
+    def _ensure_discovered(self) -> dict:
         if self._discovered is not None:
-            return
+            return self._discovered
         discovery_url = (
             self._settings.issuer_url.rstrip("/") + "/.well-known/openid-configuration"
         )
@@ -57,30 +57,23 @@ class OAuthProvider:
             raise AuthError("oauth_discovery") from exc
         self._discovered = doc
         self._jwks = jwt.PyJWKSet.from_dict(jwks_doc)
+        return doc
 
     @property
     def authorize_endpoint(self) -> str:
-        self._ensure_discovered()
-        assert self._discovered is not None
-        return self._discovered["authorization_endpoint"]
+        return self._ensure_discovered()["authorization_endpoint"]
 
     @property
     def token_endpoint(self) -> str:
-        self._ensure_discovered()
-        assert self._discovered is not None
-        return self._discovered["token_endpoint"]
+        return self._ensure_discovered()["token_endpoint"]
 
     @property
     def userinfo_endpoint(self) -> str:
-        self._ensure_discovered()
-        assert self._discovered is not None
-        return self._discovered["userinfo_endpoint"]
+        return self._ensure_discovered()["userinfo_endpoint"]
 
     @property
     def jwks_uri(self) -> str:
-        self._ensure_discovered()
-        assert self._discovered is not None
-        return self._discovered["jwks_uri"]
+        return self._ensure_discovered()["jwks_uri"]
 
     async def close(self) -> None:
         """Close both httpx clients. Safe to call multiple times."""
