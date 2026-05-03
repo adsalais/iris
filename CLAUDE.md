@@ -45,14 +45,27 @@ Conventions for new tests:
 Datastar is hypermedia-first with reactive *signals*. Two flavors of interaction in this repo:
 
 1. **Pure-client reactivity.** A section declares signals via `data-signals="{count: 0}"` and references them with `$count` inside `data-on:click`, `data-text`, `data-show`, etc. No round-trip; the browser handles it.
-2. **Server-driven via SSE.** A `data-on:click="@get('/api/greet')"` triggers a fetch. Datastar attaches a `Datastar-Request: true` header and serializes signals into a `datastar` query param (for GET/DELETE) or JSON body (for POST/PUT/PATCH). The server reads them with `read_signals(request)` and returns a `text/event-stream` response carrying `datastar-patch-elements` events that morph into the DOM by element id.
+2. **Server-driven via SSE.** A `data-on:click="@get('/api/greet')"` triggers a fetch. Datastar attaches a `Datastar-Request: true` header and serializes signals into a `datastar` query param (for GET/DELETE) or JSON body (for POST/PUT/PATCH). The server consumes them via the `Signals` annotated dep (see below) and returns a `text/event-stream` response carrying `datastar-patch-elements` events that morph into the DOM by element id.
+
+#### The `Signals` dependency
+
+The SDK's `read_signals(request)` returns `dict | None` (None when the `Datastar-Request` header is absent or the payload is empty). To avoid `or {}` boilerplate in every route, `app.py` defines a thin wrapper and a reusable annotated alias:
+
+```python
+async def _signals(request: Request) -> dict[str, Any]:
+    return await read_signals(request) or {}
+
+Signals = Annotated[dict[str, Any], Depends(_signals)]
+```
+
+Routes then take `signals: Signals` and get a guaranteed dict — no None handling. Use this for any new signal-consuming route. The SDK also ships its own `ReadSignals` annotated alias, but it preserves the `dict | None` type, which is why we shadow it with our own.
 
 ### SDK gotchas (already worked around in `app.py`)
 
-- `from datastar_py.fastapi import DatastarResponse, read_signals; from datastar_py import ServerSentEventGenerator as SSE` — these are the imports that work. Construct responses as `return DatastarResponse(SSE.patch_elements("<div id='x'>...</div>"))`.
+- Imports that compose correctly: `from datastar_py.fastapi import DatastarResponse, read_signals, ServerSentEventGenerator as SSE`. Construct responses as `return DatastarResponse(SSE.patch_elements("<div id='x'>...</div>"))`.
 - **Avoid `@datastar_response` on FastAPI routes.** FastAPI 0.136's generator-detection mis-classifies the wrapper and routes it through the JSONL streamer, raising `'async for' requires an object with __aiter__ method, got coroutine`. Returning `DatastarResponse(...)` directly sidesteps this.
-- `read_signals(request)` returns `None` (not `{}`) when the `Datastar-Request` header is absent or the signal payload is empty — coalesce with `or {}` before `.get()`.
-- When testing the SSE endpoint, requests must include `headers={"Datastar-Request": "true"}` and pass signals as `params={"datastar": json.dumps({...})}` for GET/DELETE — otherwise `read_signals` returns `None` and your defaults kick in.
+- Consume signals via the project's `Signals` annotated dep, not by calling `read_signals` inline (see "The `Signals` dependency" above for the why).
+- When testing the SSE endpoint, requests must include `headers={"Datastar-Request": "true"}` and pass signals as `params={"datastar": json.dumps({...})}` for GET/DELETE — otherwise `read_signals` returns `None` and `Signals` resolves to `{}` (defaults kick in).
 - Always HTML-escape any signal value before interpolating it into a `patch_elements` payload (use `html.escape`); Datastar inserts the bytes as-is.
 
 ### Examples currently in `index.html`
