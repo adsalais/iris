@@ -146,7 +146,12 @@ class OAuthProvider:
             logger.error("auth: token endpoint returned no id_token")
             raise AuthError("oauth_exchange")
         self._verify_id_token(id_token)
-        claims = await self._fetch_userinfo(token_response["access_token"])
+        try:
+            access_token = token_response["access_token"]
+        except KeyError as exc:
+            logger.exception("auth: OAuth code exchange failed")
+            raise AuthError("oauth_exchange") from exc
+        claims = await self._fetch_userinfo(access_token)
         return self._user_from_claims(claims)
 
     async def _request_tokens(
