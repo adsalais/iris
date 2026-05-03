@@ -6,6 +6,12 @@ from typing import Callable
 
 from fastapi import Request, Response
 from ldap3 import Connection, Server
+from ldap3.core.exceptions import (
+    LDAPBindError,
+    LDAPException,
+    LDAPInvalidCredentialsResult,
+    LDAPSocketOpenError,
+)
 from ldap3.utils.conv import escape_filter_chars
 
 from iris.auth.config import LDAPSettings
@@ -84,7 +90,12 @@ class LDAPProvider:
     def _open_connection(self, bind_dn: str, password: str) -> Connection:
         if self._connection_factory is not None:
             conn = self._connection_factory()
-            ok = conn.rebind(user=bind_dn, password=password)
+            try:
+                ok = conn.rebind(user=bind_dn, password=password)
+            except LDAPInvalidCredentialsResult:
+                raise _BindFailed()
+            except (LDAPSocketOpenError, LDAPException):
+                raise _Unreachable()
             if not ok:
                 raise _BindFailed()
             return conn
@@ -100,10 +111,11 @@ class LDAPProvider:
             server = Server(self._settings.url, get_info=None, tls=tls)
             conn = Connection(server, user=bind_dn, password=password, auto_bind=True)
             return conn
-        except Exception as exc:  # ldap3 raises various subclasses; treat as unreachable vs auth
-            msg = str(exc).lower()
-            if "invalidcredentials" in msg or "invalid credentials" in msg:
-                raise _BindFailed() from exc
+        except LDAPInvalidCredentialsResult as exc:
+            raise _BindFailed() from exc
+        except (LDAPSocketOpenError, LDAPException) as exc:
+            raise _Unreachable() from exc
+        except Exception as exc:
             raise _Unreachable() from exc
 
     def _read_display_name(self, conn: Connection, bind_dn: str) -> str | None:

@@ -211,7 +211,6 @@ Provider tests are offline:
 ### Open security follow-ups (v1.1)
 
 - LDAP injection: the `bind_dn_template.format(username=...)` substitution doesn't validate `username` against a charset whitelist. An attacker who knows valid LDAP creds elsewhere in the directory could pollute `User.subject` with controlled DN components and influence the `(member=...)` group filter. Mitigation: regex-validate username before formatting; `ldap3.utils.conv.escape_filter_chars` the DN before substituting into the filter.
-- LDAP exception classification uses substring matching on the exception message (locale-dependent). Switch to typed `ldap3.core.exceptions.LDAPInvalidCredentialsResult` etc.
 - OIDC discovery is synchronous at app construction — slow IdPs stall startup up to 10s.
 - No `id_token` JWT signature verification — relies on userinfo endpoint's HTTPS+access-token authentication (OIDC-standard but worth tightening if audience/issuer claims need asserting).
 - `InMemorySessionStore` is per-process, which forces `--workers 1` (see "Deployment constraint" above). Swapping to a Redis/DB-backed store would lift the constraint and also survive process restarts.

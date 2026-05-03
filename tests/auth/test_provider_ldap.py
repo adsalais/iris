@@ -107,3 +107,56 @@ def test_authenticate_accepts_normal_usernames(provider):
 
     user = asyncio.run(provider.authenticate("alice", "secret"))
     assert user.subject == "uid=alice,ou=people,dc=corp,dc=local"
+
+
+def test_open_connection_classifies_invalid_credentials_via_typed_exception(settings):
+    """When ldap3 raises LDAPInvalidCredentialsResult, surface as _BindFailed."""
+    from ldap3.core.exceptions import LDAPInvalidCredentialsResult
+    from iris.auth.providers.ldap import LDAPProvider, _BindFailed
+
+    def factory():
+        class _C:
+            def rebind(self, *, user, password):
+                raise LDAPInvalidCredentialsResult(result=49)
+        return _C()
+
+    provider = LDAPProvider(settings, _connection_factory=factory)
+    with pytest.raises(_BindFailed):
+        provider._open_connection("uid=x,...", "pw")
+
+
+def test_open_connection_classifies_socket_open_as_unreachable(settings):
+    """When ldap3 raises LDAPSocketOpenError, surface as _Unreachable."""
+    from ldap3.core.exceptions import LDAPSocketOpenError
+    from iris.auth.providers.ldap import LDAPProvider, _Unreachable
+
+    def factory():
+        class _C:
+            def rebind(self, *, user, password):
+                raise LDAPSocketOpenError("connection refused")
+        return _C()
+
+    provider = LDAPProvider(settings, _connection_factory=factory)
+    with pytest.raises(_Unreachable):
+        provider._open_connection("uid=x,...", "pw")
+
+
+def test_open_connection_localized_invalid_credentials_classified_correctly(settings):
+    """Locale-independent classification: a non-English error msg from ldap3 is still
+    classified as bad creds via the typed exception, not the substring match."""
+    from ldap3.core.exceptions import LDAPInvalidCredentialsResult
+    from iris.auth.providers.ldap import LDAPProvider, _BindFailed
+
+    def factory():
+        class _C:
+            def rebind(self, *, user, password):
+                # Force a non-English message; the typed exception still wins.
+                raise LDAPInvalidCredentialsResult(
+                    result=49,
+                    description="identifiants invalides",
+                )
+        return _C()
+
+    provider = LDAPProvider(settings, _connection_factory=factory)
+    with pytest.raises(_BindFailed):
+        provider._open_connection("uid=x,...", "pw")
