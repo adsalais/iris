@@ -154,7 +154,10 @@ def install(app: FastAPI) -> None:
     from iris.auth.providers import build_provider
 
     settings = AuthSettings.from_env()
-    store = InMemorySessionStore(ttl_seconds=settings.ttl_seconds)
+    store = InMemorySessionStore(
+        ttl_seconds=settings.ttl_seconds,
+        absolute_ttl_seconds=settings.absolute_ttl_seconds,
+    )
     provider = build_provider(settings)
 
     from iris.app import TEMPLATES

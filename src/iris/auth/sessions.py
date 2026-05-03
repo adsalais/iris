@@ -8,8 +8,9 @@ from iris.auth.identity import User, UserSession
 
 
 class InMemorySessionStore:
-    def __init__(self, ttl_seconds: int) -> None:
+    def __init__(self, ttl_seconds: int, absolute_ttl_seconds: int) -> None:
         self._ttl = timedelta(seconds=ttl_seconds)
+        self._absolute_ttl = timedelta(seconds=absolute_ttl_seconds)
         self._sessions: dict[str, UserSession] = {}
         self._lock = asyncio.Lock()
 
@@ -21,6 +22,7 @@ class InMemorySessionStore:
                 user=user,
                 created_at=now,
                 expires_at=now + self._ttl,
+                absolute_expires_at=now + self._absolute_ttl,
             )
             self._sessions[session.id] = session
             return session
@@ -31,7 +33,7 @@ class InMemorySessionStore:
             if session is None:
                 return None
             now = datetime.now(UTC)
-            if session.expires_at <= now:
+            if session.expires_at <= now or session.absolute_expires_at <= now:
                 del self._sessions[session_id]
                 return None
             session.expires_at = now + self._ttl

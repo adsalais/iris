@@ -130,6 +130,7 @@ Selected by env var. Per-deployment toggle: only one method is active at a time.
 AUTH_METHOD=oauth | ldap | mock
 SESSION_COOKIE_NAME=iris_session
 SESSION_TTL_SECONDS=43200            # 12h, sliding TTL refreshed on each request
+SESSION_ABSOLUTE_TTL_SECONDS=2592000 # 30d, hard cap on top of sliding TTL
 COOKIE_SECURE=true                   # set false for local dev over http
 
 # OAuth (OIDC discovery)

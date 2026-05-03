@@ -171,3 +171,20 @@ def test_ldap_default_require_tls_true_with_ldaps(monkeypatch):
     s = AuthSettings.from_env()
     assert s.ldap.require_tls is True
     assert s.ldap.ca_cert_path is None
+
+
+def test_session_absolute_ttl_default(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "mock")
+    monkeypatch.setenv("MOCK_USERNAME", "alice")
+    monkeypatch.setenv("MOCK_PASSWORD", "secret")
+    s = AuthSettings.from_env()
+    assert s.absolute_ttl_seconds == 2_592_000  # 30 days
+
+
+def test_session_absolute_ttl_custom(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "mock")
+    monkeypatch.setenv("MOCK_USERNAME", "alice")
+    monkeypatch.setenv("MOCK_PASSWORD", "secret")
+    monkeypatch.setenv("SESSION_ABSOLUTE_TTL_SECONDS", "86400")
+    s = AuthSettings.from_env()
+    assert s.absolute_ttl_seconds == 86_400

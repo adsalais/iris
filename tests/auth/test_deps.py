@@ -19,7 +19,7 @@ from iris.auth.sessions import InMemorySessionStore
 
 def _build_app() -> tuple[FastAPI, InMemorySessionStore]:
     app = FastAPI()
-    store = InMemorySessionStore(ttl_seconds=60)
+    store = InMemorySessionStore(ttl_seconds=60, absolute_ttl_seconds=3600)
     set_session_store(app, store)
     set_settings(app, cookie_name="iris_session")
     install_exception_handlers(app, cookie_name="iris_session")

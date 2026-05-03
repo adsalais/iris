@@ -18,4 +18,5 @@ class UserSession:
     user: User
     created_at: datetime
     expires_at: datetime
+    absolute_expires_at: datetime
     data: dict[str, Any] = field(default_factory=dict)
