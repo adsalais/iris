@@ -13,12 +13,15 @@ def issue_csrf_token(request: Request, response: Response) -> str:
     token = request.cookies.get(CSRF_COOKIE_NAME)
     if not token:
         token = secrets.token_urlsafe(32)
+    secure = getattr(request.app.state, "auth_cookie_secure", True)
     response.set_cookie(
         CSRF_COOKIE_NAME,
         token,
         max_age=60 * 60,
         httponly=False,  # readable by JS-rendered forms; not security-critical for this token
+        secure=secure,
         samesite="lax",
+        path="/",
     )
     return token
 

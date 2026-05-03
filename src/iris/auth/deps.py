@@ -13,8 +13,9 @@ def set_session_store(app: FastAPI, store: InMemorySessionStore) -> None:
     app.state.auth_session_store = store
 
 
-def set_settings(app: FastAPI, *, cookie_name: str) -> None:
+def set_settings(app: FastAPI, *, cookie_name: str, cookie_secure: bool = True) -> None:
     app.state.auth_cookie_name = cookie_name
+    app.state.auth_cookie_secure = cookie_secure
 
 
 def _get_store(request: Request) -> InMemorySessionStore:
