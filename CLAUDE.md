@@ -170,6 +170,7 @@ src/iris/auth/
 ├── exceptions.py      # AuthRequired, AuthForbidden, AuthError + install_exception_handlers
 ├── deps.py            # CurrentUser, OptionalCurrentUser, require_group, set_session_store, set_settings
 ├── csrf.py            # double-submit CSRF: mint_csrf_token, attach_csrf_cookie, issue_csrf_token, verify_csrf_form, delete_csrf_cookie
+├── rate_limit.py      # TokenBucket: in-process per-key token-bucket limiter (used on POST /login)
 ├── routes.py          # /login, /login/callback, /logout, /api/whoami; install(app)
 └── providers/
     ├── __init__.py    # build_provider(settings) factory dispatching AUTH_METHOD
@@ -192,6 +193,8 @@ Groups are passed through verbatim from the IdP (Keycloak `realm_access.roles` /
 - **Logout** — `POST /logout` (CSRF-required) deletes the session and clears the cookie. Local-only — does not call the IdP's end-session endpoint.
 
 The CSRF cookie is rotated on successful login: the post-auth `/login` redirect (and OAuth callback) clear the `iris_csrf` cookie so any pre-auth token capture becomes useless. The next form render (e.g., `/` re-mints via `attach_csrf_cookie`) issues a fresh token, so the user flow is uninterrupted.
+
+`POST /login` is rate-limited per client IP via an in-process token bucket (capacity 10, refill 0.2/sec — i.e. 10-attempt burst then ~12 attempts/minute sustained). Exhausted clients receive a 429 with `Retry-After`. Per-process state, fits the `--workers 1` deploy constraint; multi-worker would need Redis.
 
 ### Tests
 

@@ -11,6 +11,7 @@ from iris.auth.deps import CurrentUser
 from iris.auth.exceptions import AuthError
 from iris.auth.providers.base import Provider
 from iris.auth.providers.oauth import OAUTH_STATE_COOKIE, OAuthProvider
+from iris.auth.rate_limit import TokenBucket
 from iris.auth.sessions import InMemorySessionStore
 
 logger = logging.getLogger("iris.auth")
@@ -52,6 +53,7 @@ def build_auth_router(
     ttl_seconds: int,
 ) -> APIRouter:
     router = APIRouter()
+    login_bucket = TokenBucket(capacity=10, refill_per_second=0.2)
 
     @router.get("/login")
     async def login_get(request: Request) -> Response:
@@ -65,13 +67,24 @@ def build_auth_router(
         next: str = Form(default="/"),
         _: None = Depends(verify_csrf_form),
     ) -> Response:
+        client_host = request.client.host if request.client else "unknown"
+        wait = login_bucket.take(f"login:{client_host}")
+        if wait is not None:
+            logger.info(
+                "auth: login_rate_limited remote_addr=%s wait_seconds=%.1f",
+                client_host,
+                wait,
+            )
+            return Response(
+                status_code=429,
+                headers={"Retry-After": str(int(wait) + 1)},
+            )
         if not hasattr(provider, "authenticate"):
             return Response(status_code=405)  # OAuth doesn't go through POST /login
         safe_next = _safe_next(next)
         try:
             user = await provider.authenticate(username, password)
         except AuthError as err:
-            client_host = request.client.host if request.client else "unknown"
             logger.info(
                 "auth: login_failed username=%s reason=%s remote_addr=%s",
                 username,
