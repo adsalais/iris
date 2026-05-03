@@ -47,9 +47,16 @@ async def _resolve_session(request: Request) -> UserSession | None:
 _ResolvedSession = Annotated[UserSession | None, Depends(_resolve_session)]
 
 
-async def _current_user(session: _ResolvedSession) -> User:
+async def _required_session(session: _ResolvedSession) -> UserSession:
     if session is None:
         raise AuthRequired()
+    return session
+
+
+_RequiredSession = Annotated[UserSession, Depends(_required_session)]
+
+
+async def _current_user(session: _RequiredSession) -> User:
     return session.user
 
 
@@ -57,15 +64,11 @@ async def _optional_current_user(session: _ResolvedSession) -> User | None:
     return session.user if session else None
 
 
-async def _current_session(session: _ResolvedSession) -> UserSession:
-    if session is None:
-        raise AuthRequired()
+async def _current_session(session: _RequiredSession) -> UserSession:
     return session
 
 
-async def _session_data(session: _ResolvedSession) -> dict[str, Any]:
-    if session is None:
-        raise AuthRequired()
+async def _session_data(session: _RequiredSession) -> dict[str, Any]:
     return session.data
 
 
