@@ -76,12 +76,3 @@ CurrentUser = Annotated[User, Depends(_current_user)]
 OptionalCurrentUser = Annotated[User | None, Depends(_optional_current_user)]
 CurrentSession = Annotated[UserSession, Depends(_current_session)]
 SessionData = Annotated[dict[str, Any], Depends(_session_data)]
-
-
-def require_group(*groups: str):
-    async def _check(user: CurrentUser) -> User:
-        if not set(groups) & set(user.groups):
-            raise AuthForbidden(needed=groups, have=user.groups)
-        return user
-
-    return _check
