@@ -10,6 +10,7 @@ from iris.auth.csrf import verify_csrf_form
 from iris.auth.deps import CurrentUser
 from iris.auth.exceptions import AuthError
 from iris.auth.providers.base import Provider
+from iris.auth.providers.oauth import OAUTH_STATE_COOKIE, OAuthProvider
 from iris.auth.sessions import InMemorySessionStore
 
 logger = logging.getLogger("iris.auth")
@@ -89,6 +90,33 @@ def build_auth_router(
             ttl=ttl_seconds,
             secure=cookie_secure,
         )
+        return response
+
+    @router.get("/login/callback", name="login_callback")
+    async def login_callback(request: Request) -> Response:
+        if not isinstance(provider, OAuthProvider):
+            return Response(status_code=404)
+        try:
+            user, next_url = await provider.complete(request)
+        except AuthError as err:
+            return RedirectResponse(f"/login?error={err.token}", status_code=302)
+        session = await store.create(user)
+        logger.info(
+            "auth: login user=%s subject=%s method=oauth groups=%s",
+            user.display_name,
+            user.subject,
+            list(user.groups),
+        )
+        safe_next = _safe_next(next_url)
+        response = RedirectResponse(safe_next, status_code=302)
+        _set_session_cookie(
+            response,
+            name=cookie_name,
+            sid=session.id,
+            ttl=ttl_seconds,
+            secure=cookie_secure,
+        )
+        response.delete_cookie(OAUTH_STATE_COOKIE)
         return response
 
     @router.post("/logout")

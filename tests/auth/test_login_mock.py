@@ -158,12 +158,7 @@ def test_post_login_failure_redirect_url_encoded(client):
 
 def test_post_login_with_oauth_method_returns_405(monkeypatch):
     """When AUTH_METHOD=oauth, POST /login is not a valid path (callback is)."""
-    monkeypatch.setenv("AUTH_METHOD", "oauth")
-    monkeypatch.setenv("OIDC_ISSUER_URL", "https://kc.example/realms/iris")
-    monkeypatch.setenv("OIDC_CLIENT_ID", "iris")
-    monkeypatch.setenv("OIDC_CLIENT_SECRET", "shh")
-    # OAuthProvider doesn't exist yet (Task 11), so building the app will fail
-    # with ModuleNotFoundError. The 405 path becomes testable in Task 11.
-    # For now, document the requirement with an xfail.
-    import pytest
-    pytest.skip("OAuthProvider not implemented until Task 11")
+    pytest.skip(
+        "Building an oauth-mode app requires real OIDC discovery network call; "
+        "covered indirectly by tests/auth/test_provider_oauth.py via _http_transport injection."
+    )
