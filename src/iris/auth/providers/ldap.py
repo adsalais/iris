@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import logging
+from typing import Callable
+
+from fastapi import Request, Response
+from ldap3 import ALL_ATTRIBUTES, Connection, Server
+
+from iris.auth.config import LDAPSettings
+from iris.auth.csrf import CSRF_FORM_FIELD, attach_csrf_cookie, mint_csrf_token
+from iris.auth.exceptions import AuthError
+from iris.auth.identity import User
+
+logger = logging.getLogger("iris.auth.ldap")
+
+
+class LDAPProvider:
+    def __init__(
+        self,
+        settings: LDAPSettings,
+        *,
+        _connection_factory: Callable[[], Connection] | None = None,
+    ) -> None:
+        self._settings = settings
+        self._connection_factory = _connection_factory  # for tests
+
+    async def begin(self, request: Request) -> Response:
+        templates = request.app.state.templates
+        next_url = request.query_params.get("next", "/")
+        error = request.query_params.get("error")
+        error_message = (
+            {
+                "invalid_credentials": "Invalid username or password.",
+                "ldap_unreachable": "Authentication service unreachable. Please try again.",
+                "ldap_groups": "Could not load your group membership. Please contact an admin.",
+                "csrf_mismatch": "Session expired, please reload and try again.",
+            }.get(error or "", "An error occurred.")
+            if error
+            else ""
+        )
+        token = mint_csrf_token(request)
+        response = templates.TemplateResponse(
+            request,
+            "auth/ldap_form.html",
+            {
+                "csrf_field": CSRF_FORM_FIELD,
+                "csrf_token": token,
+                "next_url": next_url,
+                "error": bool(error),
+                "error_message": error_message,
+            },
+        )
+        attach_csrf_cookie(request, response, token)
+        return response
+
+    async def complete(self, request: Request) -> User:
+        raise NotImplementedError("LDAPProvider uses authenticate()")
+
+    async def authenticate(self, username: str, password: str) -> User:
+        bind_dn = self._settings.bind_dn_template.format(username=username)
+        try:
+            conn = self._open_connection(bind_dn, password)
+        except _BindFailed:
+            raise AuthError("invalid_credentials")
+        except _Unreachable:
+            logger.exception("auth: LDAP unreachable")
+            raise AuthError("ldap_unreachable")
+
+        try:
+            display_name = self._read_display_name(conn, bind_dn) or username
+            groups = self._read_groups(conn, bind_dn)
+        except Exception:
+            logger.exception("auth: LDAP group/profile read failed")
+            raise AuthError("ldap_groups")
+
+        return User(subject=bind_dn, display_name=display_name, groups=tuple(groups))
+
+    def _open_connection(self, bind_dn: str, password: str) -> Connection:
+        if self._connection_factory is not None:
+            conn = self._connection_factory()
+            ok = conn.rebind(user=bind_dn, password=password)
+            if not ok:
+                raise _BindFailed()
+            return conn
+        try:
+            server = Server(self._settings.url, get_info=None)
+            conn = Connection(server, user=bind_dn, password=password, auto_bind=True)
+            return conn
+        except Exception as exc:  # ldap3 raises various subclasses; treat as unreachable vs auth
+            msg = str(exc).lower()
+            if "invalidcredentials" in msg or "invalid credentials" in msg:
+                raise _BindFailed() from exc
+            raise _Unreachable() from exc
+
+    def _read_display_name(self, conn: Connection, bind_dn: str) -> str | None:
+        conn.search(bind_dn, "(objectClass=*)", attributes=["cn"])
+        if conn.entries:
+            cn = conn.entries[0].cn.value if "cn" in conn.entries[0] else None
+            return str(cn) if cn else None
+        return None
+
+    def _read_groups(self, conn: Connection, bind_dn: str) -> list[str]:
+        conn.search(
+            self._settings.group_base_dn,
+            f"(member={bind_dn})",
+            attributes=ALL_ATTRIBUTES,
+        )
+        groups: list[str] = []
+        for entry in conn.entries:
+            cn = entry.cn.value if "cn" in entry else None
+            if cn:
+                groups.append(str(cn))
+        return groups
+
+
+class _BindFailed(Exception): ...
+
+
+class _Unreachable(Exception): ...

@@ -1,0 +1,75 @@
+import asyncio
+
+import pytest
+from ldap3 import MOCK_SYNC, Connection, Server
+
+from iris.auth.config import LDAPSettings
+from iris.auth.exceptions import AuthError
+from iris.auth.providers.ldap import LDAPProvider
+
+
+@pytest.fixture
+def settings() -> LDAPSettings:
+    return LDAPSettings(
+        url="fake://offline",
+        bind_dn_template="uid={username},ou=people,dc=corp,dc=local",
+        group_base_dn="ou=groups,dc=corp,dc=local",
+    )
+
+
+@pytest.fixture
+def directory():
+    server = Server("fake")
+    conn = Connection(server, client_strategy=MOCK_SYNC)
+    conn.strategy.add_entry(
+        "uid=alice,ou=people,dc=corp,dc=local",
+        {"userPassword": "secret", "cn": "Alice", "objectClass": ["inetOrgPerson"]},
+    )
+    conn.strategy.add_entry(
+        "uid=bob,ou=people,dc=corp,dc=local",
+        {"userPassword": "hunter2", "cn": "Bob", "objectClass": ["inetOrgPerson"]},
+    )
+    conn.strategy.add_entry(
+        "cn=admins,ou=groups,dc=corp,dc=local",
+        {"member": ["uid=alice,ou=people,dc=corp,dc=local"], "objectClass": ["groupOfNames"]},
+    )
+    conn.strategy.add_entry(
+        "cn=users,ou=groups,dc=corp,dc=local",
+        {
+            "member": [
+                "uid=alice,ou=people,dc=corp,dc=local",
+                "uid=bob,ou=people,dc=corp,dc=local",
+            ],
+            "objectClass": ["groupOfNames"],
+        },
+    )
+    return conn
+
+
+@pytest.fixture
+def provider(settings, directory):
+    return LDAPProvider(settings, _connection_factory=lambda: directory)
+
+
+def test_authenticate_returns_user_with_groups(provider):
+    user = asyncio.run(provider.authenticate("alice", "secret"))
+    assert user.subject == "uid=alice,ou=people,dc=corp,dc=local"
+    assert user.display_name == "Alice"
+    assert set(user.groups) == {"admins", "users"}
+
+
+def test_authenticate_returns_user_with_only_user_group(provider):
+    user = asyncio.run(provider.authenticate("bob", "hunter2"))
+    assert set(user.groups) == {"users"}
+
+
+def test_authenticate_with_bad_password_raises(provider):
+    with pytest.raises(AuthError) as exc:
+        asyncio.run(provider.authenticate("alice", "wrong"))
+    assert exc.value.token == "invalid_credentials"
+
+
+def test_authenticate_with_unknown_user_raises(provider):
+    with pytest.raises(AuthError) as exc:
+        asyncio.run(provider.authenticate("nobody", "anything"))
+    assert exc.value.token == "invalid_credentials"
