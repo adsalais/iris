@@ -1,0 +1,92 @@
+import os
+
+import pytest
+
+from iris.auth.config import AuthSettings
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    for key in list(os.environ):
+        if key.startswith(("AUTH_", "SESSION_", "COOKIE_", "OIDC_", "LDAP_", "MOCK_")):
+            monkeypatch.delenv(key, raising=False)
+
+
+def test_defaults_when_only_method_set(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "mock")
+    monkeypatch.setenv("MOCK_USERNAME", "alice")
+    monkeypatch.setenv("MOCK_PASSWORD", "secret")
+    s = AuthSettings.from_env()
+    assert s.method == "mock"
+    assert s.cookie_name == "iris_session"
+    assert s.ttl_seconds == 43200
+    assert s.cookie_secure is True
+
+
+def test_unknown_method_raises(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "saml")
+    with pytest.raises(ValueError, match="AUTH_METHOD"):
+        AuthSettings.from_env()
+
+
+def test_missing_method_raises(monkeypatch):
+    with pytest.raises(ValueError, match="AUTH_METHOD"):
+        AuthSettings.from_env()
+
+
+def test_cookie_secure_false(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "mock")
+    monkeypatch.setenv("MOCK_USERNAME", "alice")
+    monkeypatch.setenv("MOCK_PASSWORD", "secret")
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+    s = AuthSettings.from_env()
+    assert s.cookie_secure is False
+
+
+def test_oauth_settings(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "oauth")
+    monkeypatch.setenv("OIDC_ISSUER_URL", "https://kc.example/realms/iris")
+    monkeypatch.setenv("OIDC_CLIENT_ID", "iris")
+    monkeypatch.setenv("OIDC_CLIENT_SECRET", "shh")
+    monkeypatch.setenv("OIDC_SCOPES", "openid profile email groups")
+    s = AuthSettings.from_env()
+    assert s.oidc.issuer_url == "https://kc.example/realms/iris"
+    assert s.oidc.client_id == "iris"
+    assert s.oidc.client_secret == "shh"
+    assert s.oidc.scopes == ("openid", "profile", "email", "groups")
+
+
+def test_oauth_missing_required(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "oauth")
+    with pytest.raises(ValueError, match="OIDC_ISSUER_URL"):
+        AuthSettings.from_env()
+
+
+def test_ldap_settings(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "ldap")
+    monkeypatch.setenv("LDAP_URL", "ldaps://ldap.example:636")
+    monkeypatch.setenv("LDAP_BIND_DN_TEMPLATE", "uid={username},ou=people,dc=corp,dc=local")
+    monkeypatch.setenv("LDAP_GROUP_BASE_DN", "ou=groups,dc=corp,dc=local")
+    s = AuthSettings.from_env()
+    assert s.ldap.url == "ldaps://ldap.example:636"
+    assert s.ldap.bind_dn_template == "uid={username},ou=people,dc=corp,dc=local"
+
+
+def test_mock_settings(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "mock")
+    monkeypatch.setenv("MOCK_USERNAME", "alice")
+    monkeypatch.setenv("MOCK_PASSWORD", "secret")
+    monkeypatch.setenv("MOCK_GROUPS", "admins,users")
+    monkeypatch.setenv("MOCK_DISPLAY_NAME", "Alice (mock)")
+    s = AuthSettings.from_env()
+    assert s.mock.username == "alice"
+    assert s.mock.password == "secret"
+    assert s.mock.groups == ("admins", "users")
+    assert s.mock.display_name == "Alice (mock)"
+
+
+def test_mock_missing_required(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "mock")
+    monkeypatch.setenv("MOCK_USERNAME", "alice")
+    with pytest.raises(ValueError, match="MOCK_PASSWORD"):
+        AuthSettings.from_env()

@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import Literal
+
+
+def _get_required(key: str) -> str:
+    val = os.environ.get(key, "").strip()
+    if not val:
+        raise ValueError(f"Missing required env var: {key}")
+    return val
+
+
+def _get_bool(key: str, default: bool) -> bool:
+    raw = os.environ.get(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _get_int(key: str, default: int) -> int:
+    raw = os.environ.get(key)
+    return int(raw) if raw else default
+
+
+def _split_csv(raw: str) -> tuple[str, ...]:
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
+def _split_ws(raw: str) -> tuple[str, ...]:
+    return tuple(p for p in raw.split() if p)
+
+
+@dataclass(frozen=True)
+class OIDCSettings:
+    issuer_url: str
+    client_id: str
+    client_secret: str
+    scopes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LDAPSettings:
+    url: str
+    bind_dn_template: str
+    group_base_dn: str
+
+
+@dataclass(frozen=True)
+class MockSettings:
+    username: str
+    password: str
+    groups: tuple[str, ...]
+    display_name: str
+
+
+@dataclass(frozen=True)
+class AuthSettings:
+    method: Literal["oauth", "ldap", "mock"]
+    cookie_name: str
+    ttl_seconds: int
+    cookie_secure: bool
+    oidc: OIDCSettings | None
+    ldap: LDAPSettings | None
+    mock: MockSettings | None
+
+    @classmethod
+    def from_env(cls) -> AuthSettings:
+        method = os.environ.get("AUTH_METHOD", "").strip()
+        if method not in ("oauth", "ldap", "mock"):
+            raise ValueError(
+                f"AUTH_METHOD must be one of 'oauth' | 'ldap' | 'mock', got {method!r}"
+            )
+
+        cookie_name = os.environ.get("SESSION_COOKIE_NAME", "iris_session")
+        ttl_seconds = _get_int("SESSION_TTL_SECONDS", 43200)
+        cookie_secure = _get_bool("COOKIE_SECURE", True)
+
+        oidc = ldap = mock = None
+        if method == "oauth":
+            oidc = OIDCSettings(
+                issuer_url=_get_required("OIDC_ISSUER_URL"),
+                client_id=_get_required("OIDC_CLIENT_ID"),
+                client_secret=_get_required("OIDC_CLIENT_SECRET"),
+                scopes=_split_ws(os.environ.get("OIDC_SCOPES", "openid profile email groups")),
+            )
+        elif method == "ldap":
+            ldap = LDAPSettings(
+                url=_get_required("LDAP_URL"),
+                bind_dn_template=_get_required("LDAP_BIND_DN_TEMPLATE"),
+                group_base_dn=_get_required("LDAP_GROUP_BASE_DN"),
+            )
+        elif method == "mock":
+            mock = MockSettings(
+                username=_get_required("MOCK_USERNAME"),
+                password=_get_required("MOCK_PASSWORD"),
+                groups=_split_csv(os.environ.get("MOCK_GROUPS", "")),
+                display_name=os.environ.get("MOCK_DISPLAY_NAME", os.environ["MOCK_USERNAME"]),
+            )
+
+        return cls(
+            method=method,
+            cookie_name=cookie_name,
+            ttl_seconds=ttl_seconds,
+            cookie_secure=cookie_secure,
+            oidc=oidc,
+            ldap=ldap,
+            mock=mock,
+        )
