@@ -73,3 +73,35 @@ def test_authenticate_with_unknown_user_raises(provider):
     with pytest.raises(AuthError) as exc:
         asyncio.run(provider.authenticate("nobody", "anything"))
     assert exc.value.token == "invalid_credentials"
+
+
+def test_authenticate_rejects_dn_injection_in_username(provider):
+    """Usernames containing DN metacharacters or out-of-charset bytes are rejected before bind."""
+    import asyncio
+
+    payloads = [
+        "alice,ou=evil,dc=corp,dc=local",
+        "alice=admin",
+        "alice;ou=evil",
+        "alice\\ou=evil",
+        'alice"ou=evil',
+        "alice\x00",
+        "alice<>",
+        "",                  # empty
+        "a" * 65,            # over length cap
+        " alice",            # leading whitespace
+        "alice ",            # trailing whitespace
+        "alice@example.com", # @ not in charset
+    ]
+    for p in payloads:
+        with pytest.raises(AuthError) as exc:
+            asyncio.run(provider.authenticate(p, "anything"))
+        assert exc.value.token == "invalid_credentials", f"username={p!r} should be rejected"
+
+
+def test_authenticate_accepts_normal_usernames(provider):
+    """Allowed: letters, digits, underscore, dot, hyphen, up to 64 chars."""
+    import asyncio
+
+    user = asyncio.run(provider.authenticate("alice", "secret"))
+    assert user.subject == "uid=alice,ou=people,dc=corp,dc=local"

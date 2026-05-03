@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Callable
 
 from fastapi import Request, Response
-from ldap3 import ALL_ATTRIBUTES, Connection, Server
+from ldap3 import Connection, Server
+from ldap3.utils.conv import escape_filter_chars
 
 from iris.auth.config import LDAPSettings
 from iris.auth.csrf import CSRF_FORM_FIELD, attach_csrf_cookie, mint_csrf_token
 from iris.auth.exceptions import AuthError
 from iris.auth.identity import User
+
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 logger = logging.getLogger("iris.auth.ldap")
 
@@ -57,6 +61,8 @@ class LDAPProvider:
         raise NotImplementedError("LDAPProvider uses authenticate()")
 
     async def authenticate(self, username: str, password: str) -> User:
+        if not _USERNAME_RE.fullmatch(username):
+            raise AuthError("invalid_credentials")
         bind_dn = self._settings.bind_dn_template.format(username=username)
         try:
             conn = self._open_connection(bind_dn, password)
@@ -102,8 +108,8 @@ class LDAPProvider:
     def _read_groups(self, conn: Connection, bind_dn: str) -> list[str]:
         conn.search(
             self._settings.group_base_dn,
-            f"(member={bind_dn})",
-            attributes=ALL_ATTRIBUTES,
+            f"(member={escape_filter_chars(bind_dn)})",
+            attributes=["cn"],
         )
         groups: list[str] = []
         for entry in conn.entries:
