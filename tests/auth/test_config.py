@@ -90,3 +90,39 @@ def test_mock_missing_required(monkeypatch):
     monkeypatch.setenv("MOCK_USERNAME", "alice")
     with pytest.raises(ValueError, match="MOCK_PASSWORD"):
         AuthSettings.from_env()
+
+
+def test_cookie_secure_invalid_raises(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "mock")
+    monkeypatch.setenv("MOCK_USERNAME", "alice")
+    monkeypatch.setenv("MOCK_PASSWORD", "secret")
+    monkeypatch.setenv("COOKIE_SECURE", "ture")  # typo
+    with pytest.raises(ValueError, match="COOKIE_SECURE"):
+        AuthSettings.from_env()
+
+
+def test_ttl_seconds_custom(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "mock")
+    monkeypatch.setenv("MOCK_USERNAME", "alice")
+    monkeypatch.setenv("MOCK_PASSWORD", "secret")
+    monkeypatch.setenv("SESSION_TTL_SECONDS", "3600")
+    s = AuthSettings.from_env()
+    assert s.ttl_seconds == 3600
+
+
+def test_ttl_seconds_invalid_raises(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "mock")
+    monkeypatch.setenv("MOCK_USERNAME", "alice")
+    monkeypatch.setenv("MOCK_PASSWORD", "secret")
+    monkeypatch.setenv("SESSION_TTL_SECONDS", "abc")
+    with pytest.raises(ValueError, match="SESSION_TTL_SECONDS"):
+        AuthSettings.from_env()
+
+
+def test_display_name_falls_back_to_stripped_username(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "mock")
+    monkeypatch.setenv("MOCK_USERNAME", "  alice  ")
+    monkeypatch.setenv("MOCK_PASSWORD", "secret")
+    s = AuthSettings.from_env()
+    assert s.mock.username == "alice"
+    assert s.mock.display_name == "alice"  # not "  alice  "

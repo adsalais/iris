@@ -16,12 +16,22 @@ def _get_bool(key: str, default: bool) -> bool:
     raw = os.environ.get(key)
     if raw is None:
         return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
+    v = raw.strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off", ""):
+        return False
+    raise ValueError(f"{key} must be a boolean (true/false), got {raw!r}")
 
 
 def _get_int(key: str, default: int) -> int:
     raw = os.environ.get(key)
-    return int(raw) if raw else default
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError as e:
+        raise ValueError(f"{key} must be an integer, got {raw!r}") from e
 
 
 def _split_csv(raw: str) -> tuple[str, ...]:
@@ -92,11 +102,12 @@ class AuthSettings:
                 group_base_dn=_get_required("LDAP_GROUP_BASE_DN"),
             )
         elif method == "mock":
+            username = _get_required("MOCK_USERNAME")
             mock = MockSettings(
-                username=_get_required("MOCK_USERNAME"),
+                username=username,
                 password=_get_required("MOCK_PASSWORD"),
                 groups=_split_csv(os.environ.get("MOCK_GROUPS", "")),
-                display_name=os.environ.get("MOCK_DISPLAY_NAME", os.environ["MOCK_USERNAME"]),
+                display_name=os.environ.get("MOCK_DISPLAY_NAME", username),
             )
 
         return cls(
