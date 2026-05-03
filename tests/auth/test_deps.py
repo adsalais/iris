@@ -3,12 +3,13 @@ import asyncio
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+from iris.auth.authz.deps import require_role
+from iris.auth.authz.loader import RoleMappingLoader
 from iris.auth.deps import (
     CurrentSession,
     CurrentUser,
     OptionalCurrentUser,
     SessionData,
-    require_group,
     set_session_store,
     set_settings,
 )
@@ -17,12 +18,19 @@ from iris.auth.identity import User
 from iris.auth.sessions import InMemorySessionStore
 
 
-def _build_app() -> tuple[FastAPI, InMemorySessionStore]:
+def _build_app(tmp_path) -> tuple[FastAPI, InMemorySessionStore]:
+    yaml_path = tmp_path / "authz.yaml"
+    yaml_path.write_text(
+        "roles:\n"
+        "  admin:\n"
+        "    groups: [\"admins\"]\n"
+    )
     app = FastAPI()
     store = InMemorySessionStore(ttl_seconds=60, absolute_ttl_seconds=3600)
     set_session_store(app, store)
     set_settings(app, cookie_name="iris_session")
     install_exception_handlers(app, cookie_name="iris_session")
+    app.state.authz_loader = RoleMappingLoader(yaml_path)
 
     @app.get("/me")
     async def me(user: CurrentUser):
@@ -33,7 +41,7 @@ def _build_app() -> tuple[FastAPI, InMemorySessionStore]:
         return {"present": user is not None}
 
     @app.get("/admin")
-    async def admin(user: User = Depends(require_group("admins"))):
+    async def admin(user: User = Depends(require_role("admin"))):
         return {"subject": user.subject}
 
     @app.get("/data")
@@ -67,14 +75,14 @@ def _seed(store: InMemorySessionStore, **overrides) -> str:
     return session.id
 
 
-def test_no_credentials_returns_401_for_api():
-    app, _ = _build_app()
+def test_no_credentials_returns_401_for_api(tmp_path):
+    app, _ = _build_app(tmp_path)
     r = TestClient(app).get("/me", headers={"accept": "application/json"})
     assert r.status_code == 401
 
 
-def test_cookie_credential_resolves_user():
-    app, store = _build_app()
+def test_cookie_credential_resolves_user(tmp_path):
+    app, store = _build_app(tmp_path)
     sid = _seed(store)
     c = TestClient(app)
     c.cookies.set("iris_session", sid)
@@ -83,8 +91,8 @@ def test_cookie_credential_resolves_user():
     assert r.json() == {"subject": "alice"}
 
 
-def test_bearer_credential_resolves_user():
-    app, store = _build_app()
+def test_bearer_credential_resolves_user(tmp_path):
+    app, store = _build_app(tmp_path)
     sid = _seed(store)
     r = TestClient(app).get(
         "/me",
@@ -94,15 +102,15 @@ def test_bearer_credential_resolves_user():
     assert r.json() == {"subject": "alice"}
 
 
-def test_optional_returns_none_when_unauthenticated():
-    app, _ = _build_app()
+def test_optional_returns_none_when_unauthenticated(tmp_path):
+    app, _ = _build_app(tmp_path)
     r = TestClient(app).get("/optional", headers={"accept": "application/json"})
     assert r.status_code == 200
     assert r.json() == {"present": False}
 
 
-def test_optional_returns_user_when_authenticated():
-    app, store = _build_app()
+def test_optional_returns_user_when_authenticated(tmp_path):
+    app, store = _build_app(tmp_path)
     sid = _seed(store)
     c = TestClient(app)
     c.cookies.set("iris_session", sid)
@@ -110,8 +118,8 @@ def test_optional_returns_user_when_authenticated():
     assert r.json() == {"present": True}
 
 
-def test_require_group_admits_member():
-    app, store = _build_app()
+def test_require_role_admits_member(tmp_path):
+    app, store = _build_app(tmp_path)
     sid = _seed(store, groups=("admins", "users"))
     c = TestClient(app)
     c.cookies.set("iris_session", sid)
@@ -119,8 +127,8 @@ def test_require_group_admits_member():
     assert r.status_code == 200
 
 
-def test_require_group_rejects_non_member():
-    app, store = _build_app()
+def test_require_role_rejects_non_member(tmp_path):
+    app, store = _build_app(tmp_path)
     sid = _seed(store, groups=("users",))
     c = TestClient(app)
     c.cookies.set("iris_session", sid)
@@ -128,9 +136,9 @@ def test_require_group_rejects_non_member():
     assert r.status_code == 403
 
 
-def test_session_data_round_trip():
+def test_session_data_round_trip(tmp_path):
     """Mutations to SessionData persist across requests with the same session id."""
-    app, store = _build_app()
+    app, store = _build_app(tmp_path)
     sid = _seed(store)
     c = TestClient(app)
     c.cookies.set("iris_session", sid)
@@ -141,9 +149,9 @@ def test_session_data_round_trip():
     assert c.get("/data").json() == {"counter": 2}
 
 
-def test_session_data_isolated_between_sessions():
+def test_session_data_isolated_between_sessions(tmp_path):
     """Two sessions don't see each other's data."""
-    app, store = _build_app()
+    app, store = _build_app(tmp_path)
     sid_a = _seed(store, subject="alice")
     sid_b = _seed(store, subject="bob")
 
@@ -160,16 +168,16 @@ def test_session_data_isolated_between_sessions():
     assert cb.get("/data").json() == {"counter": 1}
 
 
-def test_session_data_requires_auth():
+def test_session_data_requires_auth(tmp_path):
     """Without a session cookie or bearer, /data 401s like CurrentUser would."""
-    app, _ = _build_app()
+    app, _ = _build_app(tmp_path)
     r = TestClient(app).get("/data", headers={"accept": "application/json"})
     assert r.status_code == 401
 
 
-def test_current_session_exposes_id_user_and_data():
+def test_current_session_exposes_id_user_and_data(tmp_path):
     """CurrentSession returns the full UserSession; .id, .user, .data are reachable."""
-    app, store = _build_app()
+    app, store = _build_app(tmp_path)
     sid = _seed(store)
     c = TestClient(app)
     c.cookies.set("iris_session", sid)
