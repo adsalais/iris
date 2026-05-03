@@ -321,3 +321,9 @@ def test_exchange_code_rejects_id_token_signed_with_wrong_key(settings):
             provider.exchange_code(code="x", code_verifier="v", redirect_uri="http://x/cb")
         )
     assert exc.value.token == "oauth_exchange"
+
+
+def test_user_from_claims_falls_back_to_sub_when_preferred_username_absent(provider):
+    """When preferred_username is absent, User.username falls back to the sub value."""
+    user = provider._user_from_claims({"sub": "abc-123", "groups": ["users"]})
+    assert user.username == "abc-123"

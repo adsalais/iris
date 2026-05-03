@@ -87,10 +87,10 @@ Routes then take `signals: Signals` and get a guaranteed dict — no None handli
 The `iris.auth` package adds session-based authentication to all routes. Public surface:
 
 ```python
-from iris.auth import CurrentUser, OptionalCurrentUser, CurrentSession, SessionData, require_group
+from iris.auth import CurrentUser, OptionalCurrentUser, CurrentSession, SessionData, CurrentRoles, require_role
 ```
 
-`CurrentUser` requires a valid session (cookie or `Authorization: Bearer <session-id>`); `OptionalCurrentUser` returns `None` if no session is present. `require_group("admins")` is a dependency factory that 403s if the user isn't in the listed group.
+`CurrentUser` requires a valid session (cookie or `Authorization: Bearer <session-id>`); `OptionalCurrentUser` returns `None` if no session is present. `require_role("admin")` is a dependency factory that 403s if the user's effective role set (computed from the role-mapping YAML) doesn't contain the named role. See "Authorization (roles)" below for the YAML schema and inheritance semantics.
 
 ### Per-session server-side data
 
@@ -120,6 +120,63 @@ All four authenticated deps (`CurrentUser`, `OptionalCurrentUser`, `CurrentSessi
 
 Lifecycle: data lives in-memory alongside the session and is wiped on logout / expiry / process restart. The store API doesn't persist `data` separately; if/when the v1.1 Redis-backed store arrives, `data` will need to be serializable (JSON-ish values only). For v1, anything Python can hold is fair game. Read-modify-write across an `await` between two requests for the same session has the standard interleaving race — acceptable at ≤20-user scale; document or use `asyncio.Lock` if a route needs atomic updates.
 
+### Authorization (roles)
+
+Application code references **internal role names only** (`admin`, `writer`, `reader`, etc.). The mapping from role → external IdP groups/usernames lives in a YAML file outside the code, edited by operators without a redeploy.
+
+**YAML schema** (single file, path from `AUTHZ_CONFIG_PATH`):
+
+```yaml
+roles:
+  reader:
+    groups: []
+    users: []
+  writer:
+    groups: ["editors"]
+    users: ["bob"]
+    includes: ["reader"]            # writers also have reader's permissions
+  admin:
+    groups: ["ldap-admins", "platform-team"]
+    users: ["alice"]
+    includes: ["writer"]            # admins transitively get writer + reader
+```
+
+Validation rules (enforced at load, fail-loud with line numbers):
+- Top-level: exactly `roles:`. Other keys reject.
+- Per-role keys restricted to `{groups, users, includes}`; all default to `[]`.
+- Role names match `[a-zA-Z0-9_-]+`.
+- `includes` must reference defined roles; the graph must be a DAG (cycles reject).
+- Duplicate top-level role keys reject (custom YAML loader; PyYAML's default would silently overwrite).
+
+**Identity matching:**
+- `groups` — exact, case-sensitive match against `User.groups` (verbatim from the IdP).
+- `users` — case-insensitive match against `User.username` (the new field on `User`).
+  - OAuth provider sources `username` from the `preferred_username` claim, falling back to `sub` (the IdP's opaque subject identifier) if absent. If your OIDC IdP doesn't issue `preferred_username`, your `users:` lists must contain the `sub` UUIDs.
+  - LDAP provider sources `username` from the `username` substituted into `LDAP_BIND_DN_TEMPLATE`.
+  - Mock provider sources `username` from `MOCK_USERNAME`.
+
+**Use in routes:**
+
+```python
+from iris.auth import require_role, CurrentRoles, CurrentUser
+
+@app.get("/docs")
+async def list_docs(user: User = Depends(require_role("reader"))):
+    ...
+
+@app.get("/me/roles")
+async def my_roles(roles: CurrentRoles):
+    return {"roles": sorted(roles)}
+```
+
+`require_role("reader")` admits any user whose effective role set contains `reader`, directly or via `includes` (so admins and writers get in too). `CurrentRoles` returns the user's full effective role set as a `frozenset[str]` — useful for templates and `/api/whoami`-style endpoints.
+
+If a route names a role that isn't defined in the YAML, the request returns **500** (not 403) with a generic body — silent 403s would mask operator typos like `require_role("reder")`. The missing role name is logged server-side.
+
+**Live reload:** the loader stats the YAML file on every request and reloads when mtime changes. Edit the file, save, and the next request sees the new mapping — no restart, no waiting for sessions to expire.
+
+**Robustness against bad edits:** if a YAML edit produces an invalid file (syntax error, schema error, cycle, undefined include), the loader logs an `ERROR` and **keeps serving the last-known-good mapping**. Subsequent requests keep working until the file is fixed. Note that the *initial* load at boot is not protected by this fallback — a bad initial YAML stops the app from booting (consistent with the rest of the auth config's fail-loud style).
+
 ### Configuration
 
 Env vars are loaded at `import iris` time via `python-dotenv`. If a `.env` file exists at the project root (gitignored), its values populate `os.environ` for any keys not already set. If `.env` is absent it's a silent no-op. **Real shell env vars take precedence over `.env`** (`load_dotenv` is called with `override=False`), so a CI / production deploy can override individual values without editing `.env`. Tests inherit the same loader; `tests/conftest.py` sets `os.environ.setdefault(...)` defaults at module scope before iris is imported, so test runs always end up with `AUTH_METHOD=mock` regardless of what `.env` contains — this protects the test suite from a developer's OAuth/LDAP `.env`.
@@ -133,6 +190,7 @@ SESSION_TTL_SECONDS=43200            # 12h, sliding TTL refreshed on each reques
 SESSION_ABSOLUTE_TTL_SECONDS=2592000 # 30d, hard cap on top of sliding TTL
 SESSION_MAX_PER_USER=10              # cap concurrent sessions per User.subject (oldest evicted)
 COOKIE_SECURE=true                   # set false for local dev over http
+AUTHZ_CONFIG_PATH=./authz.yaml       # role mapping; required, fail-loud if unset
 
 # OAuth (OIDC discovery)
 OIDC_ISSUER_URL=https://keycloak.example.com/realms/iris
@@ -166,28 +224,34 @@ MOCK_DISPLAY_NAME=Alice
 
 ```
 src/iris/auth/
-├── __init__.py        # re-exports CurrentUser, OptionalCurrentUser, require_group, install, User, UserSession
+├── __init__.py        # public surface: CurrentUser, OptionalCurrentUser, CurrentSession, SessionData, CurrentRoles, require_role, install, User, UserSession
 ├── config.py          # AuthSettings.from_env() + per-method sub-settings
 ├── identity.py        # User (frozen+slots), UserSession (mutable for sliding TTL)
 ├── sessions.py        # InMemorySessionStore: create / get_and_refresh / delete
-├── exceptions.py      # AuthRequired, AuthForbidden, AuthError + install_exception_handlers
-├── deps.py            # CurrentUser, OptionalCurrentUser, require_group, set_session_store, set_settings
+├── exceptions.py      # AuthRequired, AuthForbidden, AuthError, AuthorizationMisconfigured + install_exception_handlers
+├── deps.py            # CurrentUser, OptionalCurrentUser, CurrentSession, SessionData, set_session_store, set_settings
 ├── csrf.py            # double-submit CSRF: mint_csrf_token, attach_csrf_cookie, issue_csrf_token, verify_csrf_form, delete_csrf_cookie
 ├── rate_limit.py      # TokenBucket: in-process per-key token-bucket limiter (used on POST /login)
 ├── routes.py          # /login, /login/callback, /logout, /api/whoami; install(app)
-└── providers/
-    ├── __init__.py    # build_provider(settings) factory dispatching AUTH_METHOD
-    ├── base.py        # Provider Protocol
-    ├── mock.py        # MockProvider (config-driven creds, returns configured groups)
-    ├── ldap.py        # LDAPProvider (ldap3 bind + group search; tests use MOCK_SYNC)
-    └── oauth.py       # OAuthProvider (OIDC discovery + PKCE + signed-cookie state)
+├── providers/
+│   ├── __init__.py    # build_provider(settings) factory dispatching AUTH_METHOD
+│   ├── base.py        # Provider Protocol
+│   ├── mock.py        # MockProvider (config-driven creds, returns configured groups)
+│   ├── ldap.py        # LDAPProvider (ldap3 bind + group search; tests use MOCK_SYNC)
+│   └── oauth.py       # OAuthProvider (OIDC discovery + PKCE + signed-cookie state)
+└── authz/
+    ├── __init__.py    # (empty package marker; consumers import from `iris.auth`)
+    ├── config.py      # AuthzSettings.from_env() — reads AUTHZ_CONFIG_PATH
+    ├── mapping.py     # RoleMapping value type + parse() with cycle detection + closure
+    ├── loader.py      # RoleMappingLoader: mtime-cached, last-good fallback on bad reload
+    └── deps.py        # require_role(name) factory; CurrentRoles dep; _current_mapping
 ```
 
 `install(app)` reads env, builds the provider, and wires the auth router + exception handlers + session store into a FastAPI app. Called from `build_app()` in `src/iris/app.py`.
 
 ### Authorization model
 
-Groups are passed through verbatim from the IdP (Keycloak `realm_access.roles` / `groups` claim, LDAP `member` attribute on group entries). Routes use the IdP's group names directly: `Depends(require_group("admins"))`. Operators must keep group names consistent across deployments if a route is meant to work under both OAuth and LDAP.
+Roles are internal names (`admin`, `writer`, `reader`, …) defined in the YAML at `AUTHZ_CONFIG_PATH`, mapped to external IdP groups and/or usernames. Routes guard themselves with `Depends(require_role("admin"))` — they never reference IdP group names directly. Operators edit the YAML to (re)map roles to whatever the deployment's IdP exposes; no code change needed when group names differ across OAuth and LDAP. See "Authorization (roles)" above for the schema and inheritance semantics.
 
 ### Login flows
 
@@ -220,5 +284,6 @@ Provider tests are offline:
 - Rate limiting on `POST /login` keys on `request.client.host`. Behind a reverse proxy this is the proxy's IP — the bucket becomes effectively global. Mitigation: run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy>` so `request.client.host` reflects the `X-Forwarded-For` value. Not enforced; deployment-config concern.
 - `OAuthProvider` caches the IdP's JWKS once on first discovery. If the IdP rotates signing keys, all logins fail until iris is restarted. Acceptable at ≤20-user / multi-month rotation cadence; tighten by re-fetching on `kid`-not-in-set if rotation matters.
 - OIDC discovery is now lazy: the *first* login attempt after restart pays the discovery latency. Acceptable for v1, but means a slow IdP shifts startup latency to a request boundary instead of failing loud at boot.
+- The role-mapping loader stats the YAML on every request. Sub-millisecond at ≤20-user scale; for higher request volumes, swap to a file watcher (e.g., `watchfiles`) or event-driven invalidation.
 
 These are accepted residual risks for the ≤20-user / `--workers 1` deploy profile; revisit when scaling out or relocating behind a load balancer.

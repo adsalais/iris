@@ -8,6 +8,7 @@ from typing import Any
 @dataclass(frozen=True, slots=True)
 class User:
     subject: str
+    username: str
     display_name: str
     groups: tuple[str, ...]
 

@@ -161,11 +161,18 @@ def build_auth_router(
 def install(app: FastAPI) -> None:
     """Wire the auth package into a FastAPI app: settings, store, exception handlers, router."""
     from iris.auth.config import AuthSettings
+    from iris.auth.authz.config import AuthzSettings
+    from iris.auth.authz.loader import RoleMappingLoader
     from iris.auth.deps import set_session_store, set_settings
     from iris.auth.exceptions import install_exception_handlers
     from iris.auth.providers import build_provider
 
     settings = AuthSettings.from_env()
+    authz_settings = AuthzSettings.from_env()
+    loader = RoleMappingLoader(authz_settings.config_path)
+    loader.get()  # eager initial load; bad YAML stops the app from booting
+    app.state.authz_loader = loader
+
     store = InMemorySessionStore(
         ttl_seconds=settings.ttl_seconds,
         absolute_ttl_seconds=settings.absolute_ttl_seconds,
@@ -191,8 +198,6 @@ def install(app: FastAPI) -> None:
     )
     app.include_router(router)
 
-    # Release httpx connection pools on app shutdown. Only OAuth holds
-    # them — LDAP/Mock providers don't keep network resources open.
     if isinstance(provider, OAuthProvider):
         @app.on_event("shutdown")
         async def _close_oauth_provider() -> None:  # pragma: no cover

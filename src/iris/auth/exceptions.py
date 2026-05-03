@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import RedirectResponse
+
+logger = logging.getLogger("iris.auth")
 
 
 class AuthRequired(Exception):
@@ -9,7 +13,7 @@ class AuthRequired(Exception):
 
 
 class AuthForbidden(Exception):
-    """Raised when the authenticated user lacks a required group."""
+    """Raised when the authenticated user lacks a required role."""
 
     def __init__(self, *, needed: tuple[str, ...], have: tuple[str, ...]) -> None:
         super().__init__(f"need one of {needed}, have {have}")
@@ -23,6 +27,19 @@ class AuthError(Exception):
     def __init__(self, token: str) -> None:
         super().__init__(token)
         self.token = token
+
+
+class AuthorizationMisconfigured(RuntimeError):
+    """Raised when a route requires a role not defined in the current YAML.
+
+    Treated as a deploy-time bug, not a permission denial. The handler
+    returns 500 with a generic body; the missing role name is logged
+    server-side but never returned to the client.
+    """
+
+    def __init__(self, role: str) -> None:
+        super().__init__(f"role {role!r} is not defined in the role mapping")
+        self.role = role
 
 
 def _wants_html(request: Request) -> bool:
@@ -52,3 +69,13 @@ def install_exception_handlers(app: FastAPI, *, cookie_name: str) -> None:
                 status_code=403,
             )
         return Response(status_code=403)
+
+    @app.exception_handler(AuthorizationMisconfigured)
+    async def _on_authorization_misconfigured(
+        request: Request, exc: AuthorizationMisconfigured
+    ) -> Response:
+        logger.error(
+            "authz: route requires role %r which is not defined in the role mapping",
+            exc.role,
+        )
+        return Response(status_code=500, content="Internal Server Error")

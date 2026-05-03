@@ -36,6 +36,7 @@ class MockProvider:
             raise AuthError("invalid_credentials")
         return User(
             subject=f"mock:{self._settings.username}",
+            username=self._settings.username,
             display_name=self._settings.display_name,
             groups=self._settings.groups,
         )
