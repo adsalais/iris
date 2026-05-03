@@ -13,7 +13,7 @@ class AuthRequired(Exception):
 
 
 class AuthForbidden(Exception):
-    """Raised when the authenticated user lacks a required group."""
+    """Raised when the authenticated user lacks a required role."""
 
     def __init__(self, *, needed: tuple[str, ...], have: tuple[str, ...]) -> None:
         super().__init__(f"need one of {needed}, have {have}")

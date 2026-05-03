@@ -224,12 +224,12 @@ MOCK_DISPLAY_NAME=Alice
 
 ```
 src/iris/auth/
-├── __init__.py        # re-exports CurrentUser, OptionalCurrentUser, require_role, install, User, UserSession
+├── __init__.py        # public surface: CurrentUser, OptionalCurrentUser, CurrentSession, SessionData, CurrentRoles, require_role, install, User, UserSession
 ├── config.py          # AuthSettings.from_env() + per-method sub-settings
 ├── identity.py        # User (frozen+slots), UserSession (mutable for sliding TTL)
 ├── sessions.py        # InMemorySessionStore: create / get_and_refresh / delete
-├── exceptions.py      # AuthRequired, AuthForbidden, AuthError + install_exception_handlers
-├── deps.py            # CurrentUser, OptionalCurrentUser, require_role, set_session_store, set_settings
+├── exceptions.py      # AuthRequired, AuthForbidden, AuthError, AuthorizationMisconfigured + install_exception_handlers
+├── deps.py            # CurrentUser, OptionalCurrentUser, CurrentSession, SessionData, set_session_store, set_settings
 ├── csrf.py            # double-submit CSRF: mint_csrf_token, attach_csrf_cookie, issue_csrf_token, verify_csrf_form, delete_csrf_cookie
 ├── rate_limit.py      # TokenBucket: in-process per-key token-bucket limiter (used on POST /login)
 ├── routes.py          # /login, /login/callback, /logout, /api/whoami; install(app)
@@ -240,11 +240,11 @@ src/iris/auth/
 │   ├── ldap.py        # LDAPProvider (ldap3 bind + group search; tests use MOCK_SYNC)
 │   └── oauth.py       # OAuthProvider (OIDC discovery + PKCE + signed-cookie state)
 └── authz/
-    ├── __init__.py    # re-exports CurrentRoles, require_role
+    ├── __init__.py    # (empty package marker; consumers import from `iris.auth`)
     ├── config.py      # AuthzSettings.from_env() — reads AUTHZ_CONFIG_PATH
     ├── mapping.py     # RoleMapping value type + parse() with cycle detection + closure
     ├── loader.py      # RoleMappingLoader: mtime-cached, last-good fallback on bad reload
-    └── deps.py        # require_role(name) factory; CurrentRoles dep
+    └── deps.py        # require_role(name) factory; CurrentRoles dep; _current_mapping
 ```
 
 `install(app)` reads env, builds the provider, and wires the auth router + exception handlers + session store into a FastAPI app. Called from `build_app()` in `src/iris/app.py`.
