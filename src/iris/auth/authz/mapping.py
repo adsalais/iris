@@ -86,9 +86,10 @@ def parse(text: str) -> RoleMapping:
             raise RoleMappingError(f"role {name!r}: body must be a mapping")
         unknown = set(body) - _ALLOWED_ROLE_KEYS
         if unknown:
+            label = "key" if len(unknown) == 1 else "keys"
             keys = ", ".join(f"'{k}'" for k in sorted(unknown))
             raise RoleMappingError(
-                f"role {name!r}: unknown key {keys}"
+                f"role {name!r}: unknown {label} {keys}"
             )
 
         groups = _coerce_string_list(body.get("groups", []), where=f"role {name!r}: groups")
@@ -136,10 +137,12 @@ def _compute_closure(roles: dict[str, RoleDef]) -> dict[str, frozenset[str]]:
         if name in visiting:
             raise RoleMappingError(f"cycle detected involving role {name!r}")
         visiting.add(name)
-        result = {name}
-        for inc in roles[name].includes:
-            result |= visit(inc)
-        visiting.remove(name)
+        try:
+            result = {name}
+            for inc in roles[name].includes:
+                result |= visit(inc)
+        finally:
+            visiting.discard(name)
         frozen = frozenset(result)
         closure[name] = frozen
         return frozen

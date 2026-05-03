@@ -112,6 +112,16 @@ roles:
         parse(text)
 
 
+def test_rejects_non_string_role_name():
+    text = """
+roles:
+  42:
+    groups: []
+"""
+    with pytest.raises(RoleMappingError, match="invalid role name"):
+        parse(text)
+
+
 def test_rejects_undefined_include():
     text = """
 roles:
