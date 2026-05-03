@@ -168,7 +168,7 @@ src/iris/auth/
 ├── sessions.py        # InMemorySessionStore: create / get_and_refresh / delete
 ├── exceptions.py      # AuthRequired, AuthForbidden, AuthError + install_exception_handlers
 ├── deps.py            # CurrentUser, OptionalCurrentUser, require_group, set_session_store, set_settings
-├── csrf.py            # double-submit CSRF: mint_csrf_token, attach_csrf_cookie, issue_csrf_token, verify_csrf_form
+├── csrf.py            # double-submit CSRF: mint_csrf_token, attach_csrf_cookie, issue_csrf_token, verify_csrf_form, delete_csrf_cookie
 ├── routes.py          # /login, /login/callback, /logout, /api/whoami; install(app)
 └── providers/
     ├── __init__.py    # build_provider(settings) factory dispatching AUTH_METHOD
@@ -189,6 +189,8 @@ Groups are passed through verbatim from the IdP (Keycloak `realm_access.roles` /
 - **OAuth (`AUTH_METHOD=oauth`)** — `/login` 302s to the IdP authorize URL with PKCE S256 + state in a signed cookie. The IdP redirects back to `/login/callback`, which exchanges the code, fetches userinfo, and creates a session. `next` is preserved across the round-trip via the same signed cookie.
 - **LDAP/Mock (`AUTH_METHOD=ldap`/`mock`)** — `/login` renders an HTML form (Jinja template `templates/auth/ldap_form.html`) with a CSRF token. POST `/login` validates CSRF, calls `provider.authenticate(username, password)`, and creates a session on success. Bad creds redirect back to `/login?error=invalid_credentials&next=...`.
 - **Logout** — `POST /logout` (CSRF-required) deletes the session and clears the cookie. Local-only — does not call the IdP's end-session endpoint.
+
+The CSRF cookie is rotated on successful login: the post-auth `/login` redirect (and OAuth callback) clear the `iris_csrf` cookie so any pre-auth token capture becomes useless. The next form render (e.g., `/` re-mints via `attach_csrf_cookie`) issues a fresh token, so the user flow is uninterrupted.
 
 ### Tests
 

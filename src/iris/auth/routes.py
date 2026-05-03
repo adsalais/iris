@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, FastAPI, Form, Request, Response
 from fastapi.responses import RedirectResponse
 
-from iris.auth.csrf import verify_csrf_form
+from iris.auth.csrf import delete_csrf_cookie, verify_csrf_form
 from iris.auth.deps import CurrentUser
 from iris.auth.exceptions import AuthError
 from iris.auth.providers.base import Provider
@@ -90,6 +90,7 @@ def build_auth_router(
             ttl=ttl_seconds,
             secure=cookie_secure,
         )
+        delete_csrf_cookie(response)
         return response
 
     @router.get("/login/callback", name="login_callback")
@@ -116,6 +117,7 @@ def build_auth_router(
             ttl=ttl_seconds,
             secure=cookie_secure,
         )
+        delete_csrf_cookie(response)
         response.delete_cookie(OAUTH_STATE_COOKIE)
         return response
 

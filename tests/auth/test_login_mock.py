@@ -162,3 +162,37 @@ def test_post_login_with_oauth_method_returns_405(monkeypatch):
         "Building an oauth-mode app requires real OIDC discovery network call; "
         "covered indirectly by tests/auth/test_provider_oauth.py via _http_transport injection."
     )
+
+
+def test_csrf_token_rotates_after_login(client):
+    """A CSRF token captured pre-login must be invalidated after successful auth."""
+    # Capture the CSRF token from the login form render
+    r = client.get("/login")
+    pre_token = r.cookies[CSRF_COOKIE_NAME]
+    assert pre_token
+
+    # Successfully log in (which should rotate the CSRF cookie)
+    client.post(
+        "/login",
+        data={
+            CSRF_FORM_FIELD: pre_token,
+            "username": "alice",
+            "password": "secret",
+            "next": "/",
+        },
+    )
+
+    # The pre-login token must no longer satisfy CSRF on a state-changing request.
+    # We test against /logout (which is CSRF-protected and requires auth — both
+    # conditions are met now). Use the captured pre_token as the form field.
+    r = client.post(
+        "/logout",
+        data={CSRF_FORM_FIELD: pre_token},
+        follow_redirects=False,
+    )
+    # Either 400 (csrf_mismatch — cookie has rotated) or some other rejection.
+    # The key assertion: the OLD token does NOT successfully log the user out.
+    assert r.status_code == 400, (
+        f"Expected 400 csrf_mismatch after rotation; got {r.status_code}. "
+        "If this is 303, the rotation isn't happening."
+    )

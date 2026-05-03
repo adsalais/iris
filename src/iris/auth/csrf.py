@@ -46,3 +46,8 @@ async def verify_csrf_form(
     cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
     if not cookie or not csrf_token or not hmac.compare_digest(cookie, csrf_token):
         raise HTTPException(status_code=400, detail="csrf_mismatch")
+
+
+def delete_csrf_cookie(response: Response) -> None:
+    """Clear the CSRF cookie. Used after auth boundaries (login) to rotate."""
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
