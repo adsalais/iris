@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Iris &times; Datastar</h1>
+<p>FastAPI + Jinja2 backend, Datastar on the front.</p>
+
+<section data-signals="{count: 0}">
+  <h2>Example 1 &mdash; Reactive counter</h2>
+  <p>Signals live entirely in the browser &mdash; no server round-trip.</p>
+  <p>Count: <strong data-text="$count">0</strong></p>
+  <button data-on:click="$count++">+1</button>
+  <button data-on:click="$count--">-1</button>
+  <button data-on:click="$count = 0">Reset</button>
+</section>
+
+<section data-signals="{name: ''}">
+  <h2>Example 2 &mdash; Server-rendered greeting</h2>
+  <p>The input is bound to a signal. Clicking the button calls
+     <code>GET /api/greet</code>, which streams back an HTML fragment via SSE
+     that morphs into <code>#greeting</code>.</p>
+  <label>Name: <input data-bind="name" placeholder="Ada"></label>
+  <button data-on:click="@get('/api/greet')">Greet me</button>
+  <div id="greeting"></div>
+</section>
+{% endblock %}
