@@ -33,25 +33,54 @@ class OAuthProvider:
         self._client = httpx.Client(transport=_http_transport, timeout=10.0)
         self._async_client = httpx.AsyncClient(transport=_http_transport, timeout=10.0)
         self._signer = URLSafeTimedSerializer(settings.client_secret, salt="iris-oauth-state")
-        # Discovery at construction — fail loudly if unreachable
-        discovery_url = settings.issuer_url.rstrip("/") + "/.well-known/openid-configuration"
-        try:
-            doc = self._client.get(discovery_url).raise_for_status().json()
-        except Exception as exc:
-            raise RuntimeError(f"OIDC discovery failed for {discovery_url}: {exc}") from exc
-        self.authorize_endpoint: str = doc["authorization_endpoint"]
-        self.token_endpoint: str = doc["token_endpoint"]
-        self.userinfo_endpoint: str = doc["userinfo_endpoint"]
-        self.jwks_uri: str = doc["jwks_uri"]
+        # Lazy: discovery + JWKS fetched on first property access so app
+        # construction doesn't block on a slow IdP. The endpoints below are
+        # read via @property and call _ensure_discovered() before returning.
+        self._discovered: dict | None = None
         # Fetch JWKS via our own httpx client so the test transport is honored.
         # PyJWKClient bypasses httpx (uses urllib), so we pre-load and build a
-        # PyJWKSet manually. Cached at construction time — IdP key rotation
+        # PyJWKSet manually. Cached on first discovery — IdP key rotation
         # requires app restart (acceptable for v1; revisit if rotation matters).
+        self._jwks: jwt.PyJWKSet | None = None
+
+    def _ensure_discovered(self) -> None:
+        if self._discovered is not None:
+            return
+        discovery_url = (
+            self._settings.issuer_url.rstrip("/") + "/.well-known/openid-configuration"
+        )
         try:
-            jwks_doc = self._client.get(self.jwks_uri).raise_for_status().json()
-            self._jwks = jwt.PyJWKSet.from_dict(jwks_doc)
+            doc = self._client.get(discovery_url).raise_for_status().json()
+            jwks_doc = self._client.get(doc["jwks_uri"]).raise_for_status().json()
         except Exception as exc:
-            raise RuntimeError(f"OIDC JWKS fetch failed for {self.jwks_uri}: {exc}") from exc
+            logger.exception("auth: OIDC discovery failed")
+            raise AuthError("oauth_discovery") from exc
+        self._discovered = doc
+        self._jwks = jwt.PyJWKSet.from_dict(jwks_doc)
+
+    @property
+    def authorize_endpoint(self) -> str:
+        self._ensure_discovered()
+        assert self._discovered is not None
+        return self._discovered["authorization_endpoint"]
+
+    @property
+    def token_endpoint(self) -> str:
+        self._ensure_discovered()
+        assert self._discovered is not None
+        return self._discovered["token_endpoint"]
+
+    @property
+    def userinfo_endpoint(self) -> str:
+        self._ensure_discovered()
+        assert self._discovered is not None
+        return self._discovered["userinfo_endpoint"]
+
+    @property
+    def jwks_uri(self) -> str:
+        self._ensure_discovered()
+        assert self._discovered is not None
+        return self._discovered["jwks_uri"]
 
     async def begin(self, request: Request) -> Response:
         redirect_uri = str(request.url_for("login_callback"))

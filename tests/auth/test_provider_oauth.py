@@ -30,10 +30,38 @@ def provider(settings):
     return OAuthProvider(settings, _http_transport=_signing_mock_transport())
 
 
-def test_provider_construction_fetches_discovery(provider):
+def test_provider_construction_does_not_fetch_discovery(settings):
+    """Construction is lazy; the discovery URL is fetched only on first use."""
+    fetched: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        fetched.append(str(request.url))
+        return httpx.Response(404)
+
+    OAuthProvider(settings, _http_transport=httpx.MockTransport(handler))
+    assert fetched == [], (
+        f"construction should not have fetched anything, but fetched: {fetched}"
+    )
+
+
+def test_first_property_access_triggers_discovery(provider):
+    """The first access to authorize_endpoint, token_endpoint etc. triggers fetch."""
+    # provider already constructed; accessing the property triggers the lazy fetch
     assert provider.authorize_endpoint == AUTHZ
     assert provider.token_endpoint == TOKEN
     assert provider.userinfo_endpoint == USERINFO
+
+
+def test_discovery_failure_surfaces_oauth_discovery_token(settings):
+    """If discovery fails, the failure surfaces as AuthError('oauth_discovery')."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    provider = OAuthProvider(settings, _http_transport=httpx.MockTransport(handler))
+    # Access a property to trigger discovery
+    with pytest.raises(AuthError) as exc:
+        _ = provider.authorize_endpoint
+    assert exc.value.token == "oauth_discovery"
 
 
 def test_build_authorize_url_includes_state_and_pkce(provider):
