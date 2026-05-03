@@ -216,8 +216,9 @@ Provider tests are offline:
 
 ### Open security follow-ups (v1.1)
 
-- LDAP injection: the `bind_dn_template.format(username=...)` substitution doesn't validate `username` against a charset whitelist. An attacker who knows valid LDAP creds elsewhere in the directory could pollute `User.subject` with controlled DN components and influence the `(member=...)` group filter. Mitigation: regex-validate username before formatting; `ldap3.utils.conv.escape_filter_chars` the DN before substituting into the filter.
-- OIDC discovery is synchronous at app construction — slow IdPs stall startup up to 10s.
 - `InMemorySessionStore` is per-process, which forces `--workers 1` (see "Deployment constraint" above). Swapping to a Redis/DB-backed store would lift the constraint and also survive process restarts.
+- Rate limiting on `POST /login` keys on `request.client.host`. Behind a reverse proxy this is the proxy's IP — the bucket becomes effectively global. Mitigation: run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy>` so `request.client.host` reflects the `X-Forwarded-For` value. Not enforced; deployment-config concern.
+- `OAuthProvider` caches the IdP's JWKS once on first discovery. If the IdP rotates signing keys, all logins fail until iris is restarted. Acceptable at ≤20-user / multi-month rotation cadence; tighten by re-fetching on `kid`-not-in-set if rotation matters.
+- OIDC discovery is now lazy: the *first* login attempt after restart pays the discovery latency. Acceptable for v1, but means a slow IdP shifts startup latency to a request boundary instead of failing loud at boot.
 
-These are documented inherited from the spec/plan rather than implementation defects.
+These are accepted residual risks for the ≤20-user / `--workers 1` deploy profile; revisit when scaling out or relocating behind a load balancer.
