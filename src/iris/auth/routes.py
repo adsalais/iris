@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, FastAPI, Form, Request, Response
 from fastapi.responses import RedirectResponse
@@ -30,7 +31,13 @@ def _set_session_cookie(
 
 def _safe_next(next_url: str) -> str:
     """Return next_url only if it's a same-origin relative path; else /."""
-    if not next_url or not next_url.startswith("/") or next_url.startswith("//"):
+    if not next_url:
+        return "/"
+    # Reject backslashes (some browsers normalize \ -> / before same-origin check)
+    if "\\" in next_url:
+        return "/"
+    # Reject anything that doesn't start with a single forward slash
+    if not next_url.startswith("/") or next_url.startswith("//"):
         return "/"
     return next_url
 
@@ -64,7 +71,8 @@ def build_auth_router(
             user = await provider.authenticate(username, password)
         except AuthError as err:
             return RedirectResponse(
-                f"/login?error={err.token}&next={safe_next}", status_code=302
+                f"/login?{urlencode({'error': err.token, 'next': safe_next})}",
+                status_code=302,
             )
         session = await store.create(user)
         logger.info(

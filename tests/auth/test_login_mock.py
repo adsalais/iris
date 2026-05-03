@@ -111,3 +111,59 @@ def test_post_login_absolute_url_next_falls_back_to_root(client):
         follow_redirects=False,
     )
     assert r.headers["location"] == "/"
+
+
+def test_post_login_backslash_next_falls_back_to_root(client):
+    """Browsers can normalize \\ -> / before same-origin check; reject."""
+    r = client.get("/login")
+    csrf = r.cookies[CSRF_COOKIE_NAME]
+    r = client.post(
+        "/login",
+        data={
+            CSRF_FORM_FIELD: csrf,
+            "username": "alice",
+            "password": "secret",
+            "next": "/\\evil.com/phish",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    assert r.headers["location"] == "/"
+
+
+def test_post_login_failure_redirect_url_encoded(client):
+    """The failure-redirect URL must be properly url-encoded."""
+    r = client.get("/login")
+    csrf = r.cookies[CSRF_COOKIE_NAME]
+    r = client.post(
+        "/login",
+        data={
+            CSRF_FORM_FIELD: csrf,
+            "username": "alice",
+            "password": "wrong",
+            "next": "/dashboard?tab=home",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    location = r.headers["location"]
+    # Must be parseable; ?tab=home in next should be URL-encoded inside the query
+    from urllib.parse import urlparse, parse_qs
+    parsed = urlparse(location)
+    assert parsed.path == "/login"
+    qs = parse_qs(parsed.query)
+    assert qs.get("error") == ["invalid_credentials"]
+    assert qs.get("next") == ["/dashboard?tab=home"]
+
+
+def test_post_login_with_oauth_method_returns_405(monkeypatch):
+    """When AUTH_METHOD=oauth, POST /login is not a valid path (callback is)."""
+    monkeypatch.setenv("AUTH_METHOD", "oauth")
+    monkeypatch.setenv("OIDC_ISSUER_URL", "https://kc.example/realms/iris")
+    monkeypatch.setenv("OIDC_CLIENT_ID", "iris")
+    monkeypatch.setenv("OIDC_CLIENT_SECRET", "shh")
+    # OAuthProvider doesn't exist yet (Task 11), so building the app will fail
+    # with ModuleNotFoundError. The 405 path becomes testable in Task 11.
+    # For now, document the requirement with an xfail.
+    import pytest
+    pytest.skip("OAuthProvider not implemented until Task 11")
