@@ -138,6 +138,20 @@ class OAuthProvider:
         return f"{self.authorize_endpoint}?{urlencode(params)}", state, verifier
 
     async def exchange_code(self, *, code: str, code_verifier: str, redirect_uri: str) -> User:
+        token_response = await self._request_tokens(
+            code=code, code_verifier=code_verifier, redirect_uri=redirect_uri
+        )
+        id_token = token_response.get("id_token")
+        if not id_token:
+            logger.error("auth: token endpoint returned no id_token")
+            raise AuthError("oauth_exchange")
+        self._verify_id_token(id_token)
+        claims = await self._fetch_userinfo(token_response["access_token"])
+        return self._user_from_claims(claims)
+
+    async def _request_tokens(
+        self, *, code: str, code_verifier: str, redirect_uri: str
+    ) -> dict:
         try:
             r = await self._async_client.post(
                 self.token_endpoint,
@@ -151,36 +165,39 @@ class OAuthProvider:
                 },
             )
             r.raise_for_status()
-            token_response = r.json()
-            access_token = token_response["access_token"]
-            id_token = token_response.get("id_token")
-            if not id_token:
-                logger.error("auth: token endpoint returned no id_token")
-                raise AuthError("oauth_exchange")
-            try:
-                unverified_header = jwt.get_unverified_header(id_token)
-                signing_key = self._jwks[unverified_header["kid"]].key
-                jwt.decode(
-                    id_token,
-                    signing_key,
-                    algorithms=["RS256", "ES256"],
-                    audience=self._settings.client_id,
-                    issuer=self._settings.issuer_url.rstrip("/"),
-                )
-            except (jwt.InvalidTokenError, KeyError) as exc:
-                logger.exception("auth: id_token verification failed")
-                raise AuthError("oauth_exchange") from exc
+            return r.json()
+        except Exception as exc:
+            logger.exception("auth: OAuth code exchange failed")
+            raise AuthError("oauth_exchange") from exc
+
+    def _verify_id_token(self, id_token: str) -> None:
+        try:
+            unverified_header = jwt.get_unverified_header(id_token)
+            signing_key = self._jwks[unverified_header["kid"]].key
+            jwt.decode(
+                id_token,
+                signing_key,
+                algorithms=["RS256", "ES256"],
+                audience=self._settings.client_id,
+                issuer=self._settings.issuer_url.rstrip("/"),
+            )
+        except (jwt.InvalidTokenError, KeyError) as exc:
+            logger.exception("auth: id_token verification failed")
+            raise AuthError("oauth_exchange") from exc
+
+    async def _fetch_userinfo(self, access_token: str) -> dict:
+        try:
             ui = await self._async_client.get(
                 self.userinfo_endpoint,
                 headers={"Authorization": f"Bearer {access_token}"},
             )
             ui.raise_for_status()
-            claims = ui.json()
-        except AuthError:
-            raise
+            return ui.json()
         except Exception as exc:
             logger.exception("auth: OAuth code exchange failed")
             raise AuthError("oauth_exchange") from exc
+
+    def _user_from_claims(self, claims: dict) -> User:
         groups = tuple(claims.get("groups") or ())
         if not groups:
             logger.warning(
