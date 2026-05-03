@@ -20,7 +20,17 @@ def test_defaults_when_only_method_set(monkeypatch):
     assert s.method == "mock"
     assert s.cookie_name == "iris_session"
     assert s.ttl_seconds == 43200
+    assert s.max_per_user == 10
     assert s.cookie_secure is True
+
+
+def test_session_max_per_user_override(monkeypatch):
+    monkeypatch.setenv("AUTH_METHOD", "mock")
+    monkeypatch.setenv("MOCK_USERNAME", "alice")
+    monkeypatch.setenv("MOCK_PASSWORD", "secret")
+    monkeypatch.setenv("SESSION_MAX_PER_USER", "3")
+    s = AuthSettings.from_env()
+    assert s.max_per_user == 3
 
 
 def test_unknown_method_raises(monkeypatch):

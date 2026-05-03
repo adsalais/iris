@@ -177,6 +177,7 @@ def install(app: FastAPI) -> None:
     store = InMemorySessionStore(
         ttl_seconds=settings.ttl_seconds,
         absolute_ttl_seconds=settings.absolute_ttl_seconds,
+        max_per_user=settings.max_per_user,
     )
     provider = build_provider(settings)
 

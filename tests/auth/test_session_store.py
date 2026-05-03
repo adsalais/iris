@@ -94,3 +94,40 @@ def test_absolute_expiry_preserves_session_until_deadline(user):
     assert fetched is not None
     # absolute_expires_at should NOT be refreshed by get_and_refresh
     assert fetched.absolute_expires_at == session.absolute_expires_at
+
+
+def test_create_evicts_oldest_when_cap_exceeded(user):
+    """Creating more than max_per_user sessions for the same subject evicts oldest."""
+    store = InMemorySessionStore(ttl_seconds=60, absolute_ttl_seconds=3600, max_per_user=3)
+    sessions = [asyncio.run(store.create(user)) for _ in range(5)]
+    # Only the last 3 should still be present
+    assert asyncio.run(store.get_and_refresh(sessions[0].id)) is None
+    assert asyncio.run(store.get_and_refresh(sessions[1].id)) is None
+    assert asyncio.run(store.get_and_refresh(sessions[2].id)) is not None
+    assert asyncio.run(store.get_and_refresh(sessions[3].id)) is not None
+    assert asyncio.run(store.get_and_refresh(sessions[4].id)) is not None
+
+
+def test_cap_is_per_user_not_global(user):
+    """Different subjects don't share the cap."""
+    store = InMemorySessionStore(ttl_seconds=60, absolute_ttl_seconds=3600, max_per_user=2)
+    other = User(subject="bob", display_name="Bob", groups=())
+    a1 = asyncio.run(store.create(user))
+    a2 = asyncio.run(store.create(user))
+    b1 = asyncio.run(store.create(other))
+    b2 = asyncio.run(store.create(other))
+    # All 4 still present (2 per subject)
+    assert asyncio.run(store.get_and_refresh(a1.id)) is not None
+    assert asyncio.run(store.get_and_refresh(a2.id)) is not None
+    assert asyncio.run(store.get_and_refresh(b1.id)) is not None
+    assert asyncio.run(store.get_and_refresh(b2.id)) is not None
+
+
+def test_default_max_per_user_is_ten(user):
+    """The default cap is 10 when not specified."""
+    store = InMemorySessionStore(ttl_seconds=60, absolute_ttl_seconds=3600)
+    sessions = [asyncio.run(store.create(user)) for _ in range(11)]
+    # First should have been evicted; last 10 present
+    assert asyncio.run(store.get_and_refresh(sessions[0].id)) is None
+    for s in sessions[1:]:
+        assert asyncio.run(store.get_and_refresh(s.id)) is not None

@@ -73,6 +73,7 @@ class AuthSettings:
     cookie_name: str
     ttl_seconds: int
     absolute_ttl_seconds: int
+    max_per_user: int
     cookie_secure: bool
     oidc: OIDCSettings | None
     ldap: LDAPSettings | None
@@ -89,6 +90,7 @@ class AuthSettings:
         cookie_name = os.environ.get("SESSION_COOKIE_NAME", "iris_session")
         ttl_seconds = _get_int("SESSION_TTL_SECONDS", 43200)
         absolute_ttl_seconds = _get_int("SESSION_ABSOLUTE_TTL_SECONDS", 2_592_000)  # 30 days
+        max_per_user = _get_int("SESSION_MAX_PER_USER", 10)
         cookie_secure = _get_bool("COOKIE_SECURE", True)
 
         oidc = ldap = mock = None
@@ -129,6 +131,7 @@ class AuthSettings:
             cookie_name=cookie_name,
             ttl_seconds=ttl_seconds,
             absolute_ttl_seconds=absolute_ttl_seconds,
+            max_per_user=max_per_user,
             cookie_secure=cookie_secure,
             oidc=oidc,
             ldap=ldap,

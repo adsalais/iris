@@ -131,6 +131,7 @@ AUTH_METHOD=oauth | ldap | mock
 SESSION_COOKIE_NAME=iris_session
 SESSION_TTL_SECONDS=43200            # 12h, sliding TTL refreshed on each request
 SESSION_ABSOLUTE_TTL_SECONDS=2592000 # 30d, hard cap on top of sliding TTL
+SESSION_MAX_PER_USER=10              # cap concurrent sessions per User.subject (oldest evicted)
 COOKIE_SECURE=true                   # set false for local dev over http
 
 # OAuth (OIDC discovery)
