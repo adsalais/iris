@@ -1,7 +1,17 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h1>Iris &times; Datastar</h1>
+<header style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:0.5rem">
+  <h1>Iris &times; Datastar</h1>
+  <div>
+    Signed in as <strong>{{ user.display_name }}</strong> ({{ user.groups | join(', ') }})
+    &mdash;
+    <form method="post" action="/logout" style="display:inline">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+      <button type="submit">Sign out</button>
+    </form>
+  </div>
+</header>
 <p>FastAPI + Jinja2 backend, Datastar on the front.</p>
 
 <section data-signals="{count: 0}">

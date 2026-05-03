@@ -10,6 +10,9 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from iris.auth.csrf import issue_csrf_token
+from iris.auth.deps import CurrentUser
+
 TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
 
@@ -35,19 +38,25 @@ def build_app() -> FastAPI:
     install_auth(app)
 
     @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request):
-        return TEMPLATES.TemplateResponse(request, "index.html")
+    async def index(
+        request: Request,
+        user: CurrentUser,
+        csrf: str = Depends(issue_csrf_token),
+    ):
+        return TEMPLATES.TemplateResponse(
+            request, "index.html", {"user": user, "csrf_token": csrf}
+        )
 
     @app.get("/api/greet")
-    async def greet(signals: Signals) -> DatastarResponse:
-        raw = str(signals.get("name") or "").strip()
+    async def greet(signals: Signals, user: CurrentUser) -> DatastarResponse:
+        raw = str(signals.get("name") or user.display_name).strip()
         name = escape(raw) if raw else "stranger"
         return DatastarResponse(
             SSE.patch_elements(f'<div id="greeting">Hello, <strong>{name}</strong>!</div>')
         )
 
     @app.get("/api/clock")
-    async def clock() -> DatastarResponse:
+    async def clock(user: CurrentUser) -> DatastarResponse:
         return DatastarResponse(_clock_stream())
 
     return app
