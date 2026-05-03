@@ -9,10 +9,13 @@ CSRF_COOKIE_NAME = "iris_csrf"
 CSRF_FORM_FIELD = "_csrf_token"
 
 
-def issue_csrf_token(request: Request, response: Response) -> str:
-    token = request.cookies.get(CSRF_COOKIE_NAME)
-    if not token:
-        token = secrets.token_urlsafe(32)
+def mint_csrf_token(request: Request) -> str:
+    """Return the CSRF token: reuse the cookie value if present, else generate a new one."""
+    return request.cookies.get(CSRF_COOKIE_NAME) or secrets.token_urlsafe(32)
+
+
+def attach_csrf_cookie(request: Request, response: Response, token: str) -> None:
+    """Set the CSRF cookie carrying `token` on the response."""
     secure = getattr(request.app.state, "auth_cookie_secure", True)
     response.set_cookie(
         CSRF_COOKIE_NAME,
@@ -23,6 +26,16 @@ def issue_csrf_token(request: Request, response: Response) -> str:
         samesite="lax",
         path="/",
     )
+
+
+def issue_csrf_token(request: Request, response: Response) -> str:
+    """Mint a token and attach the cookie in one step.
+
+    Used by callers that don't need to embed the token in the rendered body
+    (e.g., GET endpoints that bootstrap the cookie without a form).
+    """
+    token = mint_csrf_token(request)
+    attach_csrf_cookie(request, response, token)
     return token
 
 

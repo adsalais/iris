@@ -115,3 +115,22 @@ def test_begin_renders_next_and_error_when_safe():
     assert r.status_code == 200
     assert 'value="/dashboard"' in r.text
     assert "Invalid username or password." in r.text
+
+
+def test_begin_does_not_clobber_next_containing_placeholder():
+    """Regression: a literal /PLACEHOLDER in next must not be replaced with the token."""
+    provider = _provider()
+    app = FastAPI()
+    from iris.app import TEMPLATES
+    app.state.templates = TEMPLATES
+
+    @app.get("/login")
+    async def login(request: Request):
+        return await provider.begin(request)
+
+    r = TestClient(app).get("/login?next=/PLACEHOLDER")
+    assert r.status_code == 200
+    assert 'value="/PLACEHOLDER"' in r.text
+    # And the form's CSRF field must contain the actual cookie token
+    cookie_token = r.cookies["iris_csrf"]
+    assert f'value="{cookie_token}"' in r.text

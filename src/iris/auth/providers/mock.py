@@ -5,7 +5,11 @@ import hmac
 from fastapi import Request, Response
 
 from iris.auth.config import MockSettings
-from iris.auth.csrf import CSRF_FORM_FIELD, issue_csrf_token
+from iris.auth.csrf import (
+    CSRF_FORM_FIELD,
+    attach_csrf_cookie,
+    mint_csrf_token,
+)
 from iris.auth.exceptions import AuthError
 from iris.auth.identity import User
 
@@ -26,20 +30,19 @@ class MockProvider:
             if error
             else ""
         )
-        # Render with a placeholder token so we can issue the cookie afterwards.
+        token = mint_csrf_token(request)
         response = templates.TemplateResponse(
             request,
             "auth/ldap_form.html",
             {
                 "csrf_field": CSRF_FORM_FIELD,
-                "csrf_token": "PLACEHOLDER",
+                "csrf_token": token,
                 "next_url": next_url,
                 "error": bool(error),
                 "error_message": error_message,
             },
         )
-        token = issue_csrf_token(request, response)
-        response.body = response.body.replace(b"PLACEHOLDER", token.encode())
+        attach_csrf_cookie(request, response, token)
         return response
 
     async def complete(self, request: Request) -> User:
