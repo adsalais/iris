@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,3 +18,4 @@ class UserSession:
     user: User
     created_at: datetime
     expires_at: datetime
+    data: dict[str, Any] = field(default_factory=dict)

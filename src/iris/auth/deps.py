@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Request
 
 from iris.auth.exceptions import AuthForbidden, AuthRequired
-from iris.auth.identity import User
+from iris.auth.identity import User, UserSession
 from iris.auth.sessions import InMemorySessionStore
 
 
@@ -35,29 +35,44 @@ def _bearer(authorization: str | None) -> str | None:
     return parts[1].strip() or None
 
 
-async def _resolve(request: Request) -> User | None:
+async def _resolve_session(request: Request) -> UserSession | None:
     cookie_name = _get_cookie_name(request)
     sid = request.cookies.get(cookie_name) or _bearer(request.headers.get("authorization"))
     if not sid:
         return None
     store = _get_store(request)
-    session = await store.get_and_refresh(sid)
+    return await store.get_and_refresh(sid)
+
+
+_ResolvedSession = Annotated[UserSession | None, Depends(_resolve_session)]
+
+
+async def _current_user(session: _ResolvedSession) -> User:
+    if session is None:
+        raise AuthRequired()
+    return session.user
+
+
+async def _optional_current_user(session: _ResolvedSession) -> User | None:
     return session.user if session else None
 
 
-async def _current_user(request: Request) -> User:
-    user = await _resolve(request)
-    if user is None:
+async def _current_session(session: _ResolvedSession) -> UserSession:
+    if session is None:
         raise AuthRequired()
-    return user
+    return session
 
 
-async def _optional_current_user(request: Request) -> User | None:
-    return await _resolve(request)
+async def _session_data(session: _ResolvedSession) -> dict[str, Any]:
+    if session is None:
+        raise AuthRequired()
+    return session.data
 
 
 CurrentUser = Annotated[User, Depends(_current_user)]
 OptionalCurrentUser = Annotated[User | None, Depends(_optional_current_user)]
+CurrentSession = Annotated[UserSession, Depends(_current_session)]
+SessionData = Annotated[dict[str, Any], Depends(_session_data)]
 
 
 def require_group(*groups: str):

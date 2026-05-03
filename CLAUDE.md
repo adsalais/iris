@@ -87,10 +87,38 @@ Routes then take `signals: Signals` and get a guaranteed dict — no None handli
 The `iris.auth` package adds session-based authentication to all routes. Public surface:
 
 ```python
-from iris.auth import CurrentUser, OptionalCurrentUser, require_group
+from iris.auth import CurrentUser, OptionalCurrentUser, CurrentSession, SessionData, require_group
 ```
 
 `CurrentUser` requires a valid session (cookie or `Authorization: Bearer <session-id>`); `OptionalCurrentUser` returns `None` if no session is present. `require_group("admins")` is a dependency factory that 403s if the user isn't in the listed group.
+
+### Per-session server-side data
+
+Each `UserSession` carries a mutable `data: dict[str, Any]` field for arbitrary route-managed state (drafts, wizard steps, recently-viewed lists, etc.). Two FastAPI deps expose it:
+
+```python
+from iris.auth import SessionData, CurrentSession
+
+@app.post("/draft")
+async def save_draft(data: SessionData, body: dict):
+    data["draft"] = body          # direct mutation persists; no commit step
+    return {"ok": True}
+
+@app.get("/draft")
+async def get_draft(data: SessionData):
+    return data.get("draft", {})
+
+@app.get("/me/full")
+async def me_full(session: CurrentSession):
+    return {"id": session.id, "logged_in_at": session.created_at, "data_keys": list(session.data)}
+```
+
+- `SessionData` returns the dict directly — for routes that only need to read/write keys.
+- `CurrentSession` returns the whole `UserSession` — for routes that need `id`, `created_at`, `expires_at`, `user`, or all of the above plus data.
+
+All four authenticated deps (`CurrentUser`, `OptionalCurrentUser`, `CurrentSession`, `SessionData`) share a single `_resolve_session` lookup per request via FastAPI's dep cache, so a route taking both `user: CurrentUser` and `data: SessionData` makes one store hit, not two.
+
+Lifecycle: data lives in-memory alongside the session and is wiped on logout / expiry / process restart. The store API doesn't persist `data` separately; if/when the v1.1 Redis-backed store arrives, `data` will need to be serializable (JSON-ish values only). For v1, anything Python can hold is fair game. Read-modify-write across an `await` between two requests for the same session has the standard interleaving race — acceptable at ≤20-user scale; document or use `asyncio.Lock` if a route needs atomic updates.
 
 ### Configuration
 
