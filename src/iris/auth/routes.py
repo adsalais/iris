@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse
 from iris.auth.csrf import delete_csrf_cookie, verify_csrf_form
 from iris.auth.deps import CurrentUser
 from iris.auth.exceptions import AuthError
+from iris.auth.identity import User
 from iris.auth.providers.base import Provider
 from iris.auth.providers.oauth import OAUTH_STATE_COOKIE, OAuthProvider
 from iris.auth.rate_limit import TokenBucket
@@ -56,7 +57,7 @@ def build_auth_router(
     login_bucket = TokenBucket(capacity=10, refill_per_second=0.2)
 
     async def _finalize_login_redirect(
-        *, user, target: str, method: str
+        *, user: User, target: str, method: str
     ) -> RedirectResponse:
         session = await store.create(user)
         logger.info(
