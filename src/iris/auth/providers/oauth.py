@@ -47,13 +47,14 @@ class OAuthProvider:
         url, state, verifier = self.build_authorize_url(redirect_uri=redirect_uri)
         next_url = request.query_params.get("next", "/")
         signed = self._signer.dumps({"state": state, "verifier": verifier, "next": next_url})
+        secure = getattr(request.app.state, "auth_cookie_secure", True)
         response = RedirectResponse(url, status_code=302)
         response.set_cookie(
             OAUTH_STATE_COOKIE,
             signed,
             max_age=STATE_COOKIE_TTL,
             httponly=True,
-            secure=False,  # short-lived (10min) signed cookie; tighten alongside COOKIE_SECURE in v1.1 if needed
+            secure=secure,
             samesite="lax",
         )
         return response

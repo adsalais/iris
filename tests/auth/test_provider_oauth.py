@@ -95,3 +95,49 @@ def test_complete_callback_returns_user(provider):
     assert user.subject == "abc-123"
     assert user.display_name == "Alice"
     assert set(user.groups) == {"admins", "users"}
+
+
+def test_oauth_state_cookie_follows_cookie_secure(provider):
+    """The oauth_state cookie's Secure flag should follow app.state.auth_cookie_secure."""
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+
+    for cookie_secure in (True, False):
+        app = FastAPI()
+        app.state.auth_cookie_secure = cookie_secure
+
+        @app.get("/login", name="login_callback")  # name needed for url_for inside begin()
+        async def login(request: Request):
+            return await provider.begin(request)
+
+        r = TestClient(app).get("/login", follow_redirects=False)
+        assert r.status_code == 302
+        # The set-cookie header for oauth_state should reflect cookie_secure
+        set_cookies = r.headers.get_list("set-cookie") if hasattr(r.headers, "get_list") else [r.headers.get("set-cookie", "")]
+        oauth_state_cookie = next(
+            (c for c in set_cookies if c.lower().startswith("oauth_state=")),
+            "",
+        )
+        assert oauth_state_cookie, "oauth_state cookie should be set"
+        has_secure = "secure" in oauth_state_cookie.lower()
+        assert has_secure == cookie_secure, (
+            f"cookie_secure={cookie_secure} but Set-Cookie was {oauth_state_cookie!r}"
+        )
+
+
+def test_oauth_state_cookie_defaults_secure_when_app_state_missing(provider):
+    """If app.state.auth_cookie_secure is unset, default to True (paranoid)."""
+    from fastapi import FastAPI, Request
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    # Do NOT set app.state.auth_cookie_secure
+
+    @app.get("/login", name="login_callback")
+    async def login(request: Request):
+        return await provider.begin(request)
+
+    r = TestClient(app).get("/login", follow_redirects=False)
+    set_cookie = r.headers.get("set-cookie", "").lower()
+    assert "oauth_state=" in set_cookie
+    assert "secure" in set_cookie  # paranoid default
