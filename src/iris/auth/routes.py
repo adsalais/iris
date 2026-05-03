@@ -71,6 +71,13 @@ def build_auth_router(
         try:
             user = await provider.authenticate(username, password)
         except AuthError as err:
+            client_host = request.client.host if request.client else "unknown"
+            logger.info(
+                "auth: login_failed username=%s reason=%s remote_addr=%s",
+                username,
+                err.token,
+                client_host,
+            )
             return RedirectResponse(
                 f"/login?{urlencode({'error': err.token, 'next': safe_next})}",
                 status_code=302,

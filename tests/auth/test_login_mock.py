@@ -196,3 +196,52 @@ def test_csrf_token_rotates_after_login(client):
         f"Expected 400 csrf_mismatch after rotation; got {r.status_code}. "
         "If this is 303, the rotation isn't happening."
     )
+
+
+def test_failed_login_logs_attempt(client, caplog):
+    """A failed POST /login should emit an INFO log with username + remote addr."""
+    import logging
+    caplog.set_level(logging.INFO, logger="iris.auth")
+
+    r = client.get("/login")
+    csrf = r.cookies[CSRF_COOKIE_NAME]
+    client.post(
+        "/login",
+        data={
+            CSRF_FORM_FIELD: csrf,
+            "username": "alice",
+            "password": "wrong",
+            "next": "/",
+        },
+    )
+
+    matching = [
+        rec for rec in caplog.records
+        if "auth: login_failed" in rec.message
+        and "alice" in rec.message
+    ]
+    assert matching, (
+        "expected one INFO log line containing 'auth: login_failed' and 'alice'; "
+        f"got: {[r.message for r in caplog.records]}"
+    )
+
+
+def test_successful_login_does_not_log_failed(client, caplog):
+    """Sanity: a successful login does NOT emit the failure log line."""
+    import logging
+    caplog.set_level(logging.INFO, logger="iris.auth")
+
+    r = client.get("/login")
+    csrf = r.cookies[CSRF_COOKIE_NAME]
+    client.post(
+        "/login",
+        data={
+            CSRF_FORM_FIELD: csrf,
+            "username": "alice",
+            "password": "secret",
+            "next": "/",
+        },
+    )
+
+    failures = [r for r in caplog.records if "auth: login_failed" in r.message]
+    assert not failures, f"successful login should not emit login_failed; got {failures}"
