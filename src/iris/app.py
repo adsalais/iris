@@ -12,28 +12,12 @@ from fastapi.templating import Jinja2Templates
 
 TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
-app = FastAPI(title="Iris")
-
 
 async def _signals(request: Request) -> dict[str, Any]:
     return await read_signals(request) or {}
 
 
 Signals = Annotated[dict[str, Any], Depends(_signals)]
-
-
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    return TEMPLATES.TemplateResponse(request, "index.html")
-
-
-@app.get("/api/greet")
-async def greet(signals: Signals) -> DatastarResponse:
-    raw = str(signals.get("name") or "").strip()
-    name = escape(raw) if raw else "stranger"
-    return DatastarResponse(
-        SSE.patch_elements(f'<div id="greeting">Hello, <strong>{name}</strong>!</div>')
-    )
 
 
 async def _clock_stream():
@@ -43,6 +27,26 @@ async def _clock_stream():
         await asyncio.sleep(1)
 
 
-@app.get("/api/clock")
-async def clock() -> DatastarResponse:
-    return DatastarResponse(_clock_stream())
+def build_app() -> FastAPI:
+    app = FastAPI(title="Iris")
+
+    @app.get("/", response_class=HTMLResponse)
+    async def index(request: Request):
+        return TEMPLATES.TemplateResponse(request, "index.html")
+
+    @app.get("/api/greet")
+    async def greet(signals: Signals) -> DatastarResponse:
+        raw = str(signals.get("name") or "").strip()
+        name = escape(raw) if raw else "stranger"
+        return DatastarResponse(
+            SSE.patch_elements(f'<div id="greeting">Hello, <strong>{name}</strong>!</div>')
+        )
+
+    @app.get("/api/clock")
+    async def clock() -> DatastarResponse:
+        return DatastarResponse(_clock_stream())
+
+    return app
+
+
+app = build_app()

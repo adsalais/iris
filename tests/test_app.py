@@ -1,15 +1,7 @@
 import asyncio
 import json
 
-import pytest
-from fastapi.testclient import TestClient
-
-from iris.app import _clock_stream, app
-
-
-@pytest.fixture
-def client():
-    return TestClient(app)
+from iris.app import _clock_stream
 
 
 def test_index_renders(client):
