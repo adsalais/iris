@@ -187,7 +187,7 @@ Groups are passed through verbatim from the IdP (Keycloak `realm_access.roles` /
 
 ### Login flows
 
-- **OAuth (`AUTH_METHOD=oauth`)** — `/login` 302s to the IdP authorize URL with PKCE S256 + state in a signed cookie. The IdP redirects back to `/login/callback`, which exchanges the code, fetches userinfo, and creates a session. `next` is preserved across the round-trip via the same signed cookie.
+- **OAuth (`AUTH_METHOD=oauth`)** — `/login` 302s to the IdP authorize URL with PKCE S256 + state in a signed cookie. The IdP redirects back to `/login/callback`, which exchanges the code, verifies the returned `id_token` (RS256/ES256 signature against the IdP's JWKS, plus `iss`/`aud`/`exp` claims), fetches userinfo, and creates a session. JWKS is fetched once at app construction; rotating IdP keys requires app restart. `next` is preserved across the round-trip via the same signed cookie.
 - **LDAP/Mock (`AUTH_METHOD=ldap`/`mock`)** — `/login` renders an HTML form (Jinja template `templates/auth/ldap_form.html`) with a CSRF token. POST `/login` validates CSRF, calls `provider.authenticate(username, password)`, and creates a session on success. Bad creds redirect back to `/login?error=invalid_credentials&next=...`.
 - **Logout** — `POST /logout` (CSRF-required) deletes the session and clears the cookie. Local-only — does not call the IdP's end-session endpoint.
 
@@ -212,7 +212,6 @@ Provider tests are offline:
 
 - LDAP injection: the `bind_dn_template.format(username=...)` substitution doesn't validate `username` against a charset whitelist. An attacker who knows valid LDAP creds elsewhere in the directory could pollute `User.subject` with controlled DN components and influence the `(member=...)` group filter. Mitigation: regex-validate username before formatting; `ldap3.utils.conv.escape_filter_chars` the DN before substituting into the filter.
 - OIDC discovery is synchronous at app construction — slow IdPs stall startup up to 10s.
-- No `id_token` JWT signature verification — relies on userinfo endpoint's HTTPS+access-token authentication (OIDC-standard but worth tightening if audience/issuer claims need asserting).
 - `InMemorySessionStore` is per-process, which forces `--workers 1` (see "Deployment constraint" above). Swapping to a Redis/DB-backed store would lift the constraint and also survive process restarts.
 
 These are documented inherited from the spec/plan rather than implementation defects.

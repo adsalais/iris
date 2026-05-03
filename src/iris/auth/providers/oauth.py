@@ -7,6 +7,7 @@ import secrets
 from urllib.parse import urlencode
 
 import httpx
+import jwt
 from fastapi import Request, Response
 from fastapi.responses import RedirectResponse
 from itsdangerous import BadSignature, URLSafeTimedSerializer
@@ -41,6 +42,16 @@ class OAuthProvider:
         self.authorize_endpoint: str = doc["authorization_endpoint"]
         self.token_endpoint: str = doc["token_endpoint"]
         self.userinfo_endpoint: str = doc["userinfo_endpoint"]
+        self.jwks_uri: str = doc["jwks_uri"]
+        # Fetch JWKS via our own httpx client so the test transport is honored.
+        # PyJWKClient bypasses httpx (uses urllib), so we pre-load and build a
+        # PyJWKSet manually. Cached at construction time — IdP key rotation
+        # requires app restart (acceptable for v1; revisit if rotation matters).
+        try:
+            jwks_doc = self._client.get(self.jwks_uri).raise_for_status().json()
+            self._jwks = jwt.PyJWKSet.from_dict(jwks_doc)
+        except Exception as exc:
+            raise RuntimeError(f"OIDC JWKS fetch failed for {self.jwks_uri}: {exc}") from exc
 
     async def begin(self, request: Request) -> Response:
         redirect_uri = str(request.url_for("login_callback"))
@@ -113,13 +124,33 @@ class OAuthProvider:
                 },
             )
             r.raise_for_status()
-            access_token = r.json()["access_token"]
+            token_response = r.json()
+            access_token = token_response["access_token"]
+            id_token = token_response.get("id_token")
+            if not id_token:
+                logger.error("auth: token endpoint returned no id_token")
+                raise AuthError("oauth_exchange")
+            try:
+                unverified_header = jwt.get_unverified_header(id_token)
+                signing_key = self._jwks[unverified_header["kid"]].key
+                jwt.decode(
+                    id_token,
+                    signing_key,
+                    algorithms=["RS256", "ES256"],
+                    audience=self._settings.client_id,
+                    issuer=self._settings.issuer_url.rstrip("/"),
+                )
+            except (jwt.InvalidTokenError, KeyError) as exc:
+                logger.exception("auth: id_token verification failed")
+                raise AuthError("oauth_exchange") from exc
             ui = await self._async_client.get(
                 self.userinfo_endpoint,
                 headers={"Authorization": f"Bearer {access_token}"},
             )
             ui.raise_for_status()
             claims = ui.json()
+        except AuthError:
+            raise
         except Exception as exc:
             logger.exception("auth: OAuth code exchange failed")
             raise AuthError("oauth_exchange") from exc
