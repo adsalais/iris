@@ -81,3 +81,101 @@ Routes then take `signals: Signals` and get a guaranteed dict — no None handli
 - `data-text="$expr"`, `data-show="$expr"`, `data-class="{cls: $expr}"`, `data-attr:foo="$expr"`.
 - `data-on:click="..."` (note the colon, not hyphen). Inside the expression, server actions are `@get('/url')`, `@post('/url')`, `@put`, `@delete`, `@patch`.
 - Server SSE events: `datastar-patch-elements` (HTML morph by id; `data: selector`, `data: mode`, `data: elements`) and `datastar-patch-signals` (`data: signals <JSON>`). The SDK's `SSE.patch_elements()` / `SSE.patch_signals()` formats these correctly.
+
+## Authentication
+
+The `iris.auth` package adds session-based authentication to all routes. Public surface:
+
+```python
+from iris.auth import CurrentUser, OptionalCurrentUser, require_group
+```
+
+`CurrentUser` requires a valid session (cookie or `Authorization: Bearer <session-id>`); `OptionalCurrentUser` returns `None` if no session is present. `require_group("admins")` is a dependency factory that 403s if the user isn't in the listed group.
+
+### Configuration
+
+Selected by env var. Per-deployment toggle: only one method is active at a time.
+
+```
+AUTH_METHOD=oauth | ldap | mock
+SESSION_COOKIE_NAME=iris_session
+SESSION_TTL_SECONDS=43200            # 12h, sliding TTL refreshed on each request
+COOKIE_SECURE=true                   # set false for local dev over http
+
+# OAuth (OIDC discovery)
+OIDC_ISSUER_URL=https://keycloak.example.com/realms/iris
+OIDC_CLIENT_ID=iris
+OIDC_CLIENT_SECRET=...
+OIDC_SCOPES=openid profile email groups
+
+# LDAP
+LDAP_URL=ldaps://ldap.example.com:636
+LDAP_BIND_DN_TEMPLATE=uid={username},ou=people,dc=corp,dc=local
+LDAP_GROUP_BASE_DN=ou=groups,dc=corp,dc=local
+
+# Mock (for tests; AUTH_METHOD=mock)
+MOCK_USERNAME=alice
+MOCK_PASSWORD=secret
+MOCK_GROUPS=admins,users
+MOCK_DISPLAY_NAME=Alice
+```
+
+`AuthSettings.from_env()` runs at app construction; missing required vars or unrecognized values fail loudly. `_get_bool` raises on typos (`COOKIE_SECURE=ture` is rejected, not silently false).
+
+### Module map
+
+```
+src/iris/auth/
+├── __init__.py        # re-exports CurrentUser, OptionalCurrentUser, require_group, install, User, UserSession
+├── config.py          # AuthSettings.from_env() + per-method sub-settings
+├── identity.py        # User (frozen+slots), UserSession (mutable for sliding TTL)
+├── sessions.py        # InMemorySessionStore: create / get_and_refresh / delete
+├── exceptions.py      # AuthRequired, AuthForbidden, AuthError + install_exception_handlers
+├── deps.py            # CurrentUser, OptionalCurrentUser, require_group, set_session_store, set_settings
+├── csrf.py            # double-submit CSRF: mint_csrf_token, attach_csrf_cookie, issue_csrf_token, verify_csrf_form
+├── routes.py          # /login, /login/callback, /logout, /api/whoami; install(app)
+└── providers/
+    ├── __init__.py    # build_provider(settings) factory dispatching AUTH_METHOD
+    ├── base.py        # Provider Protocol
+    ├── mock.py        # MockProvider (config-driven creds, returns configured groups)
+    ├── ldap.py        # LDAPProvider (ldap3 bind + group search; tests use MOCK_SYNC)
+    └── oauth.py       # OAuthProvider (OIDC discovery + PKCE + signed-cookie state)
+```
+
+`install(app)` reads env, builds the provider, and wires the auth router + exception handlers + session store into a FastAPI app. Called from `build_app()` in `src/iris/app.py`.
+
+### Authorization model
+
+Groups are passed through verbatim from the IdP (Keycloak `realm_access.roles` / `groups` claim, LDAP `member` attribute on group entries). Routes use the IdP's group names directly: `Depends(require_group("admins"))`. Operators must keep group names consistent across deployments if a route is meant to work under both OAuth and LDAP.
+
+### Login flows
+
+- **OAuth (`AUTH_METHOD=oauth`)** — `/login` 302s to the IdP authorize URL with PKCE S256 + state in a signed cookie. The IdP redirects back to `/login/callback`, which exchanges the code, fetches userinfo, and creates a session. `next` is preserved across the round-trip via the same signed cookie.
+- **LDAP/Mock (`AUTH_METHOD=ldap`/`mock`)** — `/login` renders an HTML form (Jinja template `templates/auth/ldap_form.html`) with a CSRF token. POST `/login` validates CSRF, calls `provider.authenticate(username, password)`, and creates a session on success. Bad creds redirect back to `/login?error=invalid_credentials&next=...`.
+- **Logout** — `POST /logout` (CSRF-required) deletes the session and clears the cookie. Local-only — does not call the IdP's end-session endpoint.
+
+### Tests
+
+`tests/conftest.py` sets `AUTH_METHOD=mock` (and the mock creds) at MODULE scope (via `os.environ.setdefault`) so `iris.app:app` can be imported by the suite without arranging env in a fixture. Available fixtures:
+
+- `client` — unauthenticated `TestClient`. Use for tests that exercise the login flow itself, error pages, etc.
+- `authed_client` — pre-creates a session in the in-memory store and attaches the cookie. Use for feature tests of routes that just need "a logged-in user".
+
+Provider tests are offline:
+- LDAP: `ldap3.MOCK_SYNC` strategy with an in-memory directory (`tests/auth/test_provider_ldap.py`).
+- OAuth: `httpx.MockTransport` mocking discovery / token / userinfo (`tests/auth/test_provider_oauth.py`).
+
+### Open redirect protection
+
+`_safe_next(url)` accepts only same-origin relative paths. Rejects empty, non-`/`-prefixed, `//`-prefixed (protocol-relative), absolute URLs, and backslash-containing strings (browsers normalize `\` → `/` before same-origin checks). Applied at `POST /login` and `GET /login/callback`. Failure-redirect URLs are constructed via `urllib.parse.urlencode` so error tokens or path components can't break query parsing.
+
+### Open security follow-ups (v1.1)
+
+- LDAP injection: the `bind_dn_template.format(username=...)` substitution doesn't validate `username` against a charset whitelist. An attacker who knows valid LDAP creds elsewhere in the directory could pollute `User.subject` with controlled DN components and influence the `(member=...)` group filter. Mitigation: regex-validate username before formatting; `ldap3.utils.conv.escape_filter_chars` the DN before substituting into the filter.
+- LDAP exception classification uses substring matching on the exception message (locale-dependent). Switch to typed `ldap3.core.exceptions.LDAPInvalidCredentialsResult` etc.
+- LDAP TLS: `LDAPSettings` has no TLS-config fields (StartTLS / CA cert path). Plaintext `LDAP_URL=ldap://...` sends credentials in cleartext.
+- OAuth state cookie's `secure=False` is hardcoded. Should track `cookie_secure` from settings.
+- OIDC discovery is synchronous at app construction — slow IdPs stall startup up to 10s.
+- No `id_token` JWT signature verification — relies on userinfo endpoint's HTTPS+access-token authentication (OIDC-standard but worth tightening if audience/issuer claims need asserting).
+
+These are documented inherited from the spec/plan rather than implementation defects.
