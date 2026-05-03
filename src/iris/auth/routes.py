@@ -127,6 +127,9 @@ def install(app: FastAPI) -> None:
     store = InMemorySessionStore(ttl_seconds=settings.ttl_seconds)
     provider = build_provider(settings)
 
+    from iris.app import TEMPLATES
+    app.state.templates = TEMPLATES
+
     set_session_store(app, store)
     set_settings(
         app, cookie_name=settings.cookie_name, cookie_secure=settings.cookie_secure

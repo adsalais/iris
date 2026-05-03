@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 
 
 class AuthRequired(Exception):
@@ -44,12 +44,11 @@ def install_exception_handlers(app: FastAPI, *, cookie_name: str) -> None:
     @app.exception_handler(AuthForbidden)
     async def _on_auth_forbidden(request: Request, exc: AuthForbidden) -> Response:
         if _wants_html(request):
-            body = (
-                "<!doctype html><html><body>"
-                f"<h1>Forbidden</h1>"
-                f"<p>This page requires one of: {', '.join(exc.needed)}.</p>"
-                f"<p>You have: {', '.join(exc.have) or '(no groups)'}.</p>"
-                "</body></html>"
+            templates = request.app.state.templates
+            return templates.TemplateResponse(
+                request,
+                "auth/forbidden.html",
+                {"needed": list(exc.needed), "have": list(exc.have)},
+                status_code=403,
             )
-            return HTMLResponse(body, status_code=403)
         return Response(status_code=403)

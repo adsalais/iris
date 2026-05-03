@@ -10,6 +10,8 @@ from iris.auth.exceptions import (
 
 def _build_app() -> FastAPI:
     app = FastAPI()
+    from iris.app import TEMPLATES
+    app.state.templates = TEMPLATES
 
     async def needs_auth():
         raise AuthRequired()

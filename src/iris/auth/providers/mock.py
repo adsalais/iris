@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import html
 import hmac
 
 from fastapi import Request, Response
-from fastapi.responses import HTMLResponse
 
 from iris.auth.config import MockSettings
 from iris.auth.csrf import CSRF_FORM_FIELD, issue_csrf_token
@@ -12,38 +10,36 @@ from iris.auth.exceptions import AuthError
 from iris.auth.identity import User
 
 
-_FORM_HTML = """\
-<!doctype html><html><body>
-<h1>Sign in</h1>
-{error}
-<form method="post" action="/login">
-  <input type="hidden" name="{csrf_field}" value="{csrf}">
-  <input type="hidden" name="next" value="{next_url}">
-  <label>Username <input name="username" required></label>
-  <label>Password <input type="password" name="password" required></label>
-  <button type="submit">Sign in</button>
-</form>
-</body></html>
-"""
-
-
 class MockProvider:
     def __init__(self, settings: MockSettings) -> None:
         self._settings = settings
 
     async def begin(self, request: Request) -> Response:
-        response = HTMLResponse("")  # body filled below after issuing token
+        templates = request.app.state.templates
+        next_url = request.query_params.get("next", "/")
+        error = request.query_params.get("error")
+        error_message = (
+            {
+                "invalid_credentials": "Invalid username or password.",
+                "csrf_mismatch": "Session expired, please reload and try again.",
+            }.get(error or "", "An error occurred.")
+            if error
+            else ""
+        )
+        # Render with a placeholder token so we can issue the cookie afterwards.
+        response = templates.TemplateResponse(
+            request,
+            "auth/ldap_form.html",
+            {
+                "csrf_field": CSRF_FORM_FIELD,
+                "csrf_token": "PLACEHOLDER",
+                "next_url": next_url,
+                "error": bool(error),
+                "error_message": error_message,
+            },
+        )
         token = issue_csrf_token(request, response)
-        next_url = html.escape(request.query_params.get("next", "/"), quote=True)
-        error = ""
-        if err := request.query_params.get("error"):
-            error = f'<p style="color:red">Error: {html.escape(err)}</p>'
-        response.body = _FORM_HTML.format(
-            csrf=token,
-            csrf_field=CSRF_FORM_FIELD,
-            next_url=next_url,
-            error=error,
-        ).encode()
+        response.body = response.body.replace(b"PLACEHOLDER", token.encode())
         return response
 
     async def complete(self, request: Request) -> User:

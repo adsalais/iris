@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Forbidden &mdash; Iris</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; }
+    code { background: #f0f0f0; padding: 0.1rem 0.3rem; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>Forbidden</h1>
+  <p>This page requires one of: {% for g in needed %}<code>{{ g }}</code>{{ ", " if not loop.last }}{% endfor %}.</p>
+  <p>You have: {% if have %}{% for g in have %}<code>{{ g }}</code>{{ ", " if not loop.last }}{% endfor %}{% else %}(no groups){% endif %}.</p>
+  <p><a href="/">Back home</a></p>
+</body>
+</html>
