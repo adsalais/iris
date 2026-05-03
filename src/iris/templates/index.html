@@ -22,4 +22,15 @@
   <button data-on:click="@get('/api/greet')">Greet me</button>
   <div id="greeting"></div>
 </section>
+
+<section data-signals="{now: ''}">
+  <h2>Example 3 &mdash; Server clock (long-lived SSE stream)</h2>
+  <p>One HTTP request, many events. The handler is an
+     <code>async def</code> generator that <code>yield</code>s a
+     <code>datastar-patch-signals</code> event every second; each tick patches
+     the <code>$now</code> signal, and any <code>data-text="$now"</code> on the
+     page rerenders. Click <strong>Start clock</strong> to subscribe.</p>
+  <button data-on:click="@get('/api/clock')">Start clock</button>
+  <p>Server time (UTC): <strong data-text="$now || '—'"></strong></p>
+</section>
 {% endblock %}

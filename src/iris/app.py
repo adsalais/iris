@@ -1,3 +1,5 @@
+import asyncio
+from datetime import UTC, datetime
 from html import escape
 from pathlib import Path
 from typing import Annotated, Any
@@ -32,3 +34,15 @@ async def greet(signals: Signals) -> DatastarResponse:
     return DatastarResponse(
         SSE.patch_elements(f'<div id="greeting">Hello, <strong>{name}</strong>!</div>')
     )
+
+
+async def _clock_stream():
+    while True:
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        yield SSE.patch_signals({"now": now})
+        await asyncio.sleep(1)
+
+
+@app.get("/api/clock")
+async def clock() -> DatastarResponse:
+    return DatastarResponse(_clock_stream())

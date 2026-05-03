@@ -1,9 +1,10 @@
+import asyncio
 import json
 
 import pytest
 from fastapi.testclient import TestClient
 
-from iris.app import app
+from iris.app import _clock_stream, app
 
 
 @pytest.fixture
@@ -49,3 +50,16 @@ def test_greet_escapes_html_in_name(client):
     )
     assert "<script>alert(1)</script>" not in r.text
     assert "&lt;script&gt;" in r.text
+
+
+def test_clock_stream_yields_signal_patch():
+    async def first_tick():
+        agen = _clock_stream()
+        try:
+            return await agen.__anext__()
+        finally:
+            await agen.aclose()
+
+    event = asyncio.run(first_tick())
+    assert event.startswith("event: datastar-patch-signals")
+    assert '"now":' in event
