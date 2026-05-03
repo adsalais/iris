@@ -19,6 +19,21 @@ class RoleMappingLoader:
          - On failure: if a previously good mapping exists, log ERROR and
            return the cached one; otherwise re-raise (first-load failure
            must propagate so install() can fail loudly at boot).
+
+    Concurrency: a `threading.Lock` serializes reloads. The fast path
+    (mtime unchanged) never takes the lock, so steady-state requests do
+    not contend. On a reload event, concurrent callers block briefly while
+    one thread re-parses; the parse is sub-millisecond for the YAML files
+    this loader is designed for, but this *can* block the asyncio event
+    loop momentarily under high reload contention. Acceptable at the
+    project's `--workers 1` / ≤20-user deploy profile; revisit (e.g., via
+    `asyncio.Lock` + async `get()`, or `run_in_threadpool`) if the file
+    grows or the filesystem becomes slow.
+
+    Change detection: invalidation relies solely on `st_mtime_ns`. An
+    operator who replaces the file while preserving its mtime (e.g.,
+    `cp -p`, or some atomic-rename tooling) will NOT trigger a reload.
+    Edits via a normal text editor always change mtime.
     """
 
     def __init__(self, path: Path) -> None:

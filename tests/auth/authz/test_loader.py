@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 
 import pytest
@@ -27,7 +28,6 @@ def _write(path, text):
     # consecutive writes within the same second can leave mtime unchanged.
     # Bump it explicitly.
     new_t = time.time() + 1
-    import os
     os.utime(path, (new_t, new_t))
 
 
@@ -55,6 +55,11 @@ def test_cached_read_does_not_reparse(tmp_path, monkeypatch):
         calls["n"] += 1
         return real_parse(text)
 
+    # The spy works because loader.py calls `parse(...)` via the module-global
+    # reference imported at the top of loader.py. If a future refactor inlines
+    # the import or captures `parse` at definition time, this patch becomes a
+    # no-op. The `second is first` assertion is the primary invariant; the
+    # call counter is supplementary.
     monkeypatch.setattr(loader_mod, "parse", counting_parse)
 
     second = loader.get()
@@ -103,6 +108,7 @@ def test_deleted_file_after_good_load_returns_last_good(tmp_path, caplog):
         second = loader.get()
 
     assert second is first
+    assert any("authz" in rec.message.lower() or "role" in rec.message.lower() for rec in caplog.records)
 
 
 def test_first_load_failure_raises(tmp_path):
