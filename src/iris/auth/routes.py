@@ -55,6 +55,28 @@ def build_auth_router(
     router = APIRouter()
     login_bucket = TokenBucket(capacity=10, refill_per_second=0.2)
 
+    async def _finalize_login_redirect(
+        *, user, target: str, method: str
+    ) -> RedirectResponse:
+        session = await store.create(user)
+        logger.info(
+            "auth: login user=%s subject=%s method=%s groups=%s",
+            user.display_name,
+            user.subject,
+            method,
+            list(user.groups),
+        )
+        response = RedirectResponse(target, status_code=302)
+        _set_session_cookie(
+            response,
+            name=cookie_name,
+            sid=session.id,
+            ttl=ttl_seconds,
+            secure=cookie_secure,
+        )
+        delete_csrf_cookie(response)
+        return response
+
     @router.get("/login")
     async def login_get(request: Request) -> Response:
         return await provider.begin(request)
@@ -95,23 +117,7 @@ def build_auth_router(
                 f"/login?{urlencode({'error': err.token, 'next': safe_next})}",
                 status_code=302,
             )
-        session = await store.create(user)
-        logger.info(
-            "auth: login user=%s subject=%s method=form groups=%s",
-            user.display_name,
-            user.subject,
-            list(user.groups),
-        )
-        response = RedirectResponse(safe_next, status_code=302)
-        _set_session_cookie(
-            response,
-            name=cookie_name,
-            sid=session.id,
-            ttl=ttl_seconds,
-            secure=cookie_secure,
-        )
-        delete_csrf_cookie(response)
-        return response
+        return await _finalize_login_redirect(user=user, target=safe_next, method="form")
 
     @router.get("/login/callback", name="login_callback")
     async def login_callback(request: Request) -> Response:
@@ -121,23 +127,8 @@ def build_auth_router(
             user, next_url = await provider.complete(request)
         except AuthError as err:
             return RedirectResponse(f"/login?error={err.token}", status_code=302)
-        session = await store.create(user)
-        logger.info(
-            "auth: login user=%s subject=%s method=oauth groups=%s",
-            user.display_name,
-            user.subject,
-            list(user.groups),
-        )
         safe_next = _safe_next(next_url)
-        response = RedirectResponse(safe_next, status_code=302)
-        _set_session_cookie(
-            response,
-            name=cookie_name,
-            sid=session.id,
-            ttl=ttl_seconds,
-            secure=cookie_secure,
-        )
-        delete_csrf_cookie(response)
+        response = await _finalize_login_redirect(user=user, target=safe_next, method="oauth")
         response.delete_cookie(OAUTH_STATE_COOKIE)
         return response
 
