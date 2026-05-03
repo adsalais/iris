@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import html
 import hmac
 
 from fastapi import Request, Response
 from fastapi.responses import HTMLResponse
 
 from iris.auth.config import MockSettings
-from iris.auth.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD, issue_csrf_token
+from iris.auth.csrf import CSRF_FORM_FIELD, issue_csrf_token
 from iris.auth.exceptions import AuthError
 from iris.auth.identity import User
 
@@ -33,10 +34,10 @@ class MockProvider:
     async def begin(self, request: Request) -> Response:
         response = HTMLResponse("")  # body filled below after issuing token
         token = issue_csrf_token(request, response)
-        next_url = request.query_params.get("next", "/")
+        next_url = html.escape(request.query_params.get("next", "/"), quote=True)
         error = ""
         if err := request.query_params.get("error"):
-            error = f'<p style="color:red">Error: {err}</p>'
+            error = f'<p style="color:red">Error: {html.escape(err)}</p>'
         response.body = _FORM_HTML.format(
             csrf=token,
             csrf_field=CSRF_FORM_FIELD,
