@@ -12,6 +12,7 @@ def test_index_renders(authed_client):
     assert "Alice" in r.text
     assert 'data-signals="{count: 0}"' in r.text
     assert 'data-on:click="@get(\'/api/greet\')"' in r.text
+    assert "iris_csrf" in r.cookies  # guards the explicit attach_csrf_cookie call in app.py
 
 
 def test_greet_default_returns_sse(authed_client):

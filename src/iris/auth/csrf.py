@@ -33,6 +33,14 @@ def issue_csrf_token(request: Request, response: Response) -> str:
 
     Used by callers that don't need to embed the token in the rendered body
     (e.g., GET endpoints that bootstrap the cookie without a form).
+
+    WARNING: Only safe to use as `Depends(issue_csrf_token)` on routes that
+    return a non-Response body (dict, Pydantic model, str, etc.). FastAPI
+    only merges cookies from the dep-injected `Response` parameter when it
+    builds the final Response itself. For routes that return a Response
+    directly (HTMLResponse, RedirectResponse, TemplateResponse, ...), call
+    `mint_csrf_token(request)` + `attach_csrf_cookie(request, response, token)`
+    on the actual response — see `iris.app.index` for the pattern.
     """
     token = mint_csrf_token(request)
     attach_csrf_cookie(request, response, token)
