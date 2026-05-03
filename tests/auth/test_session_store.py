@@ -9,7 +9,7 @@ from iris.auth.sessions import InMemorySessionStore
 
 @pytest.fixture
 def user() -> User:
-    return User(subject="alice", display_name="Alice", groups=("admins",))
+    return User(subject="alice", username="alice", display_name="Alice", groups=("admins",))
 
 
 def test_create_returns_session_with_id(user):
@@ -111,7 +111,7 @@ def test_create_evicts_oldest_when_cap_exceeded(user):
 def test_cap_is_per_user_not_global(user):
     """Different subjects don't share the cap."""
     store = InMemorySessionStore(ttl_seconds=60, absolute_ttl_seconds=3600, max_per_user=2)
-    other = User(subject="bob", display_name="Bob", groups=())
+    other = User(subject="bob", username="bob", display_name="Bob", groups=())
     a1 = asyncio.run(store.create(user))
     a2 = asyncio.run(store.create(user))
     b1 = asyncio.run(store.create(other))

@@ -29,7 +29,7 @@ def authed_client(app):
 
     c = TestClient(app)
     store = app.state.auth_session_store
-    user = User(subject="mock:alice", display_name="Alice", groups=("admins", "users"))
+    user = User(subject="mock:alice", username="alice", display_name="Alice", groups=("admins", "users"))
     session = asyncio.run(store.create(user))
     c.cookies.set("iris_session", session.id)
     return c

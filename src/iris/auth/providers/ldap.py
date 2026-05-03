@@ -67,7 +67,12 @@ class LDAPProvider:
             logger.exception("auth: LDAP group/profile read failed")
             raise AuthError("ldap_groups")
 
-        return User(subject=bind_dn, display_name=display_name, groups=tuple(groups))
+        return User(
+            subject=bind_dn,
+            username=username,
+            display_name=display_name,
+            groups=tuple(groups),
+        )
 
     def _open_connection(self, bind_dn: str, password: str) -> Connection:
         if self._connection_factory is not None:

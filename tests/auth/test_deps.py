@@ -59,6 +59,7 @@ def _build_app() -> tuple[FastAPI, InMemorySessionStore]:
 def _seed(store: InMemorySessionStore, **overrides) -> str:
     user = User(
         subject=overrides.get("subject", "alice"),
+        username=overrides.get("username", overrides.get("subject", "alice")),
         display_name=overrides.get("display_name", "Alice"),
         groups=overrides.get("groups", ("admins",)),
     )

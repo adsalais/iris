@@ -208,9 +208,12 @@ class OAuthProvider:
             logger.warning(
                 "auth: OAuth userinfo had no `groups` claim — check IdP client mapper"
             )
+        sub = str(claims["sub"])
+        username = str(claims.get("preferred_username") or sub)
         return User(
-            subject=str(claims["sub"]),
-            display_name=str(claims.get("name") or claims.get("preferred_username") or claims["sub"]),
+            subject=sub,
+            username=username,
+            display_name=str(claims.get("name") or username),
             groups=groups,
         )
 
