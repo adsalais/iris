@@ -122,6 +122,10 @@ MOCK_DISPLAY_NAME=Alice
 
 `AuthSettings.from_env()` runs at app construction; missing required vars or unrecognized values fail loudly. `_get_bool` raises on typos (`COOKIE_SECURE=ture` is rejected, not silently false).
 
+### Deployment constraint: single worker only
+
+`InMemorySessionStore` is per-process: each uvicorn worker has its own store. Running with `uvicorn --workers >1` will silently break sessions (a request's cookie may hit a worker that doesn't know the session, manifesting as a logged-in user being redirected to `/login`). For ≤20 users this is fine — keep the deploy at `--workers 1`. To go beyond, swap the store for a Redis/DB-backed implementation; the API surface is small enough (`create` / `get_and_refresh` / `delete`) that it's a focused change.
+
 ### Module map
 
 ```
@@ -177,5 +181,6 @@ Provider tests are offline:
 - OAuth state cookie's `secure=False` is hardcoded. Should track `cookie_secure` from settings.
 - OIDC discovery is synchronous at app construction — slow IdPs stall startup up to 10s.
 - No `id_token` JWT signature verification — relies on userinfo endpoint's HTTPS+access-token authentication (OIDC-standard but worth tightening if audience/issuer claims need asserting).
+- `InMemorySessionStore` is per-process, which forces `--workers 1` (see "Deployment constraint" above). Swapping to a Redis/DB-backed store would lift the constraint and also survive process restarts.
 
 These are documented inherited from the spec/plan rather than implementation defects.
