@@ -1,12 +1,12 @@
-import json
-
 import httpx
+import jwt as pyjwt
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from iris.auth.config import OIDCSettings
 from iris.auth.exceptions import AuthError
 from iris.auth.providers.oauth import OAuthProvider
-
 
 ISSUER = "https://kc.example/realms/iris"
 DISCOVERY = f"{ISSUER}/.well-known/openid-configuration"
@@ -54,6 +54,7 @@ def test_first_property_access_triggers_discovery(provider):
 
 def test_discovery_failure_surfaces_oauth_discovery_token(settings):
     """If discovery fails, the failure surfaces as AuthError('oauth_discovery')."""
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)
 
@@ -65,7 +66,9 @@ def test_discovery_failure_surfaces_oauth_discovery_token(settings):
 
 
 def test_build_authorize_url_includes_state_and_pkce(provider):
-    url, state, verifier = provider.build_authorize_url(redirect_uri="http://localhost/login/callback")
+    url, state, verifier = provider.build_authorize_url(
+        redirect_uri="http://localhost/login/callback"
+    )
     assert url.startswith(AUTHZ)
     assert "client_id=iris" in url
     assert f"state={state}" in url
@@ -97,14 +100,20 @@ def test_oauth_state_cookie_follows_cookie_secure(provider):
         app = FastAPI()
         app.state.auth_cookie_secure = cookie_secure
 
-        @app.get("/login", name="login_callback")  # name needed for url_for inside begin()
+        @app.get(
+            "/login", name="login_callback"
+        )  # name needed for url_for inside begin()
         async def login(request: Request):
             return await provider.begin(request)
 
         r = TestClient(app).get("/login", follow_redirects=False)
         assert r.status_code == 302
         # The set-cookie header for oauth_state should reflect cookie_secure
-        set_cookies = r.headers.get_list("set-cookie") if hasattr(r.headers, "get_list") else [r.headers.get("set-cookie", "")]
+        set_cookies = (
+            r.headers.get_list("set-cookie")
+            if hasattr(r.headers, "get_list")
+            else [r.headers.get("set-cookie", "")]
+        )
         oauth_state_cookie = next(
             (c for c in set_cookies if c.lower().startswith("oauth_state=")),
             "",
@@ -134,12 +143,6 @@ def test_oauth_state_cookie_defaults_secure_when_app_state_missing(provider):
     assert "secure" in set_cookie  # paranoid default
 
 
-# JWT/JWKS test fixtures
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-import jwt as pyjwt
-import json as _json
-
 JWKS_URI = f"{ISSUER}/protocol/openid-connect/certs"
 
 
@@ -153,9 +156,11 @@ def _generate_keypair():
     public_numbers = private_key.public_key().public_numbers()
     # Build JWKS jwk entry (n, e in unsigned base64url)
     import base64
+
     def b64url_uint(n: int) -> str:
         b = n.to_bytes((n.bit_length() + 7) // 8, "big")
         return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
     jwk = {
         "kty": "RSA",
         "use": "sig",
@@ -170,8 +175,11 @@ def _generate_keypair():
 _PRIVATE_PEM, _PUBLIC_JWK = _generate_keypair()
 
 
-def _make_id_token(*, sub="abc-123", iss=ISSUER, aud="iris", exp_offset_seconds=300, kid="test-key-1"):
+def _make_id_token(
+    *, sub="abc-123", iss=ISSUER, aud="iris", exp_offset_seconds=300, kid="test-key-1"
+):
     import time
+
     now = int(time.time())
     payload = {
         "sub": sub,
@@ -239,6 +247,7 @@ def signing_provider(settings):
 def test_exchange_code_accepts_valid_id_token(signing_provider):
     """A properly-signed id_token from the IdP's JWKS is accepted."""
     import asyncio
+
     user = asyncio.run(
         signing_provider.exchange_code(
             code="dummy",
@@ -255,20 +264,30 @@ def test_exchange_code_rejects_missing_id_token(settings):
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("openid-configuration"):
-            return httpx.Response(200, json={
-                "issuer": ISSUER, "authorization_endpoint": AUTHZ, "token_endpoint": TOKEN,
-                "userinfo_endpoint": USERINFO, "jwks_uri": JWKS_URI,
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "issuer": ISSUER,
+                    "authorization_endpoint": AUTHZ,
+                    "token_endpoint": TOKEN,
+                    "userinfo_endpoint": USERINFO,
+                    "jwks_uri": JWKS_URI,
+                },
+            )
         if str(request.url) == JWKS_URI:
             return httpx.Response(200, json={"keys": [_PUBLIC_JWK]})
         if str(request.url) == TOKEN:
-            return httpx.Response(200, json={"access_token": "fake", "token_type": "Bearer"})
+            return httpx.Response(
+                200, json={"access_token": "fake", "token_type": "Bearer"}
+            )
         return httpx.Response(404)
 
     provider = OAuthProvider(settings, _http_transport=httpx.MockTransport(handler))
     with pytest.raises(AuthError) as exc:
         asyncio.run(
-            provider.exchange_code(code="x", code_verifier="v", redirect_uri="http://x/cb")
+            provider.exchange_code(
+                code="x", code_verifier="v", redirect_uri="http://x/cb"
+            )
         )
     assert exc.value.token == "oauth_exchange"
 
@@ -276,11 +295,16 @@ def test_exchange_code_rejects_missing_id_token(settings):
 def test_exchange_code_rejects_id_token_with_wrong_audience(settings):
     """An id_token whose aud doesn't match client_id is rejected."""
     import asyncio
+
     bad_token = _make_id_token(aud="some-other-client")
-    provider = OAuthProvider(settings, _http_transport=_signing_mock_transport(id_token=bad_token))
+    provider = OAuthProvider(
+        settings, _http_transport=_signing_mock_transport(id_token=bad_token)
+    )
     with pytest.raises(AuthError) as exc:
         asyncio.run(
-            provider.exchange_code(code="x", code_verifier="v", redirect_uri="http://x/cb")
+            provider.exchange_code(
+                code="x", code_verifier="v", redirect_uri="http://x/cb"
+            )
         )
     assert exc.value.token == "oauth_exchange"
 
@@ -288,11 +312,16 @@ def test_exchange_code_rejects_id_token_with_wrong_audience(settings):
 def test_exchange_code_rejects_expired_id_token(settings):
     """An id_token whose exp is past is rejected."""
     import asyncio
+
     expired = _make_id_token(exp_offset_seconds=-60)  # expired 60s ago
-    provider = OAuthProvider(settings, _http_transport=_signing_mock_transport(id_token=expired))
+    provider = OAuthProvider(
+        settings, _http_transport=_signing_mock_transport(id_token=expired)
+    )
     with pytest.raises(AuthError) as exc:
         asyncio.run(
-            provider.exchange_code(code="x", code_verifier="v", redirect_uri="http://x/cb")
+            provider.exchange_code(
+                code="x", code_verifier="v", redirect_uri="http://x/cb"
+            )
         )
     assert exc.value.token == "oauth_exchange"
 
@@ -300,6 +329,7 @@ def test_exchange_code_rejects_expired_id_token(settings):
 def test_oauth_provider_close_is_idempotent(provider):
     """close() can be called more than once without raising."""
     import asyncio
+
     asyncio.run(provider.close())
     asyncio.run(provider.close())  # second call should also not raise
 
@@ -307,18 +337,24 @@ def test_oauth_provider_close_is_idempotent(provider):
 def test_exchange_code_rejects_id_token_signed_with_wrong_key(settings):
     """An id_token signed with a different RSA key (not in the JWKS) is rejected."""
     import asyncio
+
     other_pem, _other_jwk = _generate_keypair()
     forged = pyjwt.encode(
-        {"sub": "abc-123", "iss": ISSUER, "aud": "iris",
-         "iat": 0, "exp": 9999999999},
+        {"sub": "abc-123", "iss": ISSUER, "aud": "iris", "iat": 0, "exp": 9999999999},
         other_pem,
         algorithm="RS256",
-        headers={"kid": "test-key-1"},  # claim same kid, but signed with a different key
+        headers={
+            "kid": "test-key-1"
+        },  # claim same kid, but signed with a different key
     )
-    provider = OAuthProvider(settings, _http_transport=_signing_mock_transport(id_token=forged))
+    provider = OAuthProvider(
+        settings, _http_transport=_signing_mock_transport(id_token=forged)
+    )
     with pytest.raises(AuthError) as exc:
         asyncio.run(
-            provider.exchange_code(code="x", code_verifier="v", redirect_uri="http://x/cb")
+            provider.exchange_code(
+                code="x", code_verifier="v", redirect_uri="http://x/cb"
+            )
         )
     assert exc.value.token == "oauth_exchange"
 

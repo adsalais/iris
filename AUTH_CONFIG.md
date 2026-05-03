@@ -7,6 +7,8 @@ Practical guide to configuring authentication and authorization in **iris**, inc
 3. How to run a local **OpenLDAP** container for the LDAP provider.
 4. How to run a local **Keycloak** container for the OAuth/OIDC provider.
 5. How to point iris at each backend.
+6. How each provider's login flow actually works on the wire (ASCII sequence diagrams).
+7. The security model — what iris protects, how, and the residual risks.
 
 This document is example-driven and copy-paste ready. For internal design notes, see `CLAUDE.md`.
 
@@ -466,7 +468,244 @@ Same `authz.yaml` works — alice's `admins` group resolves to the `admin` role 
 
 ---
 
-## 6. Troubleshooting cheatsheet
+## 6. Connection flows
+
+All three providers share the same shape: an unauthenticated request hits a protected route, gets a 302 to `/login?next=...`, and ends up with an `iris_session` cookie. What differs is how the credential check happens between `GET /login` and the moment the session is created.
+
+### 6.1 Mock provider
+
+A single round-trip — the form POST is itself the credential check.
+
+```
+Browser                       iris (FastAPI)
+   │                              │
+   │ GET /admin                   │
+   ├─────────────────────────────▶│  AuthRequired
+   │ 302 /login?next=/admin       │
+   │◀─────────────────────────────┤
+   │ GET /login?next=/admin       │
+   ├─────────────────────────────▶│  MockProvider.begin
+   │ 200 (HTML form               │  → render form, mint csrf
+   │      Set-Cookie: iris_csrf)  │
+   │◀─────────────────────────────┤
+   │ POST /login                  │
+   │   form: username,password,   │
+   │         csrf_token, next     │
+   │   cookie: iris_csrf          │
+   ├─────────────────────────────▶│  TokenBucket.check (10 burst, 0.2/s)
+   │                              │  verify_csrf_form
+   │                              │  MockProvider.authenticate:
+   │                              │    constant-time compare to
+   │                              │    MOCK_USERNAME / MOCK_PASSWORD
+   │                              │  → User(groups=MOCK_GROUPS)
+   │                              │  store.create(user)
+   │ 302 /admin                   │
+   │   Set-Cookie: iris_session   │
+   │   Set-Cookie: iris_csrf=     │
+   │     (cleared on success)     │
+   │◀─────────────────────────────┤
+   │ GET /admin                   │
+   │   cookie: iris_session       │
+   ├─────────────────────────────▶│  resolve session → require_role
+   │ 200                          │
+   │◀─────────────────────────────┤
+```
+
+### 6.2 LDAP provider
+
+The LDAP **bind** is the password check; iris never re-handles the password. Group membership is then resolved with a portable `(member=<bind_dn>)` search.
+
+```
+Browser              iris                          OpenLDAP
+   │                  │                                │
+   │ GET /login       │                                │
+   ├─────────────────▶│  render form + csrf            │
+   │                  │                                │
+   │ POST /login      │                                │
+   │  user,pass,csrf  │                                │
+   ├─────────────────▶│  verify_csrf_form              │
+   │                  │  username regex check          │
+   │                  │  bind_dn = LDAP_BIND_DN_       │
+   │                  │    TEMPLATE.format(username)   │
+   │                  ├──── BIND bind_dn,password ────▶│
+   │                  │                                │  verify password
+   │                  │◀──── BindResult: OK ───────────┤
+   │                  │                                │
+   │                  ├──── SEARCH bind_dn ───────────▶│  read cn (display name)
+   │                  │◀──── entry ────────────────────┤
+   │                  │                                │
+   │                  ├──── SEARCH GROUP_BASE_DN ─────▶│
+   │                  │  filter:                       │
+   │                  │   (member=<escaped bind_dn>)   │
+   │                  │  attrs: [cn]                   │
+   │                  │◀──── group cns ────────────────┤
+   │                  │                                │
+   │                  │  User(subject=bind_dn,         │
+   │                  │       username=<form>,         │
+   │                  │       groups=cns)              │
+   │                  │  store.create(user)            │
+   │ 302 next         │                                │
+   │  Set-Cookie:     │                                │
+   │    iris_session  │                                │
+   │◀─────────────────┤                                │
+```
+
+Bad password → `LDAPInvalidCredentialsResult` → 401 + redirect to `/login?error=invalid_credentials`. Server unreachable → `ldap_unreachable` token. Group read failure after a successful bind → `ldap_groups` (signals "your password worked but we can't list your groups; see an admin").
+
+### 6.3 OAuth / OIDC provider
+
+Three-leg authorization-code flow with PKCE S256 and CSRF state. iris keeps no server-side state between `/login` and `/login/callback` — the verifier travels in a signed cookie.
+
+```
+Browser                iris                       Keycloak
+   │                    │                            │
+   │ GET /login         │                            │
+   ├───────────────────▶│  OAuthProvider.begin       │
+   │                    │  _ensure_discovered:       │
+   │                    ├──── GET .well-known ─────▶ │
+   │                    │◀──── doc + jwks_uri ────── │
+   │                    ├──── GET jwks_uri ────────▶ │
+   │                    │◀──── JWKS ─────────────────│
+   │                    │  (cached for process life) │
+   │                    │                            │
+   │                    │  state    = random(16)     │
+   │                    │  verifier = random(64)     │
+   │                    │  challenge= S256(verifier) │
+   │                    │  sign {state,verifier,next}│
+   │                    │    → oauth_state cookie    │
+   │ 302 <authorize>?   │                            │
+   │  client_id,state,  │                            │
+   │  code_challenge,…  │                            │
+   │  Set-Cookie:       │                            │
+   │    oauth_state     │                            │
+   │◀───────────────────┤                            │
+   │                    │                            │
+   │ GET <authorize>… ──────────────────────────────▶│
+   │                    │                            │  user signs in
+   │ 302 /login/callback?code=...&state=...          │
+   │◀────────────────────────────────────────────────│
+   │                    │                            │
+   │ GET /login/callback│                            │
+   │   ?code,state      │                            │
+   │   cookie:          │                            │
+   │     oauth_state    │                            │
+   ├───────────────────▶│  OAuthProvider.complete    │
+   │                    │  unsign oauth_state cookie │
+   │                    │  state ?= query.state      │
+   │                    │                            │
+   │                    ├──── POST <token> ─────────▶│
+   │                    │  grant_type=authorization_ │
+   │                    │    code, code, verifier,   │
+   │                    │    client_id, secret       │
+   │                    │◀──── {access_token,        │
+   │                    │       id_token} ───────────│
+   │                    │                            │
+   │                    │  verify id_token:          │
+   │                    │   sig vs JWKS[kid]         │
+   │                    │   iss, aud=client_id, exp  │
+   │                    │                            │
+   │                    ├──── GET <userinfo> ───────▶│
+   │                    │   Authorization: Bearer    │
+   │                    │◀──── {sub, name,           │
+   │                    │       preferred_username,  │
+   │                    │       groups[…]} ──────────│
+   │                    │                            │
+   │                    │  User(subject=sub,         │
+   │                    │       username=pref_user,  │
+   │                    │       groups=groups)       │
+   │                    │  store.create(user)        │
+   │ 302 next           │                            │
+   │  Set-Cookie:       │                            │
+   │    iris_session    │                            │
+   │  Set-Cookie:       │                            │
+   │    oauth_state=    │                            │
+   │    (cleared)       │                            │
+   │◀───────────────────┤                            │
+```
+
+Discovery is **lazy**: the first `/login` after restart pays the latency to fetch `.well-known/...` and the JWKS. Subsequent logins reuse the cached endpoints.
+
+---
+
+## 7. Security model
+
+What iris actually does, what it doesn't do, and where the residual risks are.
+
+### 7.1 Session cookies
+
+- `iris_session` is a 256-bit random opaque id. `HttpOnly`, `SameSite=Lax`, `Path=/`. `Secure` flag controlled by `COOKIE_SECURE` (default `true`).
+- Sliding TTL (`SESSION_TTL_SECONDS`, 12h default) refreshes on every authenticated request.
+- Absolute cap (`SESSION_ABSOLUTE_TTL_SECONDS`, 30d default) — even active sessions must re-authenticate eventually.
+- Per-user cap (`SESSION_MAX_PER_USER`, 10 default) — the eleventh concurrent login evicts the oldest. Limits damage if one cookie is stolen.
+- Storage is in-process (`InMemorySessionStore`); a redeploy invalidates all sessions. **Multi-worker silently breaks sessions** — keep `--workers 1` until the Redis-backed store lands.
+
+### 7.2 CSRF
+
+`POST /login` and `POST /logout` use a double-submit pattern:
+
+- Server mints a token, sends it both as `iris_csrf` cookie and as a hidden `csrf_token` form field.
+- Route requires the two values to match; mismatch → 403.
+- **Token rotation on login:** on successful `POST /login` (and OAuth callback), the `iris_csrf` cookie is cleared, so any pre-auth token a phisher captured is dead the moment the user signs in. The next form render mints a fresh token.
+
+For OAuth, the `state` parameter plays the same role across the IdP round-trip. It lives in the HMAC-signed `oauth_state` cookie (10-minute TTL) along with the PKCE verifier and the original `next`.
+
+### 7.3 Rate limiting
+
+`POST /login` keys on `request.client.host` via an in-process token bucket: capacity 10, refill 0.2/sec → 10-attempt burst then ~12/min sustained. Exhausted clients get **429** with a `Retry-After` header.
+
+Caveat: behind a reverse proxy, `client.host` is the *proxy's* IP and the bucket becomes effectively global. Run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy-ip>` so `X-Forwarded-For` is honored.
+
+### 7.4 Open-redirect protection
+
+`_safe_next(url)` accepts only same-origin **relative** paths. It rejects:
+
+- empty / falsy strings,
+- anything not starting with `/`,
+- `//`-prefixed (protocol-relative) URLs,
+- absolute URLs,
+- backslash-containing strings (browsers normalize `\` → `/` *after* same-origin checks).
+
+Applied at `POST /login` and `GET /login/callback`. Error-redirect URLs are built with `urllib.parse.urlencode` so error tokens can't break query parsing.
+
+### 7.5 LDAP hardening
+
+- `username` is regex-restricted (`[A-Za-z0-9._-]{1,64}`) **before** interpolation into `LDAP_BIND_DN_TEMPLATE`. Special characters cannot escape the DN.
+- The `(member=<bind_dn>)` filter passes the bind DN through `ldap3.utils.conv.escape_filter_chars`, blocking filter-injection via crafted DNs.
+- Anonymous bind is not a code path. Every authentication is a user-bind with the submitted password; a wrong password produces `LDAPInvalidCredentialsResult` and the request is rejected.
+- `LDAP_REQUIRE_TLS=true` (default) refuses non-`ldaps://` URLs at startup. v1 has no StartTLS; use `ldaps://` everywhere except trusted-dev loopback.
+
+### 7.6 OIDC hardening
+
+- **PKCE S256** is mandatory on every `/login`. The verifier never goes over the wire — it travels client-to-iris-to-iris in the signed `oauth_state` cookie.
+- `state` is a 16-byte URL-safe random. Mismatch on callback → 401.
+- `id_token` verification: signature against JWKS by `kid`; `iss == OIDC_ISSUER_URL`; `aud == OIDC_CLIENT_ID`; `exp` not in the past. Algorithms are restricted to `RS256`/`ES256`.
+- The `redirect_uri` is whitelisted at the IdP (`redirectUris` in the realm) — Keycloak refuses unknown URIs, so even a stolen `client_secret` can't redirect a victim through iris to an attacker-controlled callback.
+- JWKS is fetched once and cached for the process lifetime. IdP signing-key rotation requires an iris restart. Acceptable for ≤20-user / multi-month rotation cadence; tighten by re-fetching on `kid`-not-in-set if rotation matters.
+
+### 7.7 Authorization fail-loud
+
+- `require_role("foo")` where `foo` is not defined in `authz.yaml` returns **500** with a generic body. The missing name is logged server-side but never returned. This catches operator typos like `require_role("reder")` instead of silently 403'ing every reader request.
+- A bad **initial** YAML aborts boot. A bad **live** edit is logged at `ERROR` and the loader keeps serving the previous good mapping — so a 3am typo doesn't take prod down.
+- `groups:` matches case-sensitively (verbatim from the IdP). `users:` matches case-insensitively. Get this wrong and you'll silently 403 — `/api/whoami` shows the resolved roles for fast diagnosis.
+
+### 7.8 Logout
+
+`POST /logout` is CSRF-required. It deletes the session record and clears the cookie. It does **not** call the IdP's `end_session_endpoint`, so a Keycloak SSO session can survive the iris logout — a fresh `/login` may sign the user straight back in without prompting. If you need single-logout semantics, wire it up at the IdP layer (e.g. a Keycloak logout link in your nav).
+
+### 7.9 Residual risks
+
+Documented honestly so they aren't surprises later:
+
+- **Session cookies are bearer tokens.** Over plaintext HTTP they can be lifted by a passive observer. Always set `COOKIE_SECURE=true` in production and serve over HTTPS.
+- **Single-worker constraint.** `--workers 1` is mandatory until the Redis-backed store lands. Multi-worker silently breaks sessions and rate limiting both.
+- **Per-IP rate limit only.** A botnet hitting `/login` from many IPs gets one budget per IP. Pair with a WAF/Cloudflare/etc. if exposed to the open internet.
+- **No JWKS rotation.** Restart iris after IdP key rotation.
+- **Mock is a static credential.** Don't ship `AUTH_METHOD=mock` outside dev/test — the test suite locks it on, but production deploys must pin `AUTH_METHOD=oauth` or `ldap` explicitly.
+- **`.env` may hold secrets.** `chmod 600 .env`; verify your container build doesn't bake it into images.
+
+---
+
+## 8. Troubleshooting cheatsheet
 
 | Symptom                                              | Likely cause                                                                                                  |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
@@ -481,7 +720,7 @@ Same `authz.yaml` works — alice's `admins` group resolves to the `admin` role 
 
 ---
 
-## 7. Production reminders
+## 9. Production reminders
 
 - Set `COOKIE_SECURE=true` and serve over HTTPS.
 - Set `LDAP_REQUIRE_TLS=true` and use `ldaps://` (or terminate TLS at a sidecar that exposes `ldaps://` to iris).
