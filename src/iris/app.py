@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from iris.auth.csrf import attach_csrf_cookie, mint_csrf_token
 from iris.auth.deps import CurrentUser
+from iris.middleware import SecurityHeadersMiddleware
 
 TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
@@ -36,6 +37,8 @@ def build_app() -> FastAPI:
     from iris.auth.routes import install as install_auth
 
     install_auth(app)
+
+    app.add_middleware(SecurityHeadersMiddleware)
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request, user: CurrentUser):
