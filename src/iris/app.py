@@ -30,6 +30,10 @@ async def _clock_stream():
 def build_app() -> FastAPI:
     app = FastAPI(title="Iris")
 
+    from iris.auth.routes import install as install_auth
+
+    install_auth(app)
+
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
         return TEMPLATES.TemplateResponse(request, "index.html")
