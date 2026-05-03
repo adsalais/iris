@@ -82,6 +82,11 @@ class OAuthProvider:
         assert self._discovered is not None
         return self._discovered["jwks_uri"]
 
+    async def close(self) -> None:
+        """Close both httpx clients. Safe to call multiple times."""
+        self._client.close()
+        await self._async_client.aclose()
+
     async def begin(self, request: Request) -> Response:
         redirect_uri = str(request.url_for("login_callback"))
         url, state, verifier = self.build_authorize_url(redirect_uri=redirect_uri)

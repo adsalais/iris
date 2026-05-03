@@ -62,9 +62,9 @@ def build_auth_router(
     @router.post("/login")
     async def login_post(
         request: Request,
-        username: str = Form(default=""),
-        password: str = Form(default=""),
-        next: str = Form(default="/"),
+        username: str = Form(default="", max_length=64),
+        password: str = Form(default="", max_length=4096),
+        next: str = Form(default="/", max_length=2048),
         _: None = Depends(verify_csrf_form),
     ) -> Response:
         client_host = request.client.host if request.client else "unknown"
@@ -198,3 +198,10 @@ def install(app: FastAPI) -> None:
         ttl_seconds=settings.ttl_seconds,
     )
     app.include_router(router)
+
+    # Release httpx connection pools on app shutdown. Only OAuth holds
+    # them — LDAP/Mock providers don't keep network resources open.
+    if isinstance(provider, OAuthProvider):
+        @app.on_event("shutdown")
+        async def _close_oauth_provider() -> None:  # pragma: no cover
+            await provider.close()

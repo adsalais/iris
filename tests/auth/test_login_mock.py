@@ -245,3 +245,54 @@ def test_successful_login_does_not_log_failed(client, caplog):
 
     failures = [r for r in caplog.records if "auth: login_failed" in r.message]
     assert not failures, f"successful login should not emit login_failed; got {failures}"
+
+
+def test_login_rejects_oversized_username(client):
+    """Usernames over 64 chars are rejected at the HTTP layer with 422."""
+    r = client.get("/login")
+    csrf = r.cookies[CSRF_COOKIE_NAME]
+    r = client.post(
+        "/login",
+        data={
+            CSRF_FORM_FIELD: csrf,
+            "username": "a" * 65,
+            "password": "secret",
+            "next": "/",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 422
+
+
+def test_login_rejects_oversized_password(client):
+    """Passwords over 4096 chars are rejected at the HTTP layer with 422."""
+    r = client.get("/login")
+    csrf = r.cookies[CSRF_COOKIE_NAME]
+    r = client.post(
+        "/login",
+        data={
+            CSRF_FORM_FIELD: csrf,
+            "username": "alice",
+            "password": "a" * 4097,
+            "next": "/",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 422
+
+
+def test_login_rejects_oversized_next(client):
+    """next param over 2048 chars is rejected at the HTTP layer with 422."""
+    r = client.get("/login")
+    csrf = r.cookies[CSRF_COOKIE_NAME]
+    r = client.post(
+        "/login",
+        data={
+            CSRF_FORM_FIELD: csrf,
+            "username": "alice",
+            "password": "secret",
+            "next": "/" + "a" * 2048,
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 422

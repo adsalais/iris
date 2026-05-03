@@ -297,6 +297,13 @@ def test_exchange_code_rejects_expired_id_token(settings):
     assert exc.value.token == "oauth_exchange"
 
 
+def test_oauth_provider_close_is_idempotent(provider):
+    """close() can be called more than once without raising."""
+    import asyncio
+    asyncio.run(provider.close())
+    asyncio.run(provider.close())  # second call should also not raise
+
+
 def test_exchange_code_rejects_id_token_signed_with_wrong_key(settings):
     """An id_token signed with a different RSA key (not in the JWKS) is rejected."""
     import asyncio
