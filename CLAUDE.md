@@ -93,36 +93,53 @@ Routes then take `signals: Signals` and get a guaranteed dict — no None handli
 The `iris.auth` package adds session-based authentication to all routes. Public surface:
 
 ```python
-from iris.auth import CurrentUser, OptionalCurrentUser, CurrentSession, SessionData, CurrentRoles, require_role
+from iris.auth import Session, OptionalSession, require_role, User, install
 ```
 
-`CurrentUser` requires a valid session (cookie or `Authorization: Bearer <session-id>`); `OptionalCurrentUser` returns `None` if no session is present. `require_role("admin")` is a dependency factory that 403s if the user's effective role set (computed from the role-mapping YAML) doesn't contain the named role. See "Authorization (roles)" below for the YAML schema and inheritance semantics.
+`Session` requires a valid session (cookie or `Authorization: Bearer <session-id>`); routes that take it 401 if no session is present. `OptionalSession` returns `None` when there's no session and never raises. Both are FastAPI dependency aliases — use them as parameter type annotations (`async def f(session: Session): ...`) and the dep system fills in a request-scoped `Session` view.
+
+The `Session` view exposes everything routes legitimately need from a logged-in session: `id`, `user` (a `User`), `created_at`, `expires_at`, `data` (the per-session mutable dict), and `roles` (a `frozenset[str]` of effective role names with `includes:` closure already applied). The `data` field is the same dict object as the session store's storage, so `session.data[key] = value` writes through with no commit step. All other fields are frozen.
+
+`require_role("admin")` is a dependency factory that 403s if the user's effective role set doesn't contain the named role. It returns a `Session`, so role-gated routes write `session: Session = Depends(require_role("admin"))` and access `session.user`/`session.data`/`session.roles` from the same value. See "Authorization (roles)" below for the YAML schema and inheritance semantics.
+
+**Two `Session` names, two import paths.** FastAPI 0.136 raises `AssertionError: Cannot specify Depends in Annotated and default value together` when an Annotated alias with `Depends` is combined with `= Depends(other)`. So:
+
+- **Bare-auth routes** (no role check) write `session: Session` with no `=`. Import the **alias** from the package: `from iris.auth import Session`. The alias has `Depends(_build_required)` baked into its `Annotated` metadata, which FastAPI uses to inject the value.
+- **Role-gated routes** write `session: Session = Depends(require_role("admin"))`. Import the **class** from the submodule: `from iris.auth.session import Session`. The class has no `Depends` metadata, so the explicit `= Depends(require_role(...))` provides the dep.
+- Both `Session` names evaluate to the same underlying class for type-checker purposes (`Annotated[X, ...]` IS `X` for typing), so `session.user`, `session.data`, etc. work identically in either form.
+- **A file mixing both patterns** imports the alias under a local name. Convention: `from iris.auth import Session as RequireSession` (used by `tests/auth/authz/test_authz_deps.py`).
+- If you ever see FastAPI raise the "Cannot specify Depends in Annotated and default value together" error at app construction, you imported the wrong `Session` for the route style. Switch the import path.
 
 ### Per-session server-side data
 
-Each `UserSession` carries a mutable `data: dict[str, Any]` field for arbitrary route-managed state (drafts, wizard steps, recently-viewed lists, etc.). Two FastAPI deps expose it:
+Each `UserSession` carries a mutable `data: dict[str, Any]` field for arbitrary route-managed state (drafts, wizard steps, recently-viewed lists, etc.). The `Session` dep exposes it via `session.data`:
 
 ```python
-from iris.auth import SessionData, CurrentSession
+from iris.auth import Session
 
 @app.post("/draft")
-async def save_draft(data: SessionData, body: dict):
-    data["draft"] = body          # direct mutation persists; no commit step
+async def save_draft(session: Session, body: dict):
+    session.data["draft"] = body         # direct mutation persists; no commit step
     return {"ok": True}
 
 @app.get("/draft")
-async def get_draft(data: SessionData):
-    return data.get("draft", {})
+async def get_draft(session: Session):
+    return session.data.get("draft", {})
 
 @app.get("/me/full")
-async def me_full(session: CurrentSession):
-    return {"id": session.id, "logged_in_at": session.created_at, "data_keys": list(session.data)}
+async def me_full(session: Session):
+    return {
+        "id": session.id,
+        "logged_in_at": session.created_at,
+        "data_keys": list(session.data),
+        "roles": sorted(session.roles),
+    }
 ```
 
-- `SessionData` returns the dict directly — for routes that only need to read/write keys.
-- `CurrentSession` returns the whole `UserSession` — for routes that need `id`, `created_at`, `expires_at`, `user`, or all of the above plus data.
+- `Session.data` is the dict directly — mutation writes through to the store.
+- `Session` exposes `id`, `user`, `created_at`, `expires_at`, `data`, and `roles` on a single value. Routes that need only the user write `session.user`; routes that need the per-session bag write `session.data`.
 
-All four authenticated deps (`CurrentUser`, `OptionalCurrentUser`, `CurrentSession`, `SessionData`) share a single `_resolve_session` lookup per request via FastAPI's dep cache, so a route taking both `user: CurrentUser` and `data: SessionData` makes one store hit, not two.
+A single `Session` dep injection resolves the underlying session lookup, the per-request `Session` view construction, and the role computation exactly once. A route taking both `session: Session` and `Depends(require_role(...))` makes one store hit, computes roles once, and runs the role check on the cached view.
 
 Lifecycle: data lives in-memory alongside the session and is wiped on logout / expiry / process restart. The store API doesn't persist `data` separately; if/when the v1.1 Redis-backed store arrives, `data` will need to be serializable (JSON-ish values only). For v1, anything Python can hold is fair game. Read-modify-write across an `await` between two requests for the same session has the standard interleaving race — acceptable at ≤20-user scale; document or use `asyncio.Lock` if a route needs atomic updates.
 
@@ -164,18 +181,27 @@ Validation rules (enforced at load, fail-loud with line numbers):
 **Use in routes:**
 
 ```python
-from iris.auth import require_role, CurrentRoles, CurrentUser
+from iris.auth.session import Session
+from iris.auth.authz.deps import require_role
 
 @app.get("/docs")
-async def list_docs(user: User = Depends(require_role("reader"))):
+async def list_docs(session: Session = Depends(require_role("reader"))):
     ...
-
-@app.get("/me/roles")
-async def my_roles(roles: CurrentRoles):
-    return {"roles": sorted(roles)}
 ```
 
-`require_role("reader")` admits any user whose effective role set contains `reader`, directly or via `includes` (so admins and writers get in too). `CurrentRoles` returns the user's full effective role set as a `frozenset[str]` — useful for templates and `/api/whoami`-style endpoints.
+For routes that want bare auth and need to read roles:
+
+```python
+from iris.auth import Session
+
+@app.get("/me/roles")
+async def my_roles(session: Session):
+    return {"roles": sorted(session.roles)}
+```
+
+These two examples illustrate the dual-import pattern: the **class** (`from iris.auth.session import Session`) for role-gated routes that combine `= Depends(require_role(...))` with the type, and the **alias** (`from iris.auth import Session`) for bare-auth routes that rely on the alias's baked-in `Depends` metadata.
+
+`require_role("reader")` admits any user whose effective role set contains `reader`, directly or via `includes` (so admins and writers get in too). `session.roles` returns the user's full effective role set as a `frozenset[str]` — useful for templates and `/api/whoami`-style endpoints.
 
 If a route names a role that isn't defined in the YAML, the request returns **500** (not 403) with a generic body — silent 403s would mask operator typos like `require_role("reder")`. The missing role name is logged server-side.
 
@@ -230,12 +256,13 @@ MOCK_DISPLAY_NAME=Alice
 
 ```
 src/iris/auth/
-├── __init__.py        # public surface: CurrentUser, OptionalCurrentUser, CurrentSession, SessionData, CurrentRoles, require_role, install, User, UserSession
+├── __init__.py        # public surface: Session, OptionalSession, require_role, User, install
+├── session.py         # Session frozen dataclass (request-scoped view)
 ├── config.py          # AuthSettings.from_env() + per-method sub-settings
-├── identity.py        # User (frozen+slots), UserSession (mutable for sliding TTL)
+├── identity.py        # User (frozen+slots), UserSession (mutable for sliding TTL; internal)
 ├── sessions.py        # InMemorySessionStore: create / get_and_refresh / delete
 ├── exceptions.py      # AuthRequired, AuthForbidden, AuthError, AuthorizationMisconfigured + install_exception_handlers
-├── deps.py            # CurrentUser, OptionalCurrentUser, CurrentSession, SessionData, set_session_store, set_settings
+├── deps.py            # Session, OptionalSession, set_session_store, set_settings
 ├── csrf.py            # double-submit CSRF: mint_csrf_token, attach_csrf_cookie, issue_csrf_token, verify_csrf_form, delete_csrf_cookie
 ├── rate_limit.py      # TokenBucket: in-process per-key token-bucket limiter (used on POST /login)
 ├── routes.py          # /login, /login/callback, /logout, /api/whoami; install(app)
@@ -246,11 +273,12 @@ src/iris/auth/
 │   ├── ldap.py        # LDAPProvider (ldap3 bind + group search; tests use MOCK_SYNC)
 │   └── oauth.py       # OAuthProvider (OIDC discovery + PKCE + signed-cookie state)
 └── authz/
-    ├── __init__.py    # (empty package marker; consumers import from `iris.auth`)
+    ├── __init__.py    # (empty package marker)
     ├── config.py      # AuthzSettings.from_env() — reads AUTHZ_CONFIG_PATH
     ├── mapping.py     # RoleMapping value type + parse() with cycle detection + closure
     ├── loader.py      # RoleMappingLoader: mtime-cached, last-good fallback on bad reload
-    └── deps.py        # require_role(name) factory; CurrentRoles dep; _current_mapping
+    ├── core.py        # resolve_roles, current_mapping helpers (no cross-package auth imports)
+    └── deps.py        # require_role(name) factory
 ```
 
 `install(app)` reads env, builds the provider, and wires the auth router + exception handlers + session store into a FastAPI app. Called from `build_app()` in `src/iris/app.py`.
