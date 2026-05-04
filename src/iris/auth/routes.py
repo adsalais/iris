@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, FastAPI, Form, Request, Response
 from fastapi.responses import RedirectResponse
 
 from iris.auth.csrf import delete_csrf_cookie, verify_csrf_form
-from iris.auth.deps import CurrentUser
+from iris.auth.deps import Session
 from iris.auth.exceptions import AuthError
 from iris.auth.identity import User
 from iris.auth.providers.base import Provider
@@ -139,23 +139,27 @@ def build_auth_router(
     @router.post("/logout")
     async def logout(
         request: Request,
-        user: CurrentUser,
+        session: Session,
         _: None = Depends(verify_csrf_form),
     ) -> Response:
         sid = request.cookies.get(cookie_name) or ""
         if sid:
             await store.delete(sid)
-        logger.info("auth: logout user=%s subject=%s", user.display_name, user.subject)
+        logger.info(
+            "auth: logout user=%s subject=%s",
+            session.user.display_name,
+            session.user.subject,
+        )
         response = RedirectResponse("/login", status_code=303)
         response.delete_cookie(cookie_name)
         return response
 
     @router.get("/api/whoami")
-    async def whoami(user: CurrentUser) -> dict[str, Any]:
+    async def whoami(session: Session) -> dict[str, Any]:
         return {
-            "subject": user.subject,
-            "display_name": user.display_name,
-            "groups": list(user.groups),
+            "subject": session.user.subject,
+            "display_name": session.user.display_name,
+            "groups": list(session.user.groups),
         }
 
     return router
