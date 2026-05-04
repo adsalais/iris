@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
 
 from iris.auth.authz.core import CurrentMapping, resolve_roles
 from iris.auth.exceptions import AuthRequired
-from iris.auth.identity import User, UserSession
+from iris.auth.identity import UserSession
 from iris.auth.session import Session as _SessionT
 from iris.auth.sessions import InMemorySessionStore
 
@@ -37,7 +37,7 @@ def _bearer(authorization: str | None) -> str | None:
     return parts[1].strip() or None
 
 
-async def _resolve_session(request: Request) -> UserSession | None:
+async def _resolve_stored(request: Request) -> UserSession | None:
     cookie_name = _get_cookie_name(request)
     sid = request.cookies.get(cookie_name) or _bearer(
         request.headers.get("authorization")
@@ -48,48 +48,11 @@ async def _resolve_session(request: Request) -> UserSession | None:
     return await store.get_and_refresh(sid)
 
 
-_ResolvedSession = Annotated[UserSession | None, Depends(_resolve_session)]
-
-
-async def _required_session(session: _ResolvedSession) -> UserSession:
-    if session is None:
-        raise AuthRequired()
-    return session
-
-
-_RequiredSession = Annotated[UserSession, Depends(_required_session)]
-
-
-# --- Old surface (will be removed in Task 11) ---------------------------------
-
-
-async def _current_user(session: _RequiredSession) -> User:
-    return session.user
-
-
-async def _optional_current_user(session: _ResolvedSession) -> User | None:
-    return session.user if session else None
-
-
-async def _current_session(session: _RequiredSession) -> UserSession:
-    return session
-
-
-async def _session_data(session: _RequiredSession) -> dict[str, Any]:
-    return session.data
-
-
-CurrentUser = Annotated[User, Depends(_current_user)]
-OptionalCurrentUser = Annotated[User | None, Depends(_optional_current_user)]
-CurrentSession = Annotated[UserSession, Depends(_current_session)]
-SessionData = Annotated[dict[str, Any], Depends(_session_data)]
-
-
-# --- New surface --------------------------------------------------------------
+_StoredSession = Annotated[UserSession | None, Depends(_resolve_stored)]
 
 
 async def _build_optional(
-    stored: _ResolvedSession,
+    stored: _StoredSession,
     mapping: CurrentMapping,
 ) -> _SessionT | None:
     if stored is None:
