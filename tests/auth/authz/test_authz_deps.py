@@ -4,7 +4,8 @@ from pathlib import Path
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from iris.auth.authz.deps import CurrentRoles, require_role
+from iris.auth import Session as RequireSession
+from iris.auth.authz.deps import require_role
 from iris.auth.authz.loader import RoleMappingLoader
 from iris.auth.deps import set_session_store, set_settings
 from iris.auth.exceptions import install_exception_handlers
@@ -53,8 +54,8 @@ def _build_app(tmp_path: Path) -> tuple[FastAPI, InMemorySessionStore]:
         return {"subject": session.user.subject}
 
     @app.get("/my-roles")
-    async def my_roles(roles: CurrentRoles):
-        return {"roles": sorted(roles)}
+    async def my_roles(session: RequireSession):
+        return {"roles": sorted(session.roles)}
 
     return app, store
 
