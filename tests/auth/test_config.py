@@ -60,6 +60,7 @@ def test_oauth_settings(monkeypatch):
     monkeypatch.setenv("OIDC_CLIENT_SECRET", "shh")
     monkeypatch.setenv("OIDC_SCOPES", "openid profile email groups")
     s = AuthSettings.from_env()
+    assert s.oidc is not None
     assert s.oidc.issuer_url == "https://kc.example/realms/iris"
     assert s.oidc.client_id == "iris"
     assert s.oidc.client_secret == "shh"
@@ -78,6 +79,7 @@ def test_ldap_settings(monkeypatch):
     monkeypatch.setenv("LDAP_BIND_DN_TEMPLATE", "uid={username},ou=people,dc=corp,dc=local")
     monkeypatch.setenv("LDAP_GROUP_BASE_DN", "ou=groups,dc=corp,dc=local")
     s = AuthSettings.from_env()
+    assert s.ldap is not None
     assert s.ldap.url == "ldaps://ldap.example:636"
     assert s.ldap.bind_dn_template == "uid={username},ou=people,dc=corp,dc=local"
 
@@ -89,6 +91,7 @@ def test_mock_settings(monkeypatch):
     monkeypatch.setenv("MOCK_GROUPS", "admins,users")
     monkeypatch.setenv("MOCK_DISPLAY_NAME", "Alice (mock)")
     s = AuthSettings.from_env()
+    assert s.mock is not None
     assert s.mock.username == "alice"
     assert s.mock.password == "secret"
     assert s.mock.groups == ("admins", "users")
@@ -134,6 +137,7 @@ def test_display_name_falls_back_to_stripped_username(monkeypatch):
     monkeypatch.setenv("MOCK_USERNAME", "  alice  ")
     monkeypatch.setenv("MOCK_PASSWORD", "secret")
     s = AuthSettings.from_env()
+    assert s.mock is not None
     assert s.mock.username == "alice"
     assert s.mock.display_name == "alice"  # not "  alice  "
 
@@ -155,6 +159,7 @@ def test_ldap_url_plaintext_allowed_when_tls_explicitly_disabled(monkeypatch):
     monkeypatch.setenv("LDAP_GROUP_BASE_DN", "ou=groups,dc=corp,dc=local")
     monkeypatch.setenv("LDAP_REQUIRE_TLS", "false")
     s = AuthSettings.from_env()
+    assert s.ldap is not None
     assert s.ldap.url == "ldap://ldap.example.com:389"
     assert s.ldap.require_tls is False
 
@@ -168,6 +173,7 @@ def test_ldap_ca_cert_path_loaded(monkeypatch, tmp_path):
     monkeypatch.setenv("LDAP_GROUP_BASE_DN", "ou=groups,dc=corp,dc=local")
     monkeypatch.setenv("LDAP_CA_CERT_PATH", str(fake_ca))
     s = AuthSettings.from_env()
+    assert s.ldap is not None
     assert s.ldap.ca_cert_path == str(fake_ca)
     assert s.ldap.require_tls is True
 
@@ -179,6 +185,7 @@ def test_ldap_default_require_tls_true_with_ldaps(monkeypatch):
     monkeypatch.setenv("LDAP_BIND_DN_TEMPLATE", "uid={username},ou=people,dc=corp,dc=local")
     monkeypatch.setenv("LDAP_GROUP_BASE_DN", "ou=groups,dc=corp,dc=local")
     s = AuthSettings.from_env()
+    assert s.ldap is not None
     assert s.ldap.require_tls is True
     assert s.ldap.ca_cert_path is None
 

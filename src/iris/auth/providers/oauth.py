@@ -4,6 +4,7 @@ import base64
 import hashlib
 import logging
 import secrets
+from typing import Any, cast
 from urllib.parse import urlencode
 
 import httpx
@@ -31,19 +32,25 @@ class OAuthProvider:
     ) -> None:
         self._settings = settings
         self._client = httpx.Client(transport=_http_transport, timeout=10.0)
-        self._async_client = httpx.AsyncClient(transport=_http_transport, timeout=10.0)
+        # httpx.MockTransport (used in tests) implements both sync and async
+        # dispatch but only inherits from BaseTransport, so we cast for the
+        # async client. Real production code passes None and gets the default.
+        self._async_client = httpx.AsyncClient(
+            transport=cast("httpx.AsyncBaseTransport | None", _http_transport),
+            timeout=10.0,
+        )
         self._signer = URLSafeTimedSerializer(settings.client_secret, salt="iris-oauth-state")
         # Lazy: discovery + JWKS fetched on first property access so app
         # construction doesn't block on a slow IdP. The endpoints below are
         # read via @property and call _ensure_discovered() before returning.
-        self._discovered: dict | None = None
+        self._discovered: dict[str, Any] | None = None
         # Fetch JWKS via our own httpx client so the test transport is honored.
         # PyJWKClient bypasses httpx (uses urllib), so we pre-load and build a
         # PyJWKSet manually. Cached on first discovery — IdP key rotation
         # requires app restart (acceptable for v1; revisit if rotation matters).
         self._jwks: jwt.PyJWKSet | None = None
 
-    def _ensure_discovered(self) -> dict:
+    def _ensure_discovered(self) -> dict[str, Any]:
         if self._discovered is not None:
             return self._discovered
         discovery_url = (
@@ -156,7 +163,7 @@ class OAuthProvider:
 
     async def _request_tokens(
         self, *, code: str, code_verifier: str, redirect_uri: str
-    ) -> dict:
+    ) -> dict[str, Any]:
         try:
             r = await self._async_client.post(
                 self.token_endpoint,
@@ -176,6 +183,9 @@ class OAuthProvider:
             raise AuthError("oauth_exchange") from exc
 
     def _verify_id_token(self, id_token: str) -> None:
+        # _verify_id_token is only reached after _request_tokens, which calls
+        # self.token_endpoint -> _ensure_discovered() and populates _jwks.
+        assert self._jwks is not None, "_jwks must be set before id_token verification"
         try:
             unverified_header = jwt.get_unverified_header(id_token)
             signing_key = self._jwks[unverified_header["kid"]].key
@@ -190,7 +200,7 @@ class OAuthProvider:
             logger.exception("auth: id_token verification failed")
             raise AuthError("oauth_exchange") from exc
 
-    async def _fetch_userinfo(self, access_token: str) -> dict:
+    async def _fetch_userinfo(self, access_token: str) -> dict[str, Any]:
         try:
             ui = await self._async_client.get(
                 self.userinfo_endpoint,
@@ -202,7 +212,7 @@ class OAuthProvider:
             logger.exception("auth: OAuth code exchange failed")
             raise AuthError("oauth_exchange") from exc
 
-    def _user_from_claims(self, claims: dict) -> User:
+    def _user_from_claims(self, claims: dict[str, Any]) -> User:
         groups = tuple(claims.get("groups") or ())
         if not groups:
             logger.warning(

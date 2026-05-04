@@ -36,7 +36,7 @@ class _NoDuplicatesSafeLoader(yaml.SafeLoader):
     """
 
 
-def _construct_mapping_no_dupes(loader: yaml.Loader, node: yaml.MappingNode) -> dict:
+def _construct_mapping_no_dupes(loader: yaml.Loader, node: yaml.MappingNode) -> dict[Any, Any]:
     seen: set[Any] = set()
     for key_node, _ in node.value:
         key = loader.construct_object(key_node, deep=True)

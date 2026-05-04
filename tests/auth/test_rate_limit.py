@@ -27,8 +27,10 @@ def test_login_rate_limit_response_has_retry_after(client):
     csrf = r.cookies[CSRF_COOKIE_NAME]
     body = {CSRF_FORM_FIELD: csrf, "username": "alice", "password": "wrong", "next": "/"}
     # Exhaust the bucket
+    last = None
     for _ in range(15):
         last = client.post("/login", data=body, follow_redirects=False)
+    assert last is not None
     assert last.status_code == 429
     retry_after = last.headers.get("Retry-After", "")
     assert retry_after.isdigit() and int(retry_after) >= 1

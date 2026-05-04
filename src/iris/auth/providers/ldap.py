@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Callable
+from typing import Any, Callable
 
 from fastapi import Request, Response
 from ldap3 import Connection, Server
 from ldap3.core.exceptions import (
-    LDAPBindError,
     LDAPException,
     LDAPInvalidCredentialsResult,
     LDAPSocketOpenError,
@@ -16,8 +15,8 @@ from ldap3.utils.conv import escape_filter_chars
 
 from iris.auth.config import LDAPSettings
 from iris.auth.exceptions import AuthError
-from iris.auth.providers._form import render_login_form
 from iris.auth.identity import User
+from iris.auth.providers._form import render_login_form
 
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
@@ -29,7 +28,7 @@ class LDAPProvider:
         self,
         settings: LDAPSettings,
         *,
-        _connection_factory: Callable[[], Connection] | None = None,
+        _connection_factory: Callable[[], Any] | None = None,
     ) -> None:
         self._settings = settings
         self._connection_factory = _connection_factory  # for tests
@@ -44,9 +43,6 @@ class LDAPProvider:
                 "csrf_mismatch": "Session expired, please reload and try again.",
             },
         )
-
-    async def complete(self, request: Request) -> User:
-        raise NotImplementedError("LDAPProvider uses authenticate()")
 
     async def authenticate(self, username: str, password: str) -> User:
         if not _USERNAME_RE.fullmatch(username):
@@ -90,12 +86,14 @@ class LDAPProvider:
             tls = None
             if self._settings.ca_cert_path:
                 import ssl
+
                 from ldap3 import Tls
+
                 tls = Tls(
                     validate=ssl.CERT_REQUIRED,
                     ca_certs_file=self._settings.ca_cert_path,
                 )
-            server = Server(self._settings.url, get_info=None, tls=tls)
+            server = Server(self._settings.url, get_info="NO_INFO", tls=tls)
             conn = Connection(server, user=bind_dn, password=password, auto_bind=True)
             return conn
         except LDAPInvalidCredentialsResult as exc:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, FastAPI, Form, Request, Response
@@ -11,6 +12,8 @@ from iris.auth.deps import CurrentUser
 from iris.auth.exceptions import AuthError
 from iris.auth.identity import User
 from iris.auth.providers.base import Provider
+from iris.auth.providers.ldap import LDAPProvider
+from iris.auth.providers.mock import MockProvider
 from iris.auth.providers.oauth import OAUTH_STATE_COOKIE, OAuthProvider
 from iris.auth.rate_limit import TokenBucket
 from iris.auth.sessions import InMemorySessionStore
@@ -102,7 +105,7 @@ def build_auth_router(
                 status_code=429,
                 headers={"Retry-After": str(int(wait) + 1)},
             )
-        if not hasattr(provider, "authenticate"):
+        if not isinstance(provider, (LDAPProvider, MockProvider)):
             return Response(status_code=405)  # OAuth doesn't go through POST /login
         safe_next = _safe_next(next)
         try:
@@ -148,7 +151,7 @@ def build_auth_router(
         return response
 
     @router.get("/api/whoami")
-    async def whoami(user: CurrentUser) -> dict:
+    async def whoami(user: CurrentUser) -> dict[str, Any]:
         return {
             "subject": user.subject,
             "display_name": user.display_name,
@@ -180,7 +183,7 @@ def install(app: FastAPI) -> None:
     )
     provider = build_provider(settings)
 
-    from iris.app import TEMPLATES
+    from iris.templates import TEMPLATES
     app.state.templates = TEMPLATES
 
     set_session_store(app, store)

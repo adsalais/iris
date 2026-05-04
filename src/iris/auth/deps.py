@@ -4,7 +4,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Request
 
-from iris.auth.exceptions import AuthForbidden, AuthRequired
+from iris.auth.exceptions import AuthRequired
 from iris.auth.identity import User, UserSession
 from iris.auth.sessions import InMemorySessionStore
 
@@ -37,7 +37,9 @@ def _bearer(authorization: str | None) -> str | None:
 
 async def _resolve_session(request: Request) -> UserSession | None:
     cookie_name = _get_cookie_name(request)
-    sid = request.cookies.get(cookie_name) or _bearer(request.headers.get("authorization"))
+    sid = request.cookies.get(cookie_name) or _bearer(
+        request.headers.get("authorization")
+    )
     if not sid:
         return None
     store = _get_store(request)

@@ -2,6 +2,9 @@ import asyncio
 import os
 import tempfile
 
+import pytest
+from fastapi.testclient import TestClient
+
 # Test fixtures that the auth layer needs at import time. setdefault means
 # a developer's real .env / shell env can still override these.
 os.environ.setdefault("AUTH_METHOD", "mock")
@@ -34,13 +37,11 @@ with open(_authz_path, "w") as f:
     f.write(_AUTHZ_FIXTURE)
 os.environ.setdefault("AUTHZ_CONFIG_PATH", _authz_path)
 
-import pytest
-from fastapi.testclient import TestClient
-
 
 @pytest.fixture
 def app():
     from iris.app import build_app
+
     return build_app()
 
 

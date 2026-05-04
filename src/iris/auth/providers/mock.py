@@ -23,12 +23,6 @@ class MockProvider:
             },
         )
 
-    async def complete(self, request: Request) -> User:
-        # the route layer (Task 8) extracts username/password from the POST body
-        # and calls authenticate(); complete() exists to satisfy the Protocol but
-        # is intentionally not called for form-based providers.
-        raise NotImplementedError("MockProvider uses authenticate()")
-
     async def authenticate(self, username: str, password: str) -> User:
         if not hmac.compare_digest(username, self._settings.username) or not hmac.compare_digest(
             password, self._settings.password

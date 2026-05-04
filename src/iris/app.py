@@ -1,20 +1,17 @@
 import asyncio
 from datetime import UTC, datetime
 from html import escape
-from pathlib import Path
 from typing import Annotated, Any
 
 from datastar_py.fastapi import DatastarResponse, read_signals
 from datastar_py.fastapi import ServerSentEventGenerator as SSE
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 
 from iris.auth.csrf import attach_csrf_cookie, mint_csrf_token
 from iris.auth.deps import CurrentUser
 from iris.middleware import SecurityHeadersMiddleware
-
-TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
+from iris.templates import TEMPLATES
 
 
 async def _signals(request: Request) -> dict[str, Any]:
