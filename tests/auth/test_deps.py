@@ -15,6 +15,7 @@ from iris.auth.deps import (
 )
 from iris.auth.exceptions import install_exception_handlers
 from iris.auth.identity import User
+from iris.auth.session import Session
 from iris.auth.sessions import InMemorySessionStore
 
 
@@ -39,8 +40,8 @@ def _build_app(tmp_path) -> tuple[FastAPI, InMemorySessionStore]:
         return {"present": user is not None}
 
     @app.get("/admin")
-    async def admin(user: User = Depends(require_role("admin"))):
-        return {"subject": user.subject}
+    async def admin(session: Session = Depends(require_role("admin"))):
+        return {"subject": session.user.subject}
 
     @app.get("/data")
     async def read_data(data: SessionData):

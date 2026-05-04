@@ -2,7 +2,7 @@ from fastapi import Depends
 from fastapi.testclient import TestClient
 
 from iris.auth.authz.deps import require_role
-from iris.auth.identity import User
+from iris.auth.session import Session
 
 
 def test_forbidden_html_renders_template(monkeypatch):
@@ -12,7 +12,7 @@ def test_forbidden_html_renders_template(monkeypatch):
     app = build_app()
 
     @app.get("/admin-only")
-    async def admin_only(_: User = Depends(require_role("admin"))):
+    async def admin_only(_: Session = Depends(require_role("admin"))):
         return {"ok": True}
 
     client = TestClient(app)

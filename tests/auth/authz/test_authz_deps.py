@@ -9,6 +9,7 @@ from iris.auth.authz.loader import RoleMappingLoader
 from iris.auth.deps import set_session_store, set_settings
 from iris.auth.exceptions import install_exception_handlers
 from iris.auth.identity import User
+from iris.auth.session import Session
 from iris.auth.sessions import InMemorySessionStore
 
 
@@ -40,16 +41,16 @@ def _build_app(tmp_path: Path) -> tuple[FastAPI, InMemorySessionStore]:
     app.state.authz_loader = RoleMappingLoader(yaml_path)
 
     @app.get("/reader-only")
-    async def reader_only(user: User = Depends(require_role("reader"))):
-        return {"subject": user.subject}
+    async def reader_only(session: Session = Depends(require_role("reader"))):
+        return {"subject": session.user.subject}
 
     @app.get("/admin-only")
-    async def admin_only(user: User = Depends(require_role("admin"))):
-        return {"subject": user.subject}
+    async def admin_only(session: Session = Depends(require_role("admin"))):
+        return {"subject": session.user.subject}
 
     @app.get("/needs-undefined-role")
-    async def needs_undefined(user: User = Depends(require_role("super_admin"))):
-        return {"subject": user.subject}
+    async def needs_undefined(session: Session = Depends(require_role("super_admin"))):
+        return {"subject": session.user.subject}
 
     @app.get("/my-roles")
     async def my_roles(roles: CurrentRoles):
