@@ -126,7 +126,7 @@ def test_route_requiring_undefined_role_returns_500(tmp_path):
     assert "super_admin" not in r.text
 
 
-def test_current_roles_returns_full_effective_set_for_admin(tmp_path):
+def test_session_roles_returns_full_effective_set_for_admin(tmp_path):
     app, store = _build_app(tmp_path)
     sid = _seed(store, username="charlie", groups=("admins",))
     c = TestClient(app)
@@ -136,7 +136,7 @@ def test_current_roles_returns_full_effective_set_for_admin(tmp_path):
     assert r.json() == {"roles": ["admin", "reader", "writer"]}
 
 
-def test_current_roles_returns_empty_set_for_user_with_no_match(tmp_path):
+def test_session_roles_returns_empty_set_for_user_with_no_match(tmp_path):
     app, store = _build_app(tmp_path)
     sid = _seed(store, username="nobody", groups=())
     c = TestClient(app)
