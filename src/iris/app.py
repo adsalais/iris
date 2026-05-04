@@ -1,4 +1,6 @@
 import asyncio
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from html import escape
 from typing import Annotated, Any
@@ -12,6 +14,17 @@ from iris.auth.csrf import attach_csrf_cookie, mint_csrf_token
 from iris.auth.deps import CurrentUser
 from iris.middleware import SecurityHeadersMiddleware
 from iris.templates import TEMPLATES
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # Startup is no-op; install() runs eagerly during build_app(). On shutdown,
+    # close any teardown hooks registered by the auth layer (e.g. OAuthProvider's
+    # httpx clients).
+    yield
+    closer = getattr(app.state, "auth_close_provider", None)
+    if closer is not None:
+        await closer()
 
 
 async def _signals(request: Request) -> dict[str, Any]:
@@ -29,7 +42,7 @@ async def _clock_stream():
 
 
 def build_app() -> FastAPI:
-    app = FastAPI(title="Iris")
+    app = FastAPI(title="Iris", lifespan=_lifespan)
 
     from iris.auth.routes import install as install_auth
 
@@ -59,7 +72,7 @@ def build_app() -> FastAPI:
         )
 
     @app.get("/api/clock")
-    async def clock(user: CurrentUser) -> DatastarResponse:
+    async def clock(_user: CurrentUser) -> DatastarResponse:
         return DatastarResponse(_clock_stream())
 
     return app

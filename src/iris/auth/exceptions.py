@@ -49,7 +49,7 @@ def _wants_html(request: Request) -> bool:
 
 def install_exception_handlers(app: FastAPI, *, cookie_name: str) -> None:
     @app.exception_handler(AuthRequired)
-    async def _on_auth_required(request: Request, exc: AuthRequired) -> Response:
+    async def _on_auth_required(request: Request, _exc: AuthRequired) -> Response:
         if _wants_html(request):
             response = RedirectResponse(
                 f"/login?next={request.url.path}", status_code=302
@@ -72,7 +72,7 @@ def install_exception_handlers(app: FastAPI, *, cookie_name: str) -> None:
 
     @app.exception_handler(AuthorizationMisconfigured)
     async def _on_authorization_misconfigured(
-        request: Request, exc: AuthorizationMisconfigured
+        _request: Request, exc: AuthorizationMisconfigured
     ) -> Response:
         logger.error(
             "authz: route requires role %r which is not defined in the role mapping",

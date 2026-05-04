@@ -159,8 +159,8 @@ def test_post_login_failure_redirect_url_encoded(client):
 def test_post_login_with_oauth_method_returns_405(monkeypatch):
     """When AUTH_METHOD=oauth, POST /login is not a valid path (callback is)."""
     pytest.skip(
-        "Building an oauth-mode app requires real OIDC discovery network call; "
-        "covered indirectly by tests/auth/test_provider_oauth.py via _http_transport injection."
+        "Building an oauth-mode app requires real OIDC discovery network call;"
+        + " covered indirectly by tests/auth/test_provider_oauth.py via _http_transport injection."
     )
 
 

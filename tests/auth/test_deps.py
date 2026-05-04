@@ -21,9 +21,7 @@ from iris.auth.sessions import InMemorySessionStore
 def _build_app(tmp_path) -> tuple[FastAPI, InMemorySessionStore]:
     yaml_path = tmp_path / "authz.yaml"
     yaml_path.write_text(
-        "roles:\n"
-        "  admin:\n"
-        "    groups: [\"admins\"]\n"
+        'roles:\n  admin:\n    groups: ["admins"]\n'
     )
     app = FastAPI()
     store = InMemorySessionStore(ttl_seconds=60, absolute_ttl_seconds=3600)

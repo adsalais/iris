@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from starlette.middleware.base import BaseHTTPMiddleware
+from typing import override
+
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -24,7 +26,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     - Content-Security-Policy           (XSS defense-in-depth)
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    @override
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")

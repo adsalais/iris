@@ -202,6 +202,5 @@ def install(app: FastAPI) -> None:
     app.include_router(router)
 
     if isinstance(provider, OAuthProvider):
-        @app.on_event("shutdown")
-        async def _close_oauth_provider() -> None:  # pragma: no cover
-            await provider.close()
+        # Picked up by the lifespan handler in iris.app:_lifespan on shutdown.
+        app.state.auth_close_provider = provider.close

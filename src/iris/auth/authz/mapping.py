@@ -1,3 +1,6 @@
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# yaml.load and Loader.construct_* return Any by design — values are typed
+# manually via isinstance checks below.
 from __future__ import annotations
 
 import re

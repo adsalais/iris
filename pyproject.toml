@@ -29,6 +29,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "basedpyright>=1.39.3",
     "httpx>=0.28.1",
     "pytest>=9.0.3",
 ]
@@ -36,3 +37,34 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--import-mode=importlib", "-ra"]
+
+[tool.basedpyright]
+include = ["src", "tests"]
+pythonVersion = "3.13"
+
+# Disabled globally: these checks fire on intentional FastAPI/Pydantic patterns
+# (route bodies discard return values, decorator-registered handlers look unused,
+# Depends() defaults are calls, dict[str, Any] is the right shape for OIDC claims).
+reportUnusedCallResult = false
+reportUnusedFunction = false
+reportCallInDefaultInitializer = false
+reportAny = false
+reportExplicitAny = false
+reportUnannotatedClassAttribute = false
+reportMissingTypeStubs = false           # datastar_py / ldap3 / etc. ship no stubs
+
+# Tests: pytest fixtures are conventionally untyped; TestClient response objects
+# expose dynamic attrs (status_code, headers, text, cookies). Forcing annotations
+# everywhere costs churn for ~zero bug-finding value. White-box tests also poke
+# at private helpers (_BindFailed, _open_connection, _clock_stream) by design.
+[[tool.basedpyright.executionEnvironments]]
+root = "tests"
+reportMissingParameterType = false
+reportUnknownParameterType = false
+reportUnknownVariableType = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownLambdaType = false
+reportUnusedParameter = false             # pytest fixtures (e.g. monkeypatch) trigger setup
+reportPrivateUsage = false
+reportPrivateLocalImportUsage = false

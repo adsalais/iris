@@ -1,3 +1,6 @@
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+# ldap3 Entry exposes attributes dynamically (entry.cn.value et al) based on the
+# attributes returned by the search; static typing can't track these.
 from __future__ import annotations
 
 import logging
