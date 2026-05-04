@@ -4,8 +4,10 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Request
 
+from iris.auth.authz.core import CurrentMapping, resolve_roles
 from iris.auth.exceptions import AuthRequired
 from iris.auth.identity import User, UserSession
+from iris.auth.session import Session as _SessionT
 from iris.auth.sessions import InMemorySessionStore
 
 
@@ -58,6 +60,9 @@ async def _required_session(session: _ResolvedSession) -> UserSession:
 _RequiredSession = Annotated[UserSession, Depends(_required_session)]
 
 
+# --- Old surface (will be removed in Task 11) ---------------------------------
+
+
 async def _current_user(session: _RequiredSession) -> User:
     return session.user
 
@@ -78,3 +83,35 @@ CurrentUser = Annotated[User, Depends(_current_user)]
 OptionalCurrentUser = Annotated[User | None, Depends(_optional_current_user)]
 CurrentSession = Annotated[UserSession, Depends(_current_session)]
 SessionData = Annotated[dict[str, Any], Depends(_session_data)]
+
+
+# --- New surface --------------------------------------------------------------
+
+
+async def _build_optional(
+    stored: _ResolvedSession,
+    mapping: CurrentMapping,
+) -> _SessionT | None:
+    if stored is None:
+        return None
+    return _SessionT(
+        id=stored.id,
+        user=stored.user,
+        created_at=stored.created_at,
+        expires_at=stored.expires_at,
+        data=stored.data,
+        roles=resolve_roles(stored.user, mapping),
+    )
+
+
+_BuiltOptional = Annotated[_SessionT | None, Depends(_build_optional)]
+
+
+async def _build_required(view: _BuiltOptional) -> _SessionT:
+    if view is None:
+        raise AuthRequired()
+    return view
+
+
+Session = Annotated[_SessionT, Depends(_build_required)]
+OptionalSession = Annotated[_SessionT | None, Depends(_build_optional)]

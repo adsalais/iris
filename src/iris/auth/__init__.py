@@ -3,6 +3,8 @@ from iris.auth.deps import (
     CurrentSession,
     CurrentUser,
     OptionalCurrentUser,
+    OptionalSession,
+    Session,
     SessionData,
 )
 from iris.auth.identity import User, UserSession
@@ -13,6 +15,8 @@ __all__ = [
     "CurrentSession",
     "CurrentUser",
     "OptionalCurrentUser",
+    "OptionalSession",
+    "Session",
     "SessionData",
     "User",
     "UserSession",
