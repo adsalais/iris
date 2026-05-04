@@ -106,7 +106,7 @@ class AuthSettings:
             require_tls = _get_bool("LDAP_REQUIRE_TLS", True)
             if require_tls and not url.startswith("ldaps://"):
                 raise ValueError(
-                    f"LDAP_URL must use ldaps:// when LDAP_REQUIRE_TLS=true; "
+                    "LDAP_URL must use ldaps:// when LDAP_REQUIRE_TLS=true; "
                     + f"got {url!r}. Set LDAP_REQUIRE_TLS=false to allow plaintext "
                     + "(development only)."
                 )

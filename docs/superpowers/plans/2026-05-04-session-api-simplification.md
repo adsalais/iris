@@ -17,7 +17,7 @@
 | Path | Action | Purpose |
 |------|--------|---------|
 | `src/iris/auth/session.py` | create | `Session` frozen dataclass (request-scoped view). |
-| `src/iris/auth/authz/core.py` | create | `_resolve_roles`, `_current_mapping`, `_CurrentMapping` extracted from `authz/deps.py` to break import cycle. |
+| `src/iris/auth/authz/core.py` | create | `resolve_roles`, `current_mapping`, `CurrentMapping` extracted from `authz/deps.py` (renamed from underscore-prefixed forms; package-internal but cross-module so no underscore). |
 | `src/iris/auth/deps.py` | rewrite | Drop 4 surface aliases; add `Session`/`OptionalSession`. Keep `_resolve_stored` (renamed from `_resolve_session`), `set_session_store`, `set_settings`. |
 | `src/iris/auth/authz/deps.py` | slim | Only `require_role` remains; it depends on `Session` and returns Session. |
 | `src/iris/auth/__init__.py` | rewrite | New `__all__` of 5 names: `Session`, `OptionalSession`, `User`, `install`, `require_role`. |
@@ -100,9 +100,11 @@ git commit -m "feat(auth): add Session frozen-dataclass view type"
 - Create: `src/iris/auth/authz/core.py`
 - Modify: `src/iris/auth/authz/deps.py`
 
-**Why:** The new `iris.auth.deps._build_optional` will need `_resolve_roles` and `_current_mapping`. Today those live in `iris.auth.authz.deps`, which already imports from `iris.auth.deps` (`CurrentUser`). Moving them down a layer breaks the cycle.
+**Why:** The new `iris.auth.deps._build_optional` will need the role-resolution and current-mapping helpers. Today those live in `iris.auth.authz.deps`, which already imports from `iris.auth.deps` (`CurrentUser`). Moving them down a layer breaks the cycle. While moving them, drop the underscore prefixes — `_resolve_roles` → `resolve_roles`, `_current_mapping` → `current_mapping`, `_CurrentMapping` → `CurrentMapping` — because they cross module boundaries within the package and the `_` prefix would trip basedpyright's `reportPrivateUsage` on every import.
 
 This task is a pure code move; no behavior change. Existing tests must stay green.
+
+**Naming note.** When these helpers lived inside `authz/deps.py` they were prefixed with `_` because they were module-private. After the move, they cross module boundaries within the package, so the Pythonic convention is to drop the underscore: `resolve_roles`, `current_mapping`, `CurrentMapping`. They stay out of any `__all__`, which keeps them package-internal in spirit. (Leaving the underscore would trip basedpyright's `reportPrivateUsage` on every cross-module import.)
 
 - [ ] **Step 1: Create `src/iris/auth/authz/core.py`**
 
@@ -117,7 +119,7 @@ from iris.auth.authz.mapping import RoleMapping
 from iris.auth.identity import User
 
 
-def _resolve_roles(user: User, mapping: RoleMapping) -> frozenset[str]:
+def resolve_roles(user: User, mapping: RoleMapping) -> frozenset[str]:
     base: set[str] = set()
     username_lower = user.username.lower()
     user_groups = set(user.groups)
@@ -132,11 +134,11 @@ def _resolve_roles(user: User, mapping: RoleMapping) -> frozenset[str]:
     return frozenset(effective)
 
 
-async def _current_mapping(request: Request) -> RoleMapping:
+async def current_mapping(request: Request) -> RoleMapping:
     return request.app.state.authz_loader.get()
 
 
-_CurrentMapping = Annotated[RoleMapping, Depends(_current_mapping)]
+CurrentMapping = Annotated[RoleMapping, Depends(current_mapping)]
 ```
 
 - [ ] **Step 2: Update `src/iris/auth/authz/deps.py` to import from core**
@@ -150,14 +152,14 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from iris.auth.authz.core import _CurrentMapping, _resolve_roles
+from iris.auth.authz.core import CurrentMapping, resolve_roles
 from iris.auth.deps import CurrentUser
 from iris.auth.exceptions import AuthForbidden, AuthorizationMisconfigured
 from iris.auth.identity import User
 
 
-async def _current_roles(mapping: _CurrentMapping, user: CurrentUser) -> frozenset[str]:
-    return _resolve_roles(user, mapping)
+async def _current_roles(mapping: CurrentMapping, user: CurrentUser) -> frozenset[str]:
+    return resolve_roles(user, mapping)
 
 
 CurrentRoles = Annotated[frozenset[str], Depends(_current_roles)]
@@ -165,7 +167,7 @@ CurrentRoles = Annotated[frozenset[str], Depends(_current_roles)]
 
 def require_role(role: str):
     async def _check(
-        mapping: _CurrentMapping,
+        mapping: CurrentMapping,
         roles: CurrentRoles,
         user: CurrentUser,
     ) -> User:
@@ -178,7 +180,7 @@ def require_role(role: str):
     return _check
 ```
 
-The behavior is identical to the previous version — only the helpers' definitions moved. `CurrentRoles`, `_current_roles`, `require_role` retain their old shape (still returning `User`); they'll change in Task 4 / Task 10. The `_current_mapping` *function* is referenced via `Depends(_current_mapping)` baked into the `_CurrentMapping` Annotated alias, so `authz/deps.py` only imports the alias.
+The behavior is identical to the previous version — only the helpers' definitions moved (and lost their underscore prefixes for cross-module use). `CurrentRoles`, `_current_roles`, `require_role` retain their old shape (still returning `User`); they'll change in Task 4 / Task 10. The `current_mapping` *function* is referenced via `Depends(current_mapping)` baked into the `CurrentMapping` Annotated alias, so `authz/deps.py` only imports the alias.
 
 - [ ] **Step 3: Run the full test suite**
 
@@ -420,7 +422,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Request
 
-from iris.auth.authz.core import _CurrentMapping, _resolve_roles
+from iris.auth.authz.core import CurrentMapping, resolve_roles
 from iris.auth.exceptions import AuthRequired
 from iris.auth.identity import User, UserSession
 from iris.auth.session import Session as _SessionT
@@ -506,7 +508,7 @@ SessionData = Annotated[dict[str, Any], Depends(_session_data)]
 
 async def _build_optional(
     stored: _ResolvedSession,
-    mapping: _CurrentMapping,
+    mapping: CurrentMapping,
 ) -> _SessionT | None:
     if stored is None:
         return None
@@ -516,7 +518,7 @@ async def _build_optional(
         created_at=stored.created_at,
         expires_at=stored.expires_at,
         data=stored.data,
-        roles=_resolve_roles(stored.user, mapping),
+        roles=resolve_roles(stored.user, mapping),
     )
 
 
@@ -598,11 +600,19 @@ git commit -m "feat(auth): add Session and OptionalSession deps"
 
 This is a behavioral change to `require_role`'s return type, which has 5 call sites across 3 test files. All change atomically in this task. TDD: update the tests first (red), then change `require_role` (green).
 
-- [ ] **Step 1: Update `tests/auth/authz/test_authz_deps.py` to expect Session**
+- [ ] **FastAPI constraint that shapes the imports.** FastAPI 0.136.1 raises `AssertionError: Cannot specify Depends in Annotated and default value together` for `param: AliasWithDepends = Depends(other)`. The spec's earlier claim that the explicit `=` Depends "overrides" the Annotated alias is wrong (verified empirically). So:
+
+- For bare-auth routes (no role check): import the **alias** from `iris.auth` and write `session: Session` with no `=`.
+- For role-gated routes: import the **class** from `iris.auth.session` and write `session: Session = Depends(require_role("..."))`.
+- A file mixing both patterns imports the alias under a local name (`RequireSession`, `AuthSession`, etc.) so the two names don't collide.
+
+This task and Tasks 5–7 follow that convention.
+
+**Step 1: Update `tests/auth/authz/test_authz_deps.py` to expect Session**
 
 In `tests/auth/authz/test_authz_deps.py`, replace the import block at lines 1–12 and the three role-gated routes:
 
-Replace the `Depends, FastAPI, ... User, ...` import block with:
+Replace the import block with:
 
 ```python
 import asyncio
@@ -611,14 +621,16 @@ from pathlib import Path
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from iris.auth import Session
 from iris.auth.authz.deps import CurrentRoles, require_role
 from iris.auth.authz.loader import RoleMappingLoader
 from iris.auth.deps import set_session_store, set_settings
 from iris.auth.exceptions import install_exception_handlers
 from iris.auth.identity import User
+from iris.auth.session import Session
 from iris.auth.sessions import InMemorySessionStore
 ```
+
+(Note: imports the **class** from `iris.auth.session`, not the alias from `iris.auth`. Task 7 will add a separately-named local alias for the `my_roles` route, which uses the bare-auth pattern.)
 
 Replace the three role-gated route definitions:
 
@@ -640,14 +652,14 @@ Leave the `my_roles` route (using `CurrentRoles`) unchanged — it migrates in T
 
 - [ ] **Step 2: Update `tests/auth/test_error_pages.py` to expect Session**
 
-In `tests/auth/test_error_pages.py`, replace the imports and the `admin_only` route:
+In `tests/auth/test_error_pages.py`, replace the imports and the `admin_only` route. (This file's only auth-related route is role-gated, so it imports the **class**.)
 
 ```python
 from fastapi import Depends
 from fastapi.testclient import TestClient
 
-from iris.auth import Session
 from iris.auth.authz.deps import require_role
+from iris.auth.session import Session
 ```
 
 ```python
@@ -668,10 +680,10 @@ In `tests/auth/test_deps.py`, the `admin` route at line 41–43:
         return {"subject": session.user.subject}
 ```
 
-Add `Session` to the imports at the top:
+Add the `Session` **class** import at the top (since this route is role-gated, not bare-auth):
 
 ```python
-from iris.auth import Session
+from iris.auth.session import Session
 ```
 
 (Existing imports of `CurrentUser`, `OptionalCurrentUser`, `CurrentSession`, `SessionData` stay — they're still used by other tests in this file. The whole file is deleted in Task 8.)
@@ -692,21 +704,21 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from iris.auth.authz.core import _CurrentMapping, _resolve_roles
+from iris.auth.authz.core import CurrentMapping, resolve_roles
 from iris.auth.deps import CurrentUser, Session
 from iris.auth.exceptions import AuthForbidden, AuthorizationMisconfigured
 from iris.auth.session import Session as _SessionT
 
 
-async def _current_roles(mapping: _CurrentMapping, user: CurrentUser) -> frozenset[str]:
-    return _resolve_roles(user, mapping)
+async def _current_roles(mapping: CurrentMapping, user: CurrentUser) -> frozenset[str]:
+    return resolve_roles(user, mapping)
 
 
 CurrentRoles = Annotated[frozenset[str], Depends(_current_roles)]
 
 
 def require_role(role: str):
-    async def _check(session: Session, mapping: _CurrentMapping) -> _SessionT:
+    async def _check(session: Session, mapping: CurrentMapping) -> _SessionT:
         if role not in mapping.roles:
             raise AuthorizationMisconfigured(role)
         if role not in session.roles:
@@ -883,23 +895,36 @@ git commit -m "refactor(auth): migrate auth routes to Session dep"
 
 The `my_roles` route in this test file uses the now-deprecated `CurrentRoles` dep. Switch it to `Session` and read `session.roles`. After this task, no test imports `CurrentRoles`, clearing the way for Task 10 to remove it.
 
-- [ ] **Step 1: Update the import line**
+- [ ] **Step 1: Update the imports**
 
-In `tests/auth/authz/test_authz_deps.py`, change the authz-deps import:
+In `tests/auth/authz/test_authz_deps.py`, the file already imports the `Session` **class** (from Task 4) for the role-gated routes. Add the bare-auth **alias** under a local name so the two patterns can coexist in the same file. Final imports block:
 
 ```python
+import asyncio
+from pathlib import Path
+
+from fastapi import Depends, FastAPI
+from fastapi.testclient import TestClient
+
+from iris.auth import Session as RequireSession
 from iris.auth.authz.deps import require_role
+from iris.auth.authz.loader import RoleMappingLoader
+from iris.auth.deps import set_session_store, set_settings
+from iris.auth.exceptions import install_exception_handlers
+from iris.auth.identity import User
+from iris.auth.session import Session
+from iris.auth.sessions import InMemorySessionStore
 ```
 
-(Drop `CurrentRoles`.)
+(Drops `CurrentRoles` from the `authz.deps` import. Adds `Session as RequireSession` from `iris.auth` — the Annotated alias under a local name so it doesn't collide with the class.)
 
 - [ ] **Step 2: Update the `my_roles` route**
 
-Replace the `my_roles` route in `_build_app`:
+Replace the `my_roles` route in `_build_app`. Use the `RequireSession` alias (so the route doesn't need an explicit `= Depends(...)`):
 
 ```python
     @app.get("/my-roles")
-    async def my_roles(session: Session):
+    async def my_roles(session: RequireSession):
         return {"roles": sorted(session.roles)}
 ```
 
@@ -1019,14 +1044,14 @@ Expected: matches only inside `src/iris/auth/authz/deps.py` (the definition this
 ```python
 from __future__ import annotations
 
-from iris.auth.authz.core import _CurrentMapping
+from iris.auth.authz.core import CurrentMapping
 from iris.auth.deps import Session
 from iris.auth.exceptions import AuthForbidden, AuthorizationMisconfigured
 from iris.auth.session import Session as _SessionT
 
 
 def require_role(role: str):
-    async def _check(session: Session, mapping: _CurrentMapping) -> _SessionT:
+    async def _check(session: Session, mapping: CurrentMapping) -> _SessionT:
         if role not in mapping.roles:
             raise AuthorizationMisconfigured(role)
         if role not in session.roles:
@@ -1038,7 +1063,7 @@ def require_role(role: str):
     return _check
 ```
 
-(The `Depends` import is gone — it's only needed to wrap callables, and `_check` itself isn't wrapped at definition time. FastAPI resolves the `Session` and `_CurrentMapping` Annotated metadata when `_check` is registered as a dep at route-decoration time.)
+(The `Depends` import is gone — it's only needed to wrap callables, and `_check` itself isn't wrapped at definition time. FastAPI resolves the `Session` and `CurrentMapping` Annotated metadata when `_check` is registered as a dep at route-decoration time.)
 
 - [ ] **Step 3: Run the full test suite**
 
@@ -1075,7 +1100,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
 
-from iris.auth.authz.core import _CurrentMapping, _resolve_roles
+from iris.auth.authz.core import CurrentMapping, resolve_roles
 from iris.auth.exceptions import AuthRequired
 from iris.auth.identity import UserSession
 from iris.auth.session import Session as _SessionT
@@ -1124,7 +1149,7 @@ _StoredSession = Annotated[UserSession | None, Depends(_resolve_stored)]
 
 async def _build_optional(
     stored: _StoredSession,
-    mapping: _CurrentMapping,
+    mapping: CurrentMapping,
 ) -> _SessionT | None:
     if stored is None:
         return None
@@ -1134,7 +1159,7 @@ async def _build_optional(
         created_at=stored.created_at,
         expires_at=stored.expires_at,
         data=stored.data,
-        roles=_resolve_roles(stored.user, mapping),
+        roles=resolve_roles(stored.user, mapping),
     )
 
 
@@ -1284,7 +1309,7 @@ src/iris/auth/
     ├── config.py      # AuthzSettings.from_env() — reads AUTHZ_CONFIG_PATH
     ├── mapping.py     # RoleMapping value type + parse() with cycle detection + closure
     ├── loader.py      # RoleMappingLoader: mtime-cached, last-good fallback on bad reload
-    ├── core.py        # _resolve_roles, _current_mapping helpers (no cross-package auth imports)
+    ├── core.py        # resolve_roles, current_mapping helpers (no cross-package auth imports)
     └── deps.py        # require_role(name) factory
 ```
 

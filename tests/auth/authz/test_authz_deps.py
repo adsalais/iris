@@ -4,11 +4,13 @@ from pathlib import Path
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from iris.auth.authz.deps import CurrentRoles, require_role
+from iris.auth import Session as RequireSession
+from iris.auth.authz.deps import require_role
 from iris.auth.authz.loader import RoleMappingLoader
 from iris.auth.deps import set_session_store, set_settings
 from iris.auth.exceptions import install_exception_handlers
 from iris.auth.identity import User
+from iris.auth.session import Session
 from iris.auth.sessions import InMemorySessionStore
 
 
@@ -40,20 +42,20 @@ def _build_app(tmp_path: Path) -> tuple[FastAPI, InMemorySessionStore]:
     app.state.authz_loader = RoleMappingLoader(yaml_path)
 
     @app.get("/reader-only")
-    async def reader_only(user: User = Depends(require_role("reader"))):
-        return {"subject": user.subject}
+    async def reader_only(session: Session = Depends(require_role("reader"))):
+        return {"subject": session.user.subject}
 
     @app.get("/admin-only")
-    async def admin_only(user: User = Depends(require_role("admin"))):
-        return {"subject": user.subject}
+    async def admin_only(session: Session = Depends(require_role("admin"))):
+        return {"subject": session.user.subject}
 
     @app.get("/needs-undefined-role")
-    async def needs_undefined(user: User = Depends(require_role("super_admin"))):
-        return {"subject": user.subject}
+    async def needs_undefined(session: Session = Depends(require_role("super_admin"))):
+        return {"subject": session.user.subject}
 
     @app.get("/my-roles")
-    async def my_roles(roles: CurrentRoles):
-        return {"roles": sorted(roles)}
+    async def my_roles(session: RequireSession):
+        return {"roles": sorted(session.roles)}
 
     return app, store
 
@@ -124,7 +126,7 @@ def test_route_requiring_undefined_role_returns_500(tmp_path):
     assert "super_admin" not in r.text
 
 
-def test_current_roles_returns_full_effective_set_for_admin(tmp_path):
+def test_session_roles_returns_full_effective_set_for_admin(tmp_path):
     app, store = _build_app(tmp_path)
     sid = _seed(store, username="charlie", groups=("admins",))
     c = TestClient(app)
@@ -134,7 +136,7 @@ def test_current_roles_returns_full_effective_set_for_admin(tmp_path):
     assert r.json() == {"roles": ["admin", "reader", "writer"]}
 
 
-def test_current_roles_returns_empty_set_for_user_with_no_match(tmp_path):
+def test_session_roles_returns_empty_set_for_user_with_no_match(tmp_path):
     app, store = _build_app(tmp_path)
     sid = _seed(store, username="nobody", groups=())
     c = TestClient(app)

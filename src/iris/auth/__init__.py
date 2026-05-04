@@ -1,21 +1,12 @@
-from iris.auth.authz.deps import CurrentRoles, require_role
-from iris.auth.deps import (
-    CurrentSession,
-    CurrentUser,
-    OptionalCurrentUser,
-    SessionData,
-)
-from iris.auth.identity import User, UserSession
+from iris.auth.authz.deps import require_role
+from iris.auth.deps import OptionalSession, Session
+from iris.auth.identity import User
 from iris.auth.routes import install
 
 __all__ = [
-    "CurrentRoles",
-    "CurrentSession",
-    "CurrentUser",
-    "OptionalCurrentUser",
-    "SessionData",
+    "OptionalSession",
+    "Session",
     "User",
-    "UserSession",
     "install",
     "require_role",
 ]
