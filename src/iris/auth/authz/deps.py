@@ -1,20 +1,9 @@
 from __future__ import annotations
 
-from typing import Annotated
-
-from fastapi import Depends
-
-from iris.auth.authz.core import CurrentMapping, resolve_roles
-from iris.auth.deps import CurrentUser, Session
+from iris.auth.authz.core import CurrentMapping
+from iris.auth.deps import Session
 from iris.auth.exceptions import AuthForbidden, AuthorizationMisconfigured
 from iris.auth.session import Session as _SessionT
-
-
-async def _current_roles(mapping: CurrentMapping, user: CurrentUser) -> frozenset[str]:
-    return resolve_roles(user, mapping)
-
-
-CurrentRoles = Annotated[frozenset[str], Depends(_current_roles)]
 
 
 def require_role(role: str):
