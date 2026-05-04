@@ -4,14 +4,14 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from iris.auth.authz.core import _CurrentMapping, _resolve_roles
+from iris.auth.authz.core import CurrentMapping, resolve_roles
 from iris.auth.deps import CurrentUser
 from iris.auth.exceptions import AuthForbidden, AuthorizationMisconfigured
 from iris.auth.identity import User
 
 
-async def _current_roles(mapping: _CurrentMapping, user: CurrentUser) -> frozenset[str]:
-    return _resolve_roles(user, mapping)
+async def _current_roles(mapping: CurrentMapping, user: CurrentUser) -> frozenset[str]:
+    return resolve_roles(user, mapping)
 
 
 CurrentRoles = Annotated[frozenset[str], Depends(_current_roles)]
@@ -19,7 +19,7 @@ CurrentRoles = Annotated[frozenset[str], Depends(_current_roles)]
 
 def require_role(role: str):
     async def _check(
-        mapping: _CurrentMapping,
+        mapping: CurrentMapping,
         roles: CurrentRoles,
         user: CurrentUser,
     ) -> User:
