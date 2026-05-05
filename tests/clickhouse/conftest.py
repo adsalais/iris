@@ -38,7 +38,7 @@ def ch_container():
     as ``service_admin_user`` so that the ``GRANT role TO user`` DDL can
     actually persist.
     """
-    container = ClickHouseContainer("clickhouse/clickhouse-server:latest").with_env(
+    container = ClickHouseContainer("clickhouse/clickhouse-server:26.3").with_env(
         "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1"
     )
     with container as ch:
