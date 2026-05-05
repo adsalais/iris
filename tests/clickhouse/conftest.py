@@ -88,6 +88,14 @@ def ch_container():
             admin.command(
                 f"GRANT IMPERSONATE ON *.* TO {_SVC_USER} WITH GRANT OPTION"
             )
+            # Allow iris_svc to create databases (needed for grant tests).
+            admin.command(
+                f"GRANT CREATE DATABASE ON *.* TO {_SVC_USER}"
+            )
+            # Allow iris_svc to grant SELECT on databases (needed for grant_select_to_database tests).
+            admin.command(
+                f"GRANT SELECT ON *.* TO {_SVC_USER} WITH GRANT OPTION"
+            )
         finally:
             admin.close()
         yield ch
