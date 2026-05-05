@@ -60,12 +60,19 @@ def ch_container():
             admin.command(
                 f"GRANT CREATE ROLE, ROLE ADMIN ON *.* TO {_SVC_USER}"
             )
+            # Allow the svc user to create SQL-managed users (needed by init_user_rights).
+            admin.command(
+                f"GRANT CREATE USER ON *.* TO {_SVC_USER}"
+            )
             # Allow the svc user to verify its own bootstrap state via system tables.
             admin.command(
                 f"GRANT SELECT ON system.roles TO {_SVC_USER}"
             )
             admin.command(
                 f"GRANT SELECT ON system.role_grants TO {_SVC_USER}"
+            )
+            admin.command(
+                f"GRANT SELECT ON system.users TO {_SVC_USER}"
             )
         finally:
             admin.close()
