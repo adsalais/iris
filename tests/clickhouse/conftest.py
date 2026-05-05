@@ -96,6 +96,14 @@ def ch_container():
             admin.command(
                 f"GRANT SELECT ON *.* TO {_SVC_USER} WITH GRANT OPTION"
             )
+            # Allow iris_svc to create tables (needed for grant tests).
+            admin.command(
+                f"GRANT CREATE TABLE ON *.* TO {_SVC_USER}"
+            )
+            # Allow iris_svc to grant INSERT and ALTER UPDATE (needed for grant_insert_update_to_table tests).
+            admin.command(
+                f"GRANT INSERT, ALTER UPDATE ON *.* TO {_SVC_USER} WITH GRANT OPTION"
+            )
         finally:
             admin.close()
         yield ch

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from iris.clickhouse.grants import grant_select_to_database
+from iris.clickhouse.grants import grant_select_to_database, grant_insert_update_to_table
 
 
 def test_grant_select_to_database(ch_client, prefix):
@@ -40,3 +40,50 @@ def test_grant_select_to_database_is_idempotent(ch_client, prefix):
         ).named_results()
     )
     assert n == [{"n": 1}]
+
+
+def test_grant_insert_update_to_table(ch_client, ch_settings, prefix):
+    db = f"{prefix}_iu"
+    table = "t"
+    role = f"{prefix}_writer"
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    ch_client.command(
+        f"CREATE TABLE IF NOT EXISTS `{db}`.`{table}` (id UInt64, region String) ENGINE = MergeTree ORDER BY id"
+    )
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{role}`")
+
+    grant_insert_update_to_table(ch_client, database=db, table=table, role=role)
+
+    rows = list(
+        ch_client.query(
+            "SELECT access_type FROM system.grants WHERE role_name = {r:String} AND database = {d:String} AND table = {t:String}",
+            parameters={"r": role, "d": db, "t": table},
+        ).named_results()
+    )
+    access_types = {row["access_type"] for row in rows}
+    assert "INSERT" in access_types
+    # ALTER UPDATE shows up either as 'ALTER UPDATE' or 'UPDATE' depending on CH version.
+    assert any("UPDATE" in t for t in access_types), access_types
+
+
+def test_grant_insert_update_to_table_is_idempotent(ch_client, ch_settings, prefix):
+    db = f"{prefix}_iu2"
+    table = "t"
+    role = f"{prefix}_writer2"
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    ch_client.command(
+        f"CREATE TABLE IF NOT EXISTS `{db}`.`{table}` (id UInt64) ENGINE = MergeTree ORDER BY id"
+    )
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{role}`")
+
+    grant_insert_update_to_table(ch_client, database=db, table=table, role=role)
+    grant_insert_update_to_table(ch_client, database=db, table=table, role=role)
+
+    rows = list(
+        ch_client.query(
+            "SELECT access_type, count() AS n FROM system.grants WHERE role_name = {r:String} AND database = {d:String} AND table = {t:String} GROUP BY access_type",
+            parameters={"r": role, "d": db, "t": table},
+        ).named_results()
+    )
+    for row in rows:
+        assert row["n"] == 1
