@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+import ssl
+import stat
+
+from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
 
 def test_collection_smoke():
     """Placeholder: pytest can collect tests under tests/auth/integration."""
     assert True
-
-
-import ssl
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
 
 
 def test_tls_helper_generates_valid_chain(tmp_path):
@@ -21,19 +21,21 @@ def test_tls_helper_generates_valid_chain(tmp_path):
 
     paths = generate_ca_and_leaf(tmp_path)
 
-    ca_pem = paths.ca_pem.read_bytes()
-    server_pem = paths.server_pem.read_bytes()
-    server_key = paths.server_key.read_bytes()
+    ca_cert = x509.load_pem_x509_certificate(paths.ca_pem.read_bytes())
+    server_cert = x509.load_pem_x509_certificate(paths.server_pem.read_bytes())
 
-    ca_cert = x509.load_pem_x509_certificate(ca_pem)
-    server_cert = x509.load_pem_x509_certificate(server_pem)
-
-    # Leaf is signed by CA: verify the signature with CA's public key.
-    ca_cert.public_key().verify(  # type: ignore[union-attr]
+    # Leaf is signed by CA. Narrow the public-key union to RSA so pyright is
+    # happy and the .verify() call type-checks; this also fails loudly if the
+    # generator ever swaps to a non-RSA key type.
+    ca_pubkey = ca_cert.public_key()
+    assert isinstance(ca_pubkey, rsa.RSAPublicKey)
+    sig_hash = server_cert.signature_hash_algorithm
+    assert sig_hash is not None
+    ca_pubkey.verify(
         server_cert.signature,
         server_cert.tbs_certificate_bytes,
         padding.PKCS1v15(),
-        server_cert.signature_hash_algorithm,  # type: ignore[arg-type]
+        sig_hash,
     )
 
     # SANs include localhost (DNS) and 127.0.0.1 (IP).
@@ -50,5 +52,4 @@ def test_tls_helper_generates_valid_chain(tmp_path):
     ctx.load_cert_chain(certfile=str(paths.server_pem), keyfile=str(paths.server_key))
 
     # Key file is mode 0600.
-    import stat
     assert stat.S_IMODE(paths.server_key.stat().st_mode) == 0o600

@@ -42,6 +42,7 @@ addopts = ["--import-mode=importlib", "-ra"]
 
 [tool.basedpyright]
 include = ["src", "tests"]
+extraPaths = ["."]
 pythonVersion = "3.13"
 
 # Disabled globally: these checks fire on intentional FastAPI/Pydantic patterns
