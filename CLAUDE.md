@@ -321,3 +321,75 @@ Provider tests are offline:
 - The role-mapping loader stats the YAML on every request. Sub-millisecond at ≤20-user scale; for higher request volumes, swap to a file watcher (e.g., `watchfiles`) or event-driven invalidation.
 
 These are accepted residual risks for the ≤20-user / `--workers 1` deploy profile; revisit when scaling out or relocating behind a load balancer.
+
+## ClickHouse
+
+The `iris.clickhouse` package provisions ClickHouse users, roles, grants, and row policies, and provides audit-query helpers. It is independent of `iris.auth` — operations take plain strings and lists, not `Session`/`User` objects.
+
+### Public surface
+
+```python
+from iris.clickhouse import (
+    ClickHouseSettings, build_client, ensure_service_admin,
+    init_user_rights,
+    grant_select_to_database, grant_insert_update_to_table,
+    add_row_policy, revoke_row_policy,
+    user_grants, role_grants, user_role_memberships,
+    user_row_policies, role_row_policies, table_row_policies,
+)
+```
+
+`build_client(settings)` returns a `clickhouse_connect.driver.client.Client`. Operations take that client as their first argument:
+
+```python
+settings = ClickHouseSettings.from_env()
+client = build_client(settings)
+ensure_service_admin(client, settings)               # idempotent startup
+init_user_rights(client, username="alice", groups=["sales"], settings=settings)
+add_row_policy(client, database="orders", table="lines",
+               column="region", role="alice_USER", value="EU", settings=settings)
+```
+
+### Conventions
+
+- Per-user role: `<username>_USER` (suffix is hardcoded at `users.USER_ROLE_SUFFIX`).
+- Per-group role: `<group>_GRP` (suffix is hardcoded at `users.GROUP_ROLE_SUFFIX`).
+- Row-policy name: `<database>_<table>_<role>_<slug>_<8charhash>` — slug strips non-`[a-zA-Z0-9_]`, hash disambiguates collisions like `EU/UK` vs `EU UK`.
+- Wildcard service-admin policy per table: `<database>_<table>_<service_admin_role>` — `USING 1` applied to the role configured in `CLICKHOUSE_SERVICE_ADMIN_ROLE`. Created by `add_row_policy` if missing; *not* dropped by `revoke_row_policy`.
+- All operations are idempotent: re-running is safe. `init_user_rights` reconciles group memberships (revokes `_GRP` roles no longer in the input, grants the new ones).
+
+### DDL safety
+
+`identifiers.py` is the single safety contract. External-source strings (usernames from auth, db/table/column names from callers) flow through `validate_identifier` (rejects anything outside `[a-zA-Z0-9_]+`) and `quote_identifier` (validates + backticks). Row-policy values use `quote_string` for SQL literal escaping. DDL is built from these helpers; `client.command()` runs it without parameter binding. DML (audit `SELECT`s) uses ClickHouse's native `{name:Type}` placeholder syntax via `client.query(..., parameters=...)`.
+
+### Configuration
+
+Env vars (loaded at `import` time via `python-dotenv` from `.env`):
+
+```
+CLICKHOUSE_HOST=localhost
+CLICKHOUSE_PORT=8443
+CLICKHOUSE_USER=iris_service          # CH login iris connects as
+CLICKHOUSE_PASSWORD=replace-me
+CLICKHOUSE_SECURE=true                # https
+CLICKHOUSE_VERIFY=true                # TLS verification
+# CLICKHOUSE_CA_CERT_PATH=/etc/ssl/certs/ca-bundle.crt
+
+CLICKHOUSE_SERVICE_ADMIN_USER=iris_service       # IMPERSONATE grantee, normally = CLICKHOUSE_USER
+CLICKHOUSE_SERVICE_ADMIN_ROLE=service_admin_role # wildcard-policy grantee; granted to admin user at startup
+```
+
+`ClickHouseSettings.from_env()` validates everything at app construction — missing required vars, typo'd booleans (`COOKIE_SECURE=ture` style), non-int ports, and bad identifier names all fail loudly.
+
+### Tests
+
+The test suite uses `testcontainers-python` to spin up `clickhouse/clickhouse-server:26.3` in Docker. The container is session-scoped (one instance per pytest run); per-test isolation comes from a UUID-derived `prefix` fixture that namespaces every entity name. Docker is required to run `tests/clickhouse/`.
+
+The `chdb` library was originally trialed for in-process testing; `chdb==4.1.6`'s embedded server hardcodes `system.user_directories` to a read-only `users_xml` entry, blocking all RBAC DDL at runtime. See the design spec at `docs/superpowers/specs/2026-05-05-clickhouse-authz-design.md` for the verification.
+
+### Deferred (v1.1+)
+
+- HTTP routes that call these functions on behalf of authenticated users.
+- Wiring between `iris.auth` and `iris.clickhouse` (the bridge that translates `Session.user`/`Session.roles` into `init_user_rights` calls).
+- A runtime `execute_as(username, sql)` helper for impersonating queries.
+- Connection pooling and multi-worker session sharing.
