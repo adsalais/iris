@@ -26,3 +26,9 @@ def quote_identifier(name: str, *, kind: str) -> str:
     """Validate then backtick-quote. The validating regex blocks backticks, so the
     quoted form is always safe to inline into DDL."""
     return f"`{validate_identifier(name, kind=kind)}`"
+
+
+def quote_string(value: str) -> str:
+    """Quote a SQL string literal: backslashes are doubled, then single quotes are doubled."""
+    escaped = value.replace("\\", "\\\\").replace("'", "''")
+    return f"'{escaped}'"

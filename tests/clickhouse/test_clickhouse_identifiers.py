@@ -3,6 +3,7 @@ import pytest
 from iris.clickhouse.identifiers import (
     InvalidIdentifierError,
     quote_identifier,
+    quote_string,
     validate_identifier,
 )
 
@@ -36,3 +37,20 @@ def test_quote_identifier_backticks_a_valid_name():
 def test_quote_identifier_rejects_invalid_input():
     with pytest.raises(InvalidIdentifierError):
         quote_identifier("a b", kind="role")
+
+
+def test_quote_string_wraps_plain_value():
+    assert quote_string("EU") == "'EU'"
+
+
+def test_quote_string_doubles_embedded_single_quotes():
+    assert quote_string("O'Brien") == "'O''Brien'"
+
+
+def test_quote_string_escapes_backslashes():
+    assert quote_string(r"a\b") == r"'a\\b'"
+
+
+def test_quote_string_handles_combined_escapes():
+    # backslash must be escaped before quotes, otherwise '\\\'' would be ambiguous
+    assert quote_string("a\\'b") == "'a\\\\''b'"
