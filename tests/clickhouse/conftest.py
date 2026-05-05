@@ -38,7 +38,7 @@ def ch_container():
     as ``service_admin_user`` so that the ``GRANT role TO user`` DDL can
     actually persist.
     """
-    container = ClickHouseContainer("clickhouse/clickhouse-server:24").with_env(
+    container = ClickHouseContainer("clickhouse/clickhouse-server:latest").with_env(
         "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1"
     )
     with container as ch:
@@ -73,6 +73,20 @@ def ch_container():
             )
             admin.command(
                 f"GRANT SELECT ON system.users TO {_SVC_USER}"
+            )
+            admin.command(
+                f"GRANT SELECT ON system.grants TO {_SVC_USER}"
+            )
+            # Allow iris_svc to grant IMPERSONATE on provisioned users to itself.
+            # "GRANT IMPERSONATE ON *.* TO <user> WITH GRANT OPTION" is supported
+            # in ClickHouse 26.x (the container is pinned to "latest").  The
+            # wildcard form gives iris_svc the right to later run
+            # "GRANT IMPERSONATE ON <target_user> TO iris_svc" inside
+            # init_user_rights.  Note: when a wildcard IMPERSONATE grant already
+            # exists, per-user grants are silently absorbed (no extra row in
+            # system.grants); tests verify coverage via the wildcard row.
+            admin.command(
+                f"GRANT IMPERSONATE ON *.* TO {_SVC_USER} WITH GRANT OPTION"
             )
         finally:
             admin.close()

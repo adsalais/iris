@@ -18,7 +18,7 @@ def init_user_rights(
     *,
     username: str,
     groups: list[str],
-    settings: ClickHouseSettings,  # pyright: ignore[reportUnusedParameter]
+    settings: ClickHouseSettings,
 ) -> None:
     """Idempotently provision a CH user, their per-user role, group memberships, and the
     IMPERSONATE grant for the service admin.
@@ -57,4 +57,8 @@ def init_user_rights(
         role_q = quote_identifier(role, kind="role")
         client.command(f"CREATE ROLE IF NOT EXISTS {role_q}")  # pyright: ignore[reportUnknownMemberType]
         client.command(f"GRANT {role_q} TO {user_q}")  # pyright: ignore[reportUnknownMemberType]
-    # Task 13: append IMPERSONATE grant.
+
+    service_admin_q = quote_identifier(
+        settings.service_admin_user, kind="service_admin_user"
+    )
+    client.command(f"GRANT IMPERSONATE ON {user_q} TO {service_admin_q}")  # pyright: ignore[reportUnknownMemberType]
