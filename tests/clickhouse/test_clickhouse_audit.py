@@ -20,12 +20,17 @@ from iris.clickhouse.users import init_user_rights
 
 def test_user_grants_lists_user_grants(ch_client, ch_settings, prefix):
     username = f"{prefix}_aud_u"
+    db = f"{prefix}_aud_u_db"
     init_user_rights(ch_client, username=username, groups=[], settings=ch_settings)
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")  # pyright: ignore[reportUnknownMemberType]
+    ch_client.command(f"GRANT SELECT ON `{db}`.* TO `{username}`")  # pyright: ignore[reportUnknownMemberType]
 
     rows = user_grants(ch_client, username=username)
-    # The user has no direct grants yet (their per-user role does, not the user).
-    # Just verify the call succeeds and returns a list.
-    assert isinstance(rows, list)
+    select_grant = next(
+        (r for r in rows if r["access_type"] == "SELECT" and r["database"] == db),
+        None,
+    )
+    assert select_grant is not None, rows
 
 
 def test_role_grants_lists_role_grants(ch_client, ch_settings, prefix):
