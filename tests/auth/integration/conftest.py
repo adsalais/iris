@@ -1,8 +1,11 @@
-"""Fixtures for the auth integration tier (LDAP + OAuth via real containers).
+"""Fixtures for the auth integration tier (Keycloak via real container).
 
-Spins up bitnami/openldap and Keycloak via testcontainers-python, generates a
-self-signed CA + leaf cert in pure Python, and yields per-test FastAPI apps
-configured to use the real provider.
+Spins up Keycloak via testcontainers-python, generates a self-signed CA + leaf
+cert in pure Python, and yields per-test FastAPI apps configured to use the
+real OAuth provider.
+
+LDAP integration was descoped in favor of focusing on the OAuth path; the
+existing offline LDAP tests in tests/auth/test_provider_ldap.py remain.
 
 This conftest layers on top of tests/conftest.py: the parent conftest sets
 AUTH_METHOD=mock at module scope; integration tests use monkeypatch.setenv to
@@ -24,9 +27,7 @@ def tls_paths(tmp_path_factory) -> TLSPaths:
     """Generate a CA + leaf cert once per pytest session.
 
     The same paths are consumed by:
-    - openldap_container (mounted as LDAPS cert + key + CA file)
     - keycloak_container (mounted as HTTPS cert + key)
-    - LDAPProvider via LDAP_CA_CERT_PATH
     - OAuthProvider via OIDC_CA_CERT_PATH
     """
     target = tmp_path_factory.mktemp("auth-certs")

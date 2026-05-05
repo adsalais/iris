@@ -1,4 +1,10 @@
-"""LDAP integration tests against a real bitnami/openldap container."""
+"""TLS-helper smoke tests for the integration tier.
+
+The integration suite currently targets only Keycloak (LDAP integration was
+descoped — see docs/superpowers/plans/2026-05-05-auth-testcontainers.md).
+The cert-generator + tls_paths fixture remain because the Keycloak fixture
+still consumes them for HTTPS.
+"""
 
 from __future__ import annotations
 
