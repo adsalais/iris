@@ -77,6 +77,9 @@ def ch_container():
             admin.command(
                 f"GRANT SELECT ON system.grants TO {_SVC_USER}"
             )
+            admin.command(
+                f"GRANT SELECT ON system.row_policies TO {_SVC_USER}"
+            )
             # Allow iris_svc to grant IMPERSONATE on provisioned users to itself.
             # "GRANT IMPERSONATE ON *.* TO <user> WITH GRANT OPTION" is supported
             # in ClickHouse 26.x (the container is pinned to "latest").  The
