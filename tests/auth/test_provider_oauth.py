@@ -30,6 +30,18 @@ def provider(settings):
     return OAuthProvider(settings, _http_transport=_signing_mock_transport())
 
 
+def test_oidc_settings_ca_cert_path_defaults_to_none():
+    """OIDCSettings.ca_cert_path is optional; existing callers that don't
+    pass it should get None (production code paths and offline tests)."""
+    s = OIDCSettings(
+        issuer_url="https://example",
+        client_id="x",
+        client_secret="y",
+        scopes=("openid",),
+    )
+    assert s.ca_cert_path is None
+
+
 def test_provider_construction_does_not_fetch_discovery(settings):
     """Construction is lazy; the discovery URL is fetched only on first use."""
     fetched: list[str] = []
