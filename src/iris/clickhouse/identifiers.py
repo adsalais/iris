@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 
 _IDENT_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+_SLUG_RE = re.compile(r"[^a-zA-Z0-9_]+")
 
 
 class InvalidIdentifierError(ValueError):
@@ -32,3 +34,19 @@ def quote_string(value: str) -> str:
     """Quote a SQL string literal: backslashes are doubled, then single quotes are doubled."""
     escaped = value.replace("\\", "\\\\").replace("'", "''")
     return f"'{escaped}'"
+
+
+def policy_name(database: str, table: str, role: str, value: str) -> str:
+    """Build a row-policy name: ``<database>_<table>_<role>_<slug>_<8charhash>``.
+
+    ``database``, ``table``, ``role`` are validated as identifiers. ``value`` is treated
+    as opaque — non-[a-zA-Z0-9_] characters collapse to '_' for the slug, and an
+    8-character SHA-256 hex digest of the raw value is appended so distinct values
+    that happen to share a slug (``'EU/UK'`` vs ``'EU UK'``) get distinct names.
+    """
+    validate_identifier(database, kind="database")
+    validate_identifier(table, kind="table")
+    validate_identifier(role, kind="role")
+    slug = _SLUG_RE.sub("_", value).strip("_") or "v"
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+    return f"{database}_{table}_{role}_{slug}_{digest}"

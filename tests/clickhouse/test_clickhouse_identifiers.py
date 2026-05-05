@@ -2,6 +2,7 @@ import pytest
 
 from iris.clickhouse.identifiers import (
     InvalidIdentifierError,
+    policy_name,
     quote_identifier,
     quote_string,
     validate_identifier,
@@ -54,3 +55,38 @@ def test_quote_string_escapes_backslashes():
 def test_quote_string_handles_combined_escapes():
     # backslash must be escaped before quotes, otherwise '\\\'' would be ambiguous
     assert quote_string("a\\'b") == "'a\\\\''b'"
+
+
+def test_policy_name_basic_shape():
+    name = policy_name("orders", "lines", "writer", "EU")
+    # <db>_<table>_<role>_<slug>_<8charhash>
+    assert name.startswith("orders_lines_writer_EU_")
+    suffix = name.split("_")[-1]
+    assert len(suffix) == 8
+    assert all(c in "0123456789abcdef" for c in suffix)
+
+
+def test_policy_name_distinct_for_distinct_values_with_same_slug():
+    a = policy_name("db", "t", "r", "EU/UK")
+    b = policy_name("db", "t", "r", "EU UK")
+    # Slug strips both '/' and ' ' to '_', producing the same prefix...
+    assert a.startswith("db_t_r_EU_UK_")
+    assert b.startswith("db_t_r_EU_UK_")
+    # ...but the trailing hash disambiguates.
+    assert a != b
+
+
+def test_policy_name_validates_identifier_arguments():
+    with pytest.raises(InvalidIdentifierError):
+        policy_name("bad-db", "t", "r", "EU")
+    with pytest.raises(InvalidIdentifierError):
+        policy_name("db", "bad table", "r", "EU")
+    with pytest.raises(InvalidIdentifierError):
+        policy_name("db", "t", "bad role", "EU")
+
+
+def test_policy_name_handles_empty_or_only_special_value():
+    name = policy_name("db", "t", "r", "!!!")
+    # Slug of '!!!' is empty after stripping; substitute the placeholder 'v' and
+    # rely on the hash to make it unique.
+    assert name.startswith("db_t_r_v_")
