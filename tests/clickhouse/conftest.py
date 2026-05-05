@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 
+import clickhouse_connect
 import pytest
 from testcontainers.clickhouse import ClickHouseContainer
 
@@ -19,12 +20,55 @@ from iris.clickhouse.bootstrap import ensure_service_admin
 from iris.clickhouse.client import build_client
 from iris.clickhouse.config import ClickHouseSettings
 
+# SQL-managed service admin credentials used throughout the session.
+# Must differ from the XML-defined ``test`` user so that ``GRANT role TO user``
+# can target a writable (``local_directory``) storage entry.
+_SVC_USER = "iris_svc"
+_SVC_PASSWORD = "iris_svc_pw"
+
 
 @pytest.fixture(scope="session")
 def ch_container():
-    """One ClickHouse server per test session."""
-    container = ClickHouseContainer("clickhouse/clickhouse-server:24")
+    """One ClickHouse server per test session.
+
+    ``CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1`` grants the XML-defined
+    ``test`` user the ``CREATE ROLE`` / ``GRANT`` DDL rights needed to
+    bootstrap the service-admin role.  We then create a SQL-managed
+    ``iris_svc`` user (stored in ``local_directory``, writable) and use it
+    as ``service_admin_user`` so that the ``GRANT role TO user`` DDL can
+    actually persist.
+    """
+    container = ClickHouseContainer("clickhouse/clickhouse-server:24").with_env(
+        "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1"
+    )
     with container as ch:
+        host = ch.get_container_host_ip()
+        port = int(ch.get_exposed_port(8123))
+        # Connect as the privileged XML user to create the SQL-managed svc user.
+        admin = clickhouse_connect.get_client(
+            host=host,
+            port=port,
+            username=ch.username,  # type: ignore[attr-defined]
+            password=ch.password,  # type: ignore[attr-defined]
+            secure=False,
+            verify=False,
+        )
+        try:
+            admin.command(f"CREATE USER IF NOT EXISTS {_SVC_USER} IDENTIFIED BY '{_SVC_PASSWORD}'")
+            # Give the svc user enough privilege to run the bootstrap DDL itself
+            # (so that ensure_service_admin called *as* iris_svc would also work).
+            admin.command(
+                f"GRANT CREATE ROLE, ROLE ADMIN ON *.* TO {_SVC_USER}"
+            )
+            # Allow the svc user to verify its own bootstrap state via system tables.
+            admin.command(
+                f"GRANT SELECT ON system.roles TO {_SVC_USER}"
+            )
+            admin.command(
+                f"GRANT SELECT ON system.role_grants TO {_SVC_USER}"
+            )
+        finally:
+            admin.close()
         yield ch
 
 
@@ -34,19 +78,21 @@ def ch_settings(ch_container, monkeypatch):
 
     Each test gets a fresh ``from_env()`` so the dataclass is hermetic — the env
     overrides are scoped to the test by ``monkeypatch``.
+
+    ``CLICKHOUSE_USER`` / ``CLICKHOUSE_PASSWORD`` are set to the SQL-managed
+    ``iris_svc`` user so that ``ensure_service_admin`` can both run
+    ``CREATE ROLE`` and grant it to a writable-storage user.
     """
     host = ch_container.get_container_host_ip()
     port = int(ch_container.get_exposed_port(8123))
-    user = ch_container.username  # type: ignore[attr-defined]
-    password = ch_container.password  # type: ignore[attr-defined]
 
     monkeypatch.setenv("CLICKHOUSE_HOST", host)
     monkeypatch.setenv("CLICKHOUSE_PORT", str(port))
-    monkeypatch.setenv("CLICKHOUSE_USER", user)
-    monkeypatch.setenv("CLICKHOUSE_PASSWORD", password)
+    monkeypatch.setenv("CLICKHOUSE_USER", _SVC_USER)
+    monkeypatch.setenv("CLICKHOUSE_PASSWORD", _SVC_PASSWORD)
     monkeypatch.setenv("CLICKHOUSE_SECURE", "false")
     monkeypatch.setenv("CLICKHOUSE_VERIFY", "false")
-    monkeypatch.setenv("CLICKHOUSE_SERVICE_ADMIN_USER", user)
+    monkeypatch.setenv("CLICKHOUSE_SERVICE_ADMIN_USER", _SVC_USER)
     monkeypatch.setenv("CLICKHOUSE_SERVICE_ADMIN_ROLE", "service_admin_role")
     monkeypatch.delenv("CLICKHOUSE_CA_CERT_PATH", raising=False)
 
