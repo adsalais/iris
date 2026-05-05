@@ -75,3 +75,74 @@ def test_init_user_rights_rejects_bad_group(ch_client, ch_settings, prefix):
 def test_user_role_suffix_constant():
     assert USER_ROLE_SUFFIX == "_USER"
     assert GROUP_ROLE_SUFFIX == "_GRP"
+
+
+def _grp_roles_for(client, username):
+    rows = list(
+        client.query(
+            "SELECT granted_role_name FROM system.role_grants WHERE user_name = {u:String}",
+            parameters={"u": username},
+        ).named_results()
+    )
+    return {
+        row["granted_role_name"]
+        for row in rows
+        if row["granted_role_name"].endswith(GROUP_ROLE_SUFFIX)
+    }
+
+
+def test_init_user_rights_grants_group_roles(ch_client, ch_settings, prefix):
+    username = f"{prefix}_g"
+    init_user_rights(
+        ch_client,
+        username=username,
+        groups=["sales", "ops"],
+        settings=ch_settings,
+    )
+    assert _grp_roles_for(ch_client, username) == {"sales_GRP", "ops_GRP"}
+
+
+def test_init_user_rights_revokes_groups_user_no_longer_has(ch_client, ch_settings, prefix):
+    username = f"{prefix}_r"
+    init_user_rights(
+        ch_client,
+        username=username,
+        groups=["a", "b"],
+        settings=ch_settings,
+    )
+    assert _grp_roles_for(ch_client, username) == {"a_GRP", "b_GRP"}
+
+    init_user_rights(
+        ch_client,
+        username=username,
+        groups=["b", "c"],
+        settings=ch_settings,
+    )
+    assert _grp_roles_for(ch_client, username) == {"b_GRP", "c_GRP"}
+
+
+def test_init_user_rights_does_not_touch_user_role_during_reconcile(
+    ch_client, ch_settings, prefix
+):
+    """The per-user `_USER` role must stay granted regardless of `groups` content."""
+    username = f"{prefix}_keep"
+    init_user_rights(
+        ch_client,
+        username=username,
+        groups=["x"],
+        settings=ch_settings,
+    )
+    init_user_rights(
+        ch_client,
+        username=username,
+        groups=[],
+        settings=ch_settings,
+    )
+    user_role = username + USER_ROLE_SUFFIX
+    rows = list(
+        ch_client.query(
+            "SELECT granted_role_name FROM system.role_grants WHERE user_name = {u:String} AND granted_role_name = {r:String}",
+            parameters={"u": username, "r": user_role},
+        ).named_results()
+    )
+    assert rows == [{"granted_role_name": user_role}]

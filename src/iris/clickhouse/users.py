@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from clickhouse_connect.driver.client import Client
 
 from iris.clickhouse.config import ClickHouseSettings
@@ -16,12 +18,14 @@ def init_user_rights(
     *,
     username: str,
     groups: list[str],
-    settings: ClickHouseSettings,  # pyright: ignore[reportUnusedParameter]  — consumed in Tasks 12/13
+    settings: ClickHouseSettings,  # pyright: ignore[reportUnusedParameter]
 ) -> None:
     """Idempotently provision a CH user, their per-user role, group memberships, and the
     IMPERSONATE grant for the service admin.
 
-    Steps 1–3 only in this task; group reconcile lands in Task 12, IMPERSONATE in Task 13.
+    The per-user role (``<username>_USER``) is granted unconditionally and is *not*
+    part of the group reconcile — it represents the user's own identity, distinct
+    from group membership.
     """
     validate_identifier(username, kind="username")
     for group in groups:
@@ -33,3 +37,24 @@ def init_user_rights(
     client.command(f"CREATE USER IF NOT EXISTS {user_q} IDENTIFIED WITH no_password")  # pyright: ignore[reportUnknownMemberType]
     client.command(f"CREATE ROLE IF NOT EXISTS {user_role_q}")  # pyright: ignore[reportUnknownMemberType]
     client.command(f"GRANT {user_role_q} TO {user_q}")  # pyright: ignore[reportUnknownMemberType]
+
+    desired_grp = {g + GROUP_ROLE_SUFFIX for g in groups}
+    result = client.query(  # pyright: ignore[reportUnknownMemberType]
+        "SELECT granted_role_name FROM system.role_grants WHERE user_name = {u:String}",
+        parameters={"u": username},
+    )
+    current_grp: set[str] = set()
+    for row in result.named_results():  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        name = cast(str, row["granted_role_name"])
+        if name.endswith(GROUP_ROLE_SUFFIX):
+            current_grp.add(name)
+
+    for role in current_grp - desired_grp:
+        role_q = quote_identifier(role, kind="role")
+        client.command(f"REVOKE {role_q} FROM {user_q}")  # pyright: ignore[reportUnknownMemberType]
+
+    for role in desired_grp - current_grp:
+        role_q = quote_identifier(role, kind="role")
+        client.command(f"CREATE ROLE IF NOT EXISTS {role_q}")  # pyright: ignore[reportUnknownMemberType]
+        client.command(f"GRANT {role_q} TO {user_q}")  # pyright: ignore[reportUnknownMemberType]
+    # Task 13: append IMPERSONATE grant.
