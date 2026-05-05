@@ -104,6 +104,10 @@ def ch_container():
             admin.command(
                 f"GRANT INSERT, ALTER UPDATE ON *.* TO {_SVC_USER} WITH GRANT OPTION"
             )
+            # Allow iris_svc to create and drop row policies (needed for row policy tests).
+            admin.command(
+                f"GRANT CREATE ROW POLICY, DROP ROW POLICY ON *.* TO {_SVC_USER}"
+            )
         finally:
             admin.close()
         yield ch
