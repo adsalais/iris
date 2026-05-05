@@ -186,7 +186,7 @@ def validate_identifier(name: str, *, kind: str) -> str:
     ``kind`` is woven into the error message ("username", "role", "database", ...) so
     operators tracing a bad input can see where it entered.
     """
-    if not isinstance(name, str) or not _IDENT_RE.fullmatch(name):
+    if not _IDENT_RE.fullmatch(name):
         raise InvalidIdentifierError(f"invalid {kind}: {name!r}")
     return name
 ```
@@ -315,8 +315,6 @@ Append to `src/iris/clickhouse/identifiers.py`:
 ```python
 def quote_string(value: str) -> str:
     """Quote a SQL string literal: backslashes are doubled, then single quotes are doubled."""
-    if not isinstance(value, str):
-        raise TypeError(f"quote_string expects str, got {type(value).__name__}")
     escaped = value.replace("\\", "\\\\").replace("'", "''")
     return f"'{escaped}'"
 ```
@@ -416,8 +414,6 @@ def policy_name(database: str, table: str, role: str, value: str) -> str:
     validate_identifier(database, kind="database")
     validate_identifier(table, kind="table")
     validate_identifier(role, kind="role")
-    if not isinstance(value, str):
-        raise TypeError(f"policy_name value expects str, got {type(value).__name__}")
     slug = _SLUG_RE.sub("_", value).strip("_") or "v"
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
     return f"{database}_{table}_{role}_{slug}_{digest}"

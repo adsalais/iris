@@ -17,6 +17,6 @@ def validate_identifier(name: str, *, kind: str) -> str:
     ``kind`` is woven into the error message ("username", "role", "database", ...) so
     operators tracing a bad input can see where it entered.
     """
-    if not isinstance(name, str) or not _IDENT_RE.fullmatch(name):
+    if not _IDENT_RE.fullmatch(name):
         raise InvalidIdentifierError(f"invalid {kind}: {name!r}")
     return name
