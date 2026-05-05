@@ -95,38 +95,13 @@ git commit -m "chore(deps): swap chdb for clickhouse-connect + testcontainers"
 
 ---
 
-## Task 2: Update .env with ClickHouse block
+## Task 2 — SKIPPED
 
-**Files:**
-- Modify: `.env`
+The original Task 2 told the implementer to append a `CLICKHOUSE_*` block to `.env` and commit it. **`.env` is gitignored** (per `.gitignore` and `CLAUDE.md`); committing it would leak the existing auth secrets in the file (`MOCK_PASSWORD`, `OIDC_CLIENT_SECRET`, `LDAP_*`, etc.) into git history. The repository's convention is to document env vars in `CLAUDE.md` and let operators populate their own gitignored `.env` from those examples.
 
-- [ ] **Step 2.1: Append a ClickHouse block to `.env`**
+The `CLICKHOUSE_*` example values are documented as part of Task 24 (the `### Configuration` subsection of the new "ClickHouse" section in `CLAUDE.md`).
 
-Append the following at the end of `.env` (do NOT replace existing content):
-
-```
-# ClickHouse connection (the server-side identity iris connects as).
-CLICKHOUSE_HOST=localhost
-CLICKHOUSE_PORT=8443
-CLICKHOUSE_USER=iris_service
-CLICKHOUSE_PASSWORD=replace-me
-CLICKHOUSE_SECURE=true
-CLICKHOUSE_VERIFY=true
-# CLICKHOUSE_CA_CERT_PATH=/etc/ssl/certs/ca-bundle.crt
-
-# ClickHouse: identity used for impersonation and as the wildcard-policy grantee.
-# Typically equals CLICKHOUSE_USER. The role is granted to that user at startup
-# and is the grantee of every wildcard `USING 1` row policy.
-CLICKHOUSE_SERVICE_ADMIN_USER=iris_service
-CLICKHOUSE_SERVICE_ADMIN_ROLE=service_admin_role
-```
-
-- [ ] **Step 2.2: Commit**
-
-```bash
-git add .env
-git commit -m "chore(env): document ClickHouse connection vars"
-```
+Skip this task. Move to Task 3.
 
 ---
 
@@ -211,7 +186,7 @@ def validate_identifier(name: str, *, kind: str) -> str:
     ``kind`` is woven into the error message ("username", "role", "database", ...) so
     operators tracing a bad input can see where it entered.
     """
-    if not isinstance(name, str) or not _IDENT_RE.fullmatch(name):
+    if not _IDENT_RE.fullmatch(name):
         raise InvalidIdentifierError(f"invalid {kind}: {name!r}")
     return name
 ```
@@ -340,8 +315,6 @@ Append to `src/iris/clickhouse/identifiers.py`:
 ```python
 def quote_string(value: str) -> str:
     """Quote a SQL string literal: backslashes are doubled, then single quotes are doubled."""
-    if not isinstance(value, str):
-        raise TypeError(f"quote_string expects str, got {type(value).__name__}")
     escaped = value.replace("\\", "\\\\").replace("'", "''")
     return f"'{escaped}'"
 ```
@@ -441,8 +414,6 @@ def policy_name(database: str, table: str, role: str, value: str) -> str:
     validate_identifier(database, kind="database")
     validate_identifier(table, kind="table")
     validate_identifier(role, kind="role")
-    if not isinstance(value, str):
-        raise TypeError(f"policy_name value expects str, got {type(value).__name__}")
     slug = _SLUG_RE.sub("_", value).strip("_") or "v"
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
     return f"{database}_{table}_{role}_{slug}_{digest}"
