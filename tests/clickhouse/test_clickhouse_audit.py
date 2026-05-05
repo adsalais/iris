@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from iris.clickhouse.audit import role_grants, user_grants
+from iris.clickhouse.audit import role_grants, user_grants, user_role_memberships
 from iris.clickhouse.grants import grant_select_to_database
 from iris.clickhouse.identifiers import InvalidIdentifierError
 from iris.clickhouse.users import init_user_rights
@@ -40,3 +40,19 @@ def test_audit_validates_inputs(ch_client):
         user_grants(ch_client, username="bad name")
     with pytest.raises(InvalidIdentifierError):
         role_grants(ch_client, role="bad role")
+
+
+def test_user_role_memberships(ch_client, ch_settings, prefix):
+    username = f"{prefix}_mem"
+    init_user_rights(
+        ch_client,
+        username=username,
+        groups=["alpha", "beta"],
+        settings=ch_settings,
+    )
+
+    rows = user_role_memberships(ch_client, username=username)
+    granted = {r["granted_role_name"] for r in rows}
+    assert f"{username}_USER" in granted
+    assert "alpha_GRP" in granted
+    assert "beta_GRP" in granted
