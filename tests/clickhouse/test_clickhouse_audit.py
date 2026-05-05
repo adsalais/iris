@@ -22,8 +22,8 @@ def test_user_grants_lists_user_grants(ch_client, ch_settings, prefix):
     username = f"{prefix}_aud_u"
     db = f"{prefix}_aud_u_db"
     init_user_rights(ch_client, username=username, groups=[], settings=ch_settings)
-    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")  # pyright: ignore[reportUnknownMemberType]
-    ch_client.command(f"GRANT SELECT ON `{db}`.* TO `{username}`")  # pyright: ignore[reportUnknownMemberType]
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    ch_client.command(f"GRANT SELECT ON `{db}`.* TO `{username}`")
 
     rows = user_grants(ch_client, username=username)
     select_grant = next(
