@@ -8,7 +8,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "chdb>=4.1.6",
+    "clickhouse-connect>=0.15.1",
     "datastar-py>=1.0.0",
     "fastapi>=0.136.1",
     "itsdangerous>=2.2.0",
@@ -33,6 +33,7 @@ dev = [
     "basedpyright>=1.39.3",
     "httpx>=0.28.1",
     "pytest>=9.0.3",
+    "testcontainers[clickhouse]>=4.14.2",
 ]
 
 [tool.pytest.ini_options]
