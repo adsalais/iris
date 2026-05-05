@@ -34,31 +34,31 @@ def init_user_rights(
     user_q = quote_identifier(username, kind="username")
     user_role_q = quote_identifier(username + USER_ROLE_SUFFIX, kind="role")
 
-    client.command(f"CREATE USER IF NOT EXISTS {user_q} IDENTIFIED WITH no_password")  # pyright: ignore[reportUnknownMemberType]
-    client.command(f"CREATE ROLE IF NOT EXISTS {user_role_q}")  # pyright: ignore[reportUnknownMemberType]
-    client.command(f"GRANT {user_role_q} TO {user_q}")  # pyright: ignore[reportUnknownMemberType]
+    client.command(f"CREATE USER IF NOT EXISTS {user_q} IDENTIFIED WITH no_password")
+    client.command(f"CREATE ROLE IF NOT EXISTS {user_role_q}")
+    client.command(f"GRANT {user_role_q} TO {user_q}")
 
     desired_grp = {g + GROUP_ROLE_SUFFIX for g in groups}
-    result = client.query(  # pyright: ignore[reportUnknownMemberType]
+    result = client.query(
         "SELECT granted_role_name FROM system.role_grants WHERE user_name = {u:String}",
         parameters={"u": username},
     )
     current_grp: set[str] = set()
-    for row in result.named_results():  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+    for row in result.named_results():
         name = cast(str, row["granted_role_name"])
         if name.endswith(GROUP_ROLE_SUFFIX):
             current_grp.add(name)
 
     for role in current_grp - desired_grp:
         role_q = quote_identifier(role, kind="role")
-        client.command(f"REVOKE {role_q} FROM {user_q}")  # pyright: ignore[reportUnknownMemberType]
+        client.command(f"REVOKE {role_q} FROM {user_q}")
 
     for role in desired_grp - current_grp:
         role_q = quote_identifier(role, kind="role")
-        client.command(f"CREATE ROLE IF NOT EXISTS {role_q}")  # pyright: ignore[reportUnknownMemberType]
-        client.command(f"GRANT {role_q} TO {user_q}")  # pyright: ignore[reportUnknownMemberType]
+        client.command(f"CREATE ROLE IF NOT EXISTS {role_q}")
+        client.command(f"GRANT {role_q} TO {user_q}")
 
     service_admin_q = quote_identifier(
         settings.service_admin_user, kind="service_admin_user"
     )
-    client.command(f"GRANT IMPERSONATE ON {user_q} TO {service_admin_q}")  # pyright: ignore[reportUnknownMemberType]
+    client.command(f"GRANT IMPERSONATE ON {user_q} TO {service_admin_q}")

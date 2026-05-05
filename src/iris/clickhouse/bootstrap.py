@@ -17,5 +17,5 @@ def ensure_service_admin(client: Client, settings: ClickHouseSettings) -> None:
     """
     role = quote_identifier(settings.service_admin_role, kind="service_admin_role")
     user = quote_identifier(settings.service_admin_user, kind="service_admin_user")
-    client.command(f"CREATE ROLE IF NOT EXISTS {role}")  # pyright: ignore[reportUnknownMemberType]
-    client.command(f"GRANT {role} TO {user}")  # pyright: ignore[reportUnknownMemberType]
+    client.command(f"CREATE ROLE IF NOT EXISTS {role}")
+    client.command(f"GRANT {role} TO {user}")

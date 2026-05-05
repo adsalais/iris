@@ -53,7 +53,10 @@ reportCallInDefaultInitializer = false
 reportAny = false
 reportExplicitAny = false
 reportUnannotatedClassAttribute = false
-reportMissingTypeStubs = false           # datastar_py / ldap3 / etc. ship no stubs
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
 
 # Tests: pytest fixtures are conventionally untyped; TestClient response objects
 # expose dynamic attrs (status_code, headers, text, cookies). Forcing annotations

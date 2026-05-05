@@ -13,7 +13,7 @@ def user_grants(client: Client, *, username: str) -> list[dict[str, Any]]:
     """All direct grants on the named user (does not include grants inherited via roles)."""
     validate_identifier(username, kind="username")
     return list(
-        client.query(  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        client.query(
             "SELECT * FROM system.grants WHERE user_name = {u:String}",
             parameters={"u": username},
         ).named_results()
@@ -24,7 +24,7 @@ def role_grants(client: Client, *, role: str) -> list[dict[str, Any]]:
     """All grants attached to the named role."""
     validate_identifier(role, kind="role")
     return list(
-        client.query(  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        client.query(
             "SELECT * FROM system.grants WHERE role_name = {r:String}",
             parameters={"r": role},
         ).named_results()
@@ -35,7 +35,7 @@ def user_role_memberships(client: Client, *, username: str) -> list[dict[str, An
     """All roles granted to the named user (per-user role + group roles)."""
     validate_identifier(username, kind="username")
     return list(
-        client.query(  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        client.query(
             "SELECT * FROM system.role_grants WHERE user_name = {u:String}",
             parameters={"u": username},
         ).named_results()
@@ -50,7 +50,7 @@ def role_row_policies(client: Client, *, role: str) -> list[dict[str, Any]]:
     """
     validate_identifier(role, kind="role")
     return list(
-        client.query(  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        client.query(
             "SELECT * FROM system.row_policies WHERE has(apply_to_list, {r:String})",
             parameters={"r": role},
         ).named_results()
@@ -66,7 +66,7 @@ def user_row_policies(client: Client, *, username: str) -> list[dict[str, Any]]:
     """
     validate_identifier(username, kind="username")
     return list(
-        client.query(  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        client.query(
             """
             SELECT rp.*
             FROM system.row_policies AS rp
@@ -89,7 +89,7 @@ def table_row_policies(
     validate_identifier(database, kind="database")
     validate_identifier(table, kind="table")
     return list(
-        client.query(  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
+        client.query(
             "SELECT * FROM system.row_policies WHERE database = {d:String} AND table = {t:String}",
             parameters={"d": database, "t": table},
         ).named_results()

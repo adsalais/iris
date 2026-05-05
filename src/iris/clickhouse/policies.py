@@ -42,7 +42,7 @@ def add_row_policy(
 
     name = policy_name(database, table, role, value)
     name_q = quote_identifier(name, kind="policy")
-    client.command(  # pyright: ignore[reportUnknownMemberType]
+    client.command(
         f"CREATE ROW POLICY IF NOT EXISTS {name_q} ON {db_q}.{table_q} FOR SELECT USING {column_q} = {quote_string(value)} TO {role_q}"
     )
 
@@ -50,7 +50,7 @@ def add_row_policy(
     sa_role_q = quote_identifier(sa_role, kind="service_admin_role")
     sa_name = f"{database}_{table}_{sa_role}"
     sa_name_q = quote_identifier(sa_name, kind="policy")
-    client.command(  # pyright: ignore[reportUnknownMemberType]
+    client.command(
         f"CREATE ROW POLICY IF NOT EXISTS {sa_name_q} ON {db_q}.{table_q} FOR SELECT USING 1 TO {sa_role_q}"
     )
 
@@ -76,4 +76,4 @@ def revoke_row_policy(
     db_q = quote_identifier(database, kind="database")
     table_q = quote_identifier(table, kind="table")
     name_q = quote_identifier(policy_name(database, table, role, value), kind="policy")
-    client.command(f"DROP ROW POLICY IF EXISTS {name_q} ON {db_q}.{table_q}")  # pyright: ignore[reportUnknownMemberType]
+    client.command(f"DROP ROW POLICY IF EXISTS {name_q} ON {db_q}.{table_q}")
