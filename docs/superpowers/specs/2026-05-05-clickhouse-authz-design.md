@@ -1,7 +1,7 @@
 # ClickHouse authorization module — design
 
 **Date:** 2026-05-05
-**Scope:** Add a self-contained `iris.clickhouse` package that provisions ClickHouse users, roles, grants, and row policies. Provides audit queries. Tested against chdb in-process; supports an external ClickHouse server for production.
+**Scope:** Add a self-contained `iris.clickhouse` package that provisions ClickHouse users, roles, grants, and row policies. Provides audit queries. Tested against a real ClickHouse server via `testcontainers-python` (Docker).
 **Out of scope:** HTTP routes, integration with `iris.auth`, the runtime "execute query as user" helper, the call-site of `init_user_rights`. All deferred.
 
 ## Motivation
@@ -10,40 +10,47 @@ iris will eventually proxy SELECT/INSERT/UPDATE traffic to ClickHouse on behalf 
 
 The module **must not depend on `iris.auth`** internals. It exposes plain-data inputs (username strings, group lists) and is invoked by future code that bridges auth → clickhouse.
 
+## chdb verification (and pivot)
+
+The original design proposed `chdb` as the test backend. A Phase-0 spike against `chdb==4.1.6` (embedding ClickHouse 26.1.2.1) found that **chdb's embedded server hardcodes `system.user_directories` to a single read-only `users_xml` directory**, regardless of `<user_directories>` configuration in `config.xml`. As a result:
+
+- `CREATE USER` fails with `ACCESS_STORAGE_FOR_INSERTION_NOT_FOUND`.
+- The same applies to `CREATE ROLE`, `CREATE ROW POLICY`, and any other DDL that mutates RBAC state.
+- Users/roles/policies *can* be defined statically in `users.xml`, but cannot be created or modified at runtime via SQL.
+
+That breaks the original premise. **chdb is dropped**; the test strategy uses `testcontainers-python` to spin up a real `clickhouse/clickhouse-server` Docker image. The design becomes simpler as a result: a single `clickhouse-connect` client backend, no Protocol abstraction.
+
 ## High-level architecture
 
 ```
 src/iris/clickhouse/
 ├── __init__.py            # public surface
-├── config.py              # ClickHouseSettings.from_env() + sub-settings
-├── client.py              # Client Protocol + build_client(settings) factory
+├── config.py              # ClickHouseSettings.from_env()
+├── client.py              # build_client(settings) -> clickhouse_connect Client
 ├── identifiers.py         # validate_identifier, quote_identifier, quote_string, policy_name
-├── backends/
-│   ├── chdb.py            # ChdbClient — wraps chdb.session.Session
-│   └── connect.py         # ConnectClient — wraps clickhouse_connect.Client
 ├── bootstrap.py           # ensure_service_admin(client, settings)
-├── users.py               # init_user_rights
+├── users.py               # init_user_rights, USER_ROLE_SUFFIX, GROUP_ROLE_SUFFIX
 ├── grants.py              # grant_select_to_database, grant_insert_update_to_table
 ├── policies.py            # add_row_policy, revoke_row_policy
 └── audit.py               # user_grants, role_grants, *_row_policies, etc.
 
 tests/clickhouse/
-├── conftest.py            # chdb_client fixture
-├── test_settings.py
-├── test_identifiers.py
-├── test_chdb_smoke.py     # Phase-0: every DDL we use, against chdb
-├── test_bootstrap.py
-├── test_users.py
-├── test_grants.py
-├── test_policies.py
-├── test_audit.py
-└── test_external.py       # gated by CLICKHOUSE_TEST_EXTERNAL=1
+├── conftest.py            # session-scoped ClickHouseContainer + per-test prefix
+├── test_clickhouse_identifiers.py
+├── test_clickhouse_settings.py
+├── test_clickhouse_smoke.py        # Phase-0: every DDL we use, against the testcontainer
+├── test_clickhouse_bootstrap.py
+├── test_clickhouse_users.py
+├── test_clickhouse_grants.py
+├── test_clickhouse_policies.py
+└── test_clickhouse_audit.py
 ```
+
+(File basenames must be globally unique under `tests/` — see `CLAUDE.md`. The `test_clickhouse_*` prefix avoids collisions with existing `test_config.py`, `test_identity.py`, etc.)
 
 Top-level guarantees:
 
-- The two backends share a `Client` protocol; everything else is backend-agnostic.
-- chdb runs as `chdb.session.Session(<persistent_dir>)` so users/roles/policies survive across queries within a process.
+- Operations are functions that take a `clickhouse_connect.driver.client.Client` as their first argument. No backend abstraction — clickhouse-connect *is* the backend.
 - All operations are idempotent: `CREATE ... IF NOT EXISTS` for create statements, diff-then-grant/revoke for membership reconciliation. Re-running a function is always safe.
 - Identifiers from external sources (usernames from auth, db/table/column from callers) are validated against `^[a-zA-Z0-9_]+$` and refused if non-conforming. Anything that would have to be escaped is treated as bad input, not coerced.
 - Row-policy values are SQL string literals quoted via `quote_string`; their slugified form plus an 8-character hash of the raw value is embedded into the policy name to avoid collisions.
@@ -54,7 +61,7 @@ Top-level guarantees:
 
 ```python
 from iris.clickhouse.config import ClickHouseSettings
-from iris.clickhouse.client import Client, build_client
+from iris.clickhouse.client import build_client
 from iris.clickhouse.bootstrap import ensure_service_admin
 from iris.clickhouse.users import init_user_rights
 from iris.clickhouse.grants import (
@@ -67,7 +74,7 @@ from iris.clickhouse.audit import (
 )
 
 __all__ = [
-    "ClickHouseSettings", "Client", "build_client",
+    "ClickHouseSettings", "build_client",
     "ensure_service_admin",
     "init_user_rights",
     "grant_select_to_database", "grant_insert_update_to_table",
@@ -79,32 +86,24 @@ __all__ = [
 
 ### Constants
 
-`USER_ROLE_SUFFIX = "_USER"` and `GROUP_ROLE_SUFFIX = "_GRP"` as module constants in `users.py` (and re-imported where needed). Hardcoded — no env var, no operator override.
+`USER_ROLE_SUFFIX = "_USER"` and `GROUP_ROLE_SUFFIX = "_GRP"` as module constants in `users.py`. Hardcoded — no env var, no operator override.
 
 ## Settings
 
 ```python
 @dataclass(frozen=True, slots=True)
-class ChdbSettings:
-    data_path: str
-
-@dataclass(frozen=True, slots=True)
-class ExternalSettings:
+class ClickHouseSettings:
     host: str
     port: int
-    user: str
+    user: str                          # the service-admin login iris connects as
     password: str
-    secure: bool
-    verify: bool = True
-    ca_cert_path: str | None = None
-
-@dataclass(frozen=True, slots=True)
-class ClickHouseSettings:
-    backend: Literal["chdb", "external"]
-    service_admin_user: str
-    service_admin_role: str
-    chdb: ChdbSettings | None
-    external: ExternalSettings | None
+    secure: bool                       # https
+    verify: bool                       # TLS verification
+    ca_cert_path: str | None
+    service_admin_user: str            # equals `user` in normal deployments; kept distinct so the
+                                       # IMPERSONATE/wildcard-policy grantee can differ from the
+                                       # connecting login if an operator wants
+    service_admin_role: str            # role granted to service_admin_user; wildcard-policy grantee
 
     @classmethod
     def from_env(cls) -> "ClickHouseSettings": ...
@@ -112,27 +111,15 @@ class ClickHouseSettings:
 
 Validation at `from_env()` (mirrors `AuthSettings.from_env`):
 
-- `CLICKHOUSE_BACKEND` must be `chdb` or `external`. Anything else → fail at boot.
-- `service_admin_user` and `service_admin_role` are run through `validate_identifier` once at boot. Bad values → fail loudly.
-- If `external`: `HOST`, `PORT`, `USER`, `PASSWORD` are required. `SECURE`/`VERIFY` parsed via `_get_bool` (rejects typos like `ture`).
-- If `chdb`: `CHDB_DATA_PATH` is required. The directory and parents are created if missing.
-- The opposite backend's settings block is `None`.
+- `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` are required. `PORT` must parse as `int`.
+- `CLICKHOUSE_SECURE` and `CLICKHOUSE_VERIFY` go through a strict `_get_bool` (rejects typos like `ture`).
+- `CLICKHOUSE_SERVICE_ADMIN_USER` and `CLICKHOUSE_SERVICE_ADMIN_ROLE` are required and run through `validate_identifier`. Bad values → fail at boot.
+- `CLICKHOUSE_CA_CERT_PATH` is optional (None when unset).
 
 ### Env vars (added to `.env` with comments)
 
 ```
-# ClickHouse: backend selection (chdb embeds CH in-process; external talks to a real CH)
-CLICKHOUSE_BACKEND=chdb              # chdb | external
-
-# Identity used for impersonation and as the wildcard-policy grantee. Both backends.
-CLICKHOUSE_SERVICE_ADMIN_USER=iris_service
-CLICKHOUSE_SERVICE_ADMIN_ROLE=service_admin_role
-
-# chdb backend (CLICKHOUSE_BACKEND=chdb) — persistent directory for the embedded CH state.
-# Wiped on directory delete; gitignore it.
-CHDB_DATA_PATH=./var/chdb
-
-# External backend (CLICKHOUSE_BACKEND=external)
+# ClickHouse connection (server-side identity iris connects as)
 CLICKHOUSE_HOST=localhost
 CLICKHOUSE_PORT=8443
 CLICKHOUSE_USER=iris_service
@@ -140,56 +127,49 @@ CLICKHOUSE_PASSWORD=replace-me
 CLICKHOUSE_SECURE=true
 CLICKHOUSE_VERIFY=true
 # CLICKHOUSE_CA_CERT_PATH=/etc/ssl/certs/ca-bundle.crt
+
+# ClickHouse: identity used for impersonation and as the wildcard-policy grantee.
+# CLICKHOUSE_SERVICE_ADMIN_USER typically equals CLICKHOUSE_USER; the role is granted
+# to that user at startup and is the grantee of all wildcard `USING 1` row policies.
+CLICKHOUSE_SERVICE_ADMIN_USER=iris_service
+CLICKHOUSE_SERVICE_ADMIN_ROLE=service_admin_role
 ```
 
-`tests/conftest.py` adds module-scope `os.environ.setdefault("CLICKHOUSE_BACKEND", "chdb")` plus a default `CHDB_DATA_PATH` (overridden per-test via fixture), so importing `iris.clickhouse` in tests Just Works regardless of the developer's `.env`.
+`tests/conftest.py` populates the env vars to point at the testcontainers-managed ClickHouse instance once it has started. Per-test isolation comes from a UUID-prefixed namespace, not from per-test env overrides.
 
-## Backend abstraction
+## Client
 
 ```python
-from clickhouse_connect.driver.query import QueryResult
-from clickhouse_connect.driver.summary import QuerySummary
-
-class Client(Protocol):
-    def query(
-        self, sql: str, parameters: dict[str, Any] | None = None
-    ) -> QueryResult: ...
-
-    def command(self, sql: str) -> QuerySummary:
-        """DDL/DCL only. No parameter binding — caller builds the SQL string
-        from validated identifiers via the identifiers module."""
-
-    def close(self) -> None: ...
+import clickhouse_connect
+from clickhouse_connect.driver.client import Client
 
 def build_client(settings: ClickHouseSettings) -> Client:
-    if settings.backend == "chdb":
-        return ChdbClient(settings.chdb)
-    return ConnectClient(settings.external)
+    kwargs: dict[str, Any] = {
+        "host": settings.host,
+        "port": settings.port,
+        "username": settings.user,
+        "password": settings.password,
+        "secure": settings.secure,
+        "verify": settings.verify,
+    }
+    if settings.ca_cert_path:
+        kwargs["ca_cert"] = settings.ca_cert_path
+    return clickhouse_connect.get_client(**kwargs)
 ```
 
-The signature deliberately mirrors `clickhouse_connect.Client` so callers can use idiomatic `{name:Type}` parameter binding for DML:
+Operations type their first argument as `clickhouse_connect.driver.client.Client`. They use:
+
+- `client.command(sql)` for DDL/DCL, with the SQL built from validated identifiers via the `identifiers` module — no parameter binding.
+- `client.query(sql, parameters=...)` for DML/SELECT (audit functions), using ClickHouse's native `{name:Type}` placeholder binding.
+
+Caller-facing usage (audit example):
 
 ```python
 client.query(
-    "SELECT * FROM {table:Identifier} WHERE date >= {v1:DateTime} AND s ILIKE {v2:String}",
-    parameters={"table": "my_table", "v1": d, "v2": "she'd say"},
+    "SELECT * FROM system.grants WHERE user_name = {u:String}",
+    parameters={"u": username},
 )
 ```
-
-`command()` deliberately accepts no parameters dict. DDL/DCL is built from validated identifiers via the `identifiers` module — that's the single safety contract for DDL.
-
-### `ConnectClient`
-
-Literal passthrough. `query` and `command` delegate to the inner `clickhouse_connect.Client.query` / `.command`. Constructor takes `ExternalSettings` and instantiates via `clickhouse_connect.get_client(host=..., port=..., username=..., password=..., secure=..., verify=..., ca_cert=...)`.
-
-### `ChdbClient`
-
-Wraps `chdb.session.Session(data_path)`.
-
-- `command(sql)`: runs `session.query(sql)`, discards output, returns a synthesized `QuerySummary`. Exceptions from chdb propagate unchanged.
-- `query(sql, parameters)`: client-side substitutes `{name:Type}` placeholders into the SQL using `clickhouse_connect.driver.binding.bind_query_params` (or its public equivalent), then runs `session.query(rendered_sql, "JSONEachRow")`, parses the JSONEachRow output, and constructs a `QueryResult` exposing `.result_rows`, `.column_names`, and `.named_results()` matching the lib's shape.
-
-The Session is created at construction and disposed in `close()`. One Session per process, bound to `CHDB_DATA_PATH`.
 
 ## Identifier safety (`identifiers.py`)
 
@@ -207,12 +187,12 @@ def quote_identifier(name: str, *, kind: str) -> str:
     quoted form is always safe to inline into DDL."""
 
 def quote_string(value: str) -> str:
-    """SQL string literal escaping for row-policy values: 'O''Brien'."""
+    """SQL string literal escaping: 'O''Brien'."""
 
 def policy_name(database: str, table: str, role: str, value: str) -> str:
-    """Build a row-policy name: <db>_<table>_<role>_<slug>_<8charhash>.
-    The slug is value with non-[a-zA-Z0-9_] stripped; the hash of the raw
-    value disambiguates collisions ('EU/UK' vs 'EU UK')."""
+    """<database>_<table>_<role>_<slug>_<8charhash>. Slug is the value with
+    non-[a-zA-Z0-9_] stripped to '_'; hash of the raw value disambiguates
+    collisions ('EU/UK' vs 'EU UK')."""
 ```
 
 `validate_identifier` is called at the entry point of every operation function on every external-source string (username, group names, db/table/column). That single guarantee combined with `quote_identifier` for inlining makes the DDL surface safe.
@@ -223,17 +203,16 @@ def policy_name(database: str, table: str, role: str, value: str) -> str:
 
 ### `bootstrap.ensure_service_admin(client, settings) -> None`
 
-Idempotent startup routine. In sequence:
+Idempotent startup routine:
 
-1. (chdb only) `CREATE USER IF NOT EXISTS <service_admin_user> IDENTIFIED WITH no_password`. On external, the user is operator-provisioned; bootstrap presumes its existence (it must, because iris connects as it).
-2. `CREATE ROLE IF NOT EXISTS <service_admin_role>`.
-3. `GRANT <service_admin_role> TO <service_admin_user>` (idempotent in CH).
+1. `CREATE ROLE IF NOT EXISTS <service_admin_role>`.
+2. `GRANT <service_admin_role> TO <service_admin_user>` (idempotent in CH).
+
+Bootstrap presumes the service admin *user* already exists (operator-provisioned: iris must already be authenticating as it). If the user is missing, the GRANT will raise — that's the right behavior, since the deployment is misconfigured.
 
 `service_admin_user` and `service_admin_role` were already validated at `from_env()`, so this routine doesn't re-validate.
 
 ### `users.init_user_rights(client, *, username, groups, settings) -> None`
-
-Signature:
 
 ```python
 def init_user_rights(
@@ -262,7 +241,7 @@ Steps:
    - `desired = {g + "_GRP" for g in groups}`.
    - For `r in current - desired`: `REVOKE <r> FROM <username>`.
    - For `r in desired - current`: `CREATE ROLE IF NOT EXISTS <r>`; `GRANT <r> TO <username>`.
-5. `GRANT IMPERSONATE ON <username> TO <service_admin_user>`. Idempotent; CH treats re-grants as no-ops.
+5. `GRANT IMPERSONATE ON <username> TO <service_admin_user>`. Idempotent.
 
 The per-user role (`<username>_USER`) is intentionally *not* part of the reconcile — it's the user's own identity, distinct from group membership. The reconcile filter (`endswith("_GRP")`) excludes it.
 
@@ -287,21 +266,6 @@ Each idempotent.
 
 ### `policies.add_row_policy(client, *, database, table, column, role, value, settings) -> None`
 
-Signature:
-
-```python
-def add_row_policy(
-    client: Client,
-    *,
-    database: str,
-    table: str,
-    column: str,
-    role: str,
-    value: str,           # SQL string literal value for the column comparison
-    settings: ClickHouseSettings,
-) -> None:
-```
-
 Two `command` calls:
 
 ```sql
@@ -320,13 +284,13 @@ The wildcard policy is a constant per `(database, table, service_admin_role)` tr
 
 `value` is unrestricted (`str`) so callers can express any literal cleanly; it goes through `quote_string` before substitution. `column` is a strict identifier.
 
-### `policies.revoke_row_policy(client, *, database, table, column, role, value) -> None`
+### `policies.revoke_row_policy(client, *, database, table, role, value) -> None`
 
 ```sql
 DROP ROW POLICY IF EXISTS `<policy_name(db, tbl, role, value)>` ON `<database>`.`<table>`
 ```
 
-The wildcard service-admin policy is *not* dropped — it's a singleton per table and other policies on the same table may still reference it.
+The wildcard service-admin policy is *not* dropped — it's a singleton per table and other policies on the same table may still reference it. (Note: dropped the `column` parameter from the original sketch — the policy name doesn't depend on it, so it was unused.)
 
 ## Audit (`audit.py`)
 
@@ -357,57 +321,67 @@ Each function calls `validate_identifier` on its inputs, even though the SQL use
 
 ## Tests
 
-### Fixtures (`tests/clickhouse/conftest.py`)
+### Container fixture
+
+`tests/clickhouse/conftest.py` defines a **session-scoped** `ClickHouseContainer` fixture. Pulling and starting the image takes ~5–10 seconds; reusing it across the suite keeps the suite fast.
 
 ```python
+@pytest.fixture(scope="session")
+def ch_container():
+    with ClickHouseContainer("clickhouse/clickhouse-server:24") as ch:
+        yield ch
+
 @pytest.fixture
-def chdb_client(tmp_path):
-    settings = make_settings(backend="chdb", chdb_path=tmp_path / "chdb", ...)
-    client = build_client(settings)
-    ensure_service_admin(client, settings)
+def ch_settings(ch_container, monkeypatch):
+    # populate env vars from the running container, then ClickHouseSettings.from_env()
+    ...
+    return ClickHouseSettings.from_env()
+
+@pytest.fixture
+def ch_client(ch_settings):
+    client = build_client(ch_settings)
+    ensure_service_admin(client, ch_settings)
     yield client
     client.close()
+
+@pytest.fixture
+def prefix():
+    """Per-test UUID prefix. Tests apply it to all entity names so concurrent
+    tests in the same session don't collide."""
+    return "t_" + uuid.uuid4().hex[:8]
 ```
 
-Fresh persistent dir per test → guaranteed isolation. Fixture-scope is per-test by default; can be relaxed to module if startup cost matters.
+Tests use `prefix` to namespace usernames, role names, databases, tables. State accumulates within the session but doesn't interfere because names are unique. No teardown is needed (image is dropped on session exit).
 
 ### Per-module test focus
 
-- `test_settings.py` — env parsing, validation (bad backend, missing vars, bad identifiers, typo'd booleans).
-- `test_identifiers.py` — validate / quote / `policy_name` slug+hash behavior, including collision resolution for values that share a slug.
-- `test_chdb_smoke.py` — **Phase-0 verification.** Runs each DDL we plan to use (`CREATE USER`, `CREATE ROLE`, `GRANT`, `REVOKE`, `GRANT IMPERSONATE`, `CREATE ROW POLICY`, `DROP ROW POLICY`, `SELECT FROM system.grants/role_grants/row_policies`) against a clean chdb Session. If any fails, the design adapts (likely `access_control_path` config tweak); we want this to fail at the smoke test, not deep in another file.
-- `test_bootstrap.py` — service admin role created; granted to user; idempotent on re-run.
-- `test_users.py` — full `init_user_rights` flow: creation, group reconcile (start `[a, b]`, reconcile to `[b, c]` → `a_GRP` revoked, `c_GRP` granted, `b_GRP` untouched), IMPERSONATE grant, idempotency.
-- `test_grants.py` — both grant functions, idempotency.
-- `test_policies.py` — add + revoke; wildcard policy presence after `add_row_policy`; wildcard policy *not* dropped by `revoke_row_policy`.
-- `test_audit.py` — every audit function returns the expected rows for a known fixture state.
-- `test_external.py` — skipped unless `CLICKHOUSE_TEST_EXTERNAL=1`. When run, exercises `ConnectClient` against a real CH (operator's responsibility to provide). Same assertions as the chdb suite. Useful for catching backend-specific quirks.
+- `test_clickhouse_identifiers.py` — `validate` / `quote` / `policy_name` slug+hash behavior, including collision resolution for values that share a slug.
+- `test_clickhouse_settings.py` — env parsing, validation (missing required vars, bad identifiers, typo'd booleans, non-int port).
+- `test_clickhouse_smoke.py` — **Phase-0 verification.** Runs each DDL the module uses (`CREATE USER`, `CREATE ROLE`, `GRANT`, `REVOKE`, `GRANT IMPERSONATE`, `CREATE ROW POLICY`, `DROP ROW POLICY`, every audit `SELECT FROM system.*`) against the testcontainer with the service admin login. Pins the exact `IMPERSONATE` syntax our installed CH expects.
+- `test_clickhouse_bootstrap.py` — service admin role created; granted to user; idempotent on re-run.
+- `test_clickhouse_users.py` — full `init_user_rights` flow: creation, group reconcile (start `[a, b]`, reconcile to `[b, c]` → `a_GRP` revoked, `c_GRP` granted, `b_GRP` untouched), IMPERSONATE grant, idempotency.
+- `test_clickhouse_grants.py` — both grant functions, idempotency.
+- `test_clickhouse_policies.py` — add + revoke; wildcard policy presence after `add_row_policy`; wildcard policy *not* dropped by `revoke_row_policy`.
+- `test_clickhouse_audit.py` — every audit function returns the expected rows for a known fixture state.
 
 ### Top-level `tests/conftest.py`
 
-Adds:
-
-```python
-os.environ.setdefault("CLICKHOUSE_BACKEND", "chdb")
-os.environ.setdefault("CLICKHOUSE_SERVICE_ADMIN_USER", "iris_service")
-os.environ.setdefault("CLICKHOUSE_SERVICE_ADMIN_ROLE", "service_admin_role")
-os.environ.setdefault("CHDB_DATA_PATH", str(Path(tempfile.gettempdir()) / "iris_chdb_default"))
-```
-
-Same pattern as `AUTH_METHOD=mock`. Per-test fixtures override `CHDB_DATA_PATH` via the `tmp_path`-backed `chdb_client` fixture.
+No additional env defaults are needed for the existing test suite. The clickhouse fixtures live entirely under `tests/clickhouse/conftest.py` and only activate when a clickhouse test imports them. Tests outside `tests/clickhouse/` never start the container.
 
 ## Open verification items
 
-- **chdb access-control surface.** chdb embeds ClickHouse, but the access-control state (`users.xml`, `access_control_path`) needs to be persisted by the Session. Phase-0 smoke test verifies all DDL works. If it doesn't, the fallback is configuring `access_control_path` explicitly via Session settings, or — last resort — switching tests to a Docker-based CH testcontainer behind the same `Client` interface.
-- **`{name:Type}` substitution in chdb.** chdb's `Session.query` doesn't accept a parameters dict. We rely on `clickhouse_connect.driver.binding.bind_query_params` (or its public equivalent) to pre-render the SQL client-side. The exact import path needs confirmation against the installed `clickhouse-connect` version during implementation.
-- **`GRANT IMPERSONATE` syntax.** The user-provided example reads `GRANT IMPERSONATE ON <user> TO <admin>`. The exact CH syntax (presence/absence of `ON *.*`, etc.) varies by version; the smoke test pins the form for our installed chdb.
+- **`GRANT IMPERSONATE` syntax.** ClickHouse may accept `GRANT IMPERSONATE ON <user> TO <admin>` *or* `GRANT IMPERSONATE(<user>) ON *.* TO <admin>` depending on version. The smoke test pins whichever form the installed CH accepts; if it's the latter, `init_user_rights` step 5 adapts.
+- **clickhouse-connect query result shape.** Audit functions call `result.named_results()` to get `list[dict]`. If the helper's exact name differs in the installed version, the audit module imports and uses it accordingly. The smoke test's audit-side checks pin this.
 
 ## Deliverables (this PR)
 
 - `src/iris/clickhouse/` package as outlined above.
 - `tests/clickhouse/` test suite as outlined above.
-- `.env` updated with the new section, comments, and example values (no secrets).
-- `pyproject.toml` adds `clickhouse-connect` to runtime deps. (`chdb` is already present.)
+- `.env` updated with the new `CLICKHOUSE_*` block, comments, and example values (no secrets).
+- `pyproject.toml`:
+  - **Removes** the unused `chdb>=4.1.6` runtime dep.
+  - Adds `clickhouse-connect` to runtime deps.
+  - Adds `testcontainers[clickhouse]` to dev deps.
 - `CLAUDE.md` gets a "ClickHouse module" section mirroring the "Authentication" section's style.
 
 ## Non-deliverables (explicitly deferred)
@@ -415,4 +389,4 @@ Same pattern as `AUTH_METHOD=mock`. Per-test fixtures override `CHDB_DATA_PATH` 
 - Routes that call any of these functions.
 - Any wiring between `iris.auth` and `iris.clickhouse`.
 - The runtime `execute_as(username, sql)` helper for impersonating queries.
-- Multi-backend live reload, connection pooling, or migration tooling.
+- Connection pooling, multi-worker session sharing, migration tooling.
