@@ -13,3 +13,21 @@ Skip this tier (no Docker): uv run pytest --ignore=tests/auth/integration
 """
 
 from __future__ import annotations
+
+import pytest
+
+from tests.auth.integration._tls import TLSPaths, generate_ca_and_leaf
+
+
+@pytest.fixture(scope="session")
+def tls_paths(tmp_path_factory) -> TLSPaths:
+    """Generate a CA + leaf cert once per pytest session.
+
+    The same paths are consumed by:
+    - openldap_container (mounted as LDAPS cert + key + CA file)
+    - keycloak_container (mounted as HTTPS cert + key)
+    - LDAPProvider via LDAP_CA_CERT_PATH
+    - OAuthProvider via OIDC_CA_CERT_PATH
+    """
+    target = tmp_path_factory.mktemp("auth-certs")
+    return generate_ca_and_leaf(target)

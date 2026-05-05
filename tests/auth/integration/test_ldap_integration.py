@@ -53,3 +53,11 @@ def test_tls_helper_generates_valid_chain(tmp_path):
 
     # Key file is mode 0600.
     assert stat.S_IMODE(paths.server_key.stat().st_mode) == 0o600
+
+
+def test_tls_paths_fixture_yields_resolved_paths(tls_paths):
+    """The session-scoped tls_paths fixture yields absolute, resolved paths."""
+    assert tls_paths.ca_pem.is_absolute()
+    assert tls_paths.ca_pem.exists()
+    assert tls_paths.server_pem.exists()
+    assert tls_paths.server_key.exists()
