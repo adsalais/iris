@@ -2,7 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an integration tier under `tests/auth/integration/` that exercises the LDAP and OAuth providers (provider + route layers, happy + failure paths, full TLS) against real `bitnami/openldap` and `quay.io/keycloak/keycloak` containers managed by `testcontainers-python`. Existing offline tests stay as the fast unit-level tier.
+## Amendments
+
+**2026-05-06 — LDAP integration descoped.**
+`bitnami/openldap` was removed from Docker Hub during execution; the `osixia/openldap` fallback generates a 2048-bit DH parameter at first start that exceeds reasonable test timeouts (1-3 min). The decision is to drop LDAP integration from this work item — the existing offline LDAP tests in `tests/auth/test_provider_ldap.py` (`ldap3.MOCK_SYNC`) remain authoritative for the LDAP provider. The integration tier now targets only Keycloak (OAuth).
+
+CANCELLED tasks (kept below for history): **T5** (LDIF seed), **T6** (openldap_container fixture), **T13–T16** (LDAP provider + route tests). T5's artifact (`seed/ldap.ldif`) and the placeholder `test_ldap_integration.py` were removed/renamed in commits `ac62a45` and `f283847`. The `_tls.py` cert generator and `tls_paths` fixture remain — Keycloak still uses them for HTTPS. T23 (CLAUDE.md docs) and T24 (final verification) should omit LDAP references when written.
+
+---
+
+**Goal:** Add an integration tier under `tests/auth/integration/` that exercises the OAuth provider (provider + route layers, happy + failure paths, full TLS) against a real `quay.io/keycloak/keycloak` container managed by `testcontainers-python`. Existing offline tests stay as the fast unit-level tier.
 
 **Architecture:** Session-scoped Docker containers (mirroring `tests/clickhouse/conftest.py`), seeded declaratively (LDIF + Keycloak realm-import JSON), with a self-signed CA generated once per session via `cryptography`. Each test gets a fresh `app` via `monkeypatch.setenv` overrides + `build_app()`. A small helper drives Keycloak's authorize → login form → callback dance through `TestClient` for OAuth route-level tests.
 
