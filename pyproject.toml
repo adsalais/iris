@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "chdb>=4.1.6",
     "datastar-py>=1.0.0",
     "fastapi>=0.136.1",
     "itsdangerous>=2.2.0",
