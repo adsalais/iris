@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from iris.clickhouse.identifiers import InvalidIdentifierError, policy_name
-from iris.clickhouse.policies import add_row_policy
+from iris.clickhouse.policies import add_row_policy, revoke_row_policy
 
 
 def _setup_table(ch_client, db, table, role):
@@ -96,3 +96,67 @@ def test_add_row_policy_validates_inputs(ch_client, ch_settings):
             database="db", table="t", column="c", role="bad role", value="v",
             settings=ch_settings,
         )
+
+
+def test_revoke_row_policy_drops_named_policy(ch_client, ch_settings, prefix):
+    db = f"{prefix}_rev"
+    table = "t"
+    role = f"{prefix}_writer_rev"
+    _setup_table(ch_client, db, table, role)
+
+    add_row_policy(
+        ch_client,
+        database=db, table=table, column="region", role=role, value="EU",
+        settings=ch_settings,
+    )
+    revoke_row_policy(ch_client, database=db, table=table, role=role, value="EU")
+
+    expected_name = policy_name(db, table, role, "EU")
+    rows = list(
+        ch_client.query(
+            "SELECT short_name FROM system.row_policies WHERE database = {d:String} AND table = {t:String} AND short_name = {n:String}",
+            parameters={"d": db, "t": table, "n": expected_name},
+        ).named_results()
+    )
+    assert rows == []
+
+
+def test_revoke_row_policy_does_not_drop_service_admin_wildcard(
+    ch_client, ch_settings, prefix
+):
+    db = f"{prefix}_rev2"
+    table = "t"
+    role = f"{prefix}_writer_rev2"
+    _setup_table(ch_client, db, table, role)
+
+    add_row_policy(
+        ch_client,
+        database=db, table=table, column="region", role=role, value="EU",
+        settings=ch_settings,
+    )
+    revoke_row_policy(ch_client, database=db, table=table, role=role, value="EU")
+
+    wildcard = f"{db}_{table}_{ch_settings.service_admin_role}"
+    rows = list(
+        ch_client.query(
+            "SELECT short_name FROM system.row_policies WHERE database = {d:String} AND table = {t:String} AND short_name = {n:String}",
+            parameters={"d": db, "t": table, "n": wildcard},
+        ).named_results()
+    )
+    assert rows == [{"short_name": wildcard}]
+
+
+def test_revoke_row_policy_is_idempotent(ch_client, ch_settings, prefix):
+    db = f"{prefix}_rev3"
+    table = "t"
+    role = f"{prefix}_writer_rev3"
+    _setup_table(ch_client, db, table, role)
+
+    add_row_policy(
+        ch_client,
+        database=db, table=table, column="region", role=role, value="EU",
+        settings=ch_settings,
+    )
+    revoke_row_policy(ch_client, database=db, table=table, role=role, value="EU")
+    # second call is a no-op.
+    revoke_row_policy(ch_client, database=db, table=table, role=role, value="EU")
