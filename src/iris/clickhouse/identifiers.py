@@ -20,3 +20,9 @@ def validate_identifier(name: str, *, kind: str) -> str:
     if not _IDENT_RE.fullmatch(name):
         raise InvalidIdentifierError(f"invalid {kind}: {name!r}")
     return name
+
+
+def quote_identifier(name: str, *, kind: str) -> str:
+    """Validate then backtick-quote. The validating regex blocks backticks, so the
+    quoted form is always safe to inline into DDL."""
+    return f"`{validate_identifier(name, kind=kind)}`"

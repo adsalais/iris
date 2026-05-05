@@ -2,6 +2,7 @@ import pytest
 
 from iris.clickhouse.identifiers import (
     InvalidIdentifierError,
+    quote_identifier,
     validate_identifier,
 )
 
@@ -26,3 +27,12 @@ def test_validate_identifier_rejects_dash_dot_space():
 def test_validate_identifier_kind_appears_in_error_message():
     with pytest.raises(InvalidIdentifierError, match=r"invalid database: 'has space'"):
         validate_identifier("has space", kind="database")
+
+
+def test_quote_identifier_backticks_a_valid_name():
+    assert quote_identifier("alice", kind="username") == "`alice`"
+
+
+def test_quote_identifier_rejects_invalid_input():
+    with pytest.raises(InvalidIdentifierError):
+        quote_identifier("a b", kind="role")
