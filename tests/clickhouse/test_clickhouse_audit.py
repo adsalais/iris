@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from iris.clickhouse.audit import role_grants, user_grants, user_role_memberships
+from iris.clickhouse.audit import (
+    role_grants,
+    role_row_policies,
+    user_grants,
+    user_role_memberships,
+    user_row_policies,
+)
 from iris.clickhouse.grants import grant_select_to_database
 from iris.clickhouse.identifiers import InvalidIdentifierError
+from iris.clickhouse.policies import add_row_policy
 from iris.clickhouse.users import init_user_rights
 
 
@@ -56,3 +63,37 @@ def test_user_role_memberships(ch_client, ch_settings, prefix):
     assert f"{username}_USER" in granted
     assert "alpha_GRP" in granted
     assert "beta_GRP" in granted
+
+
+def _setup_policy_for_role(ch_client, ch_settings, prefix_db, role):
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{prefix_db}`")
+    ch_client.command(
+        f"CREATE TABLE IF NOT EXISTS `{prefix_db}`.`t` (id UInt64, region String) ENGINE = MergeTree ORDER BY id"
+    )
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{role}`")
+    add_row_policy(
+        ch_client,
+        database=prefix_db, table="t", column="region", role=role, value="EU",
+        settings=ch_settings,
+    )
+
+
+def test_role_row_policies(ch_client, ch_settings, prefix):
+    db = f"{prefix}_rrp_db"
+    role = f"{prefix}_rrp_role"
+    _setup_policy_for_role(ch_client, ch_settings, db, role)
+
+    rows = role_row_policies(ch_client, role=role)
+    assert any(r["database"] == db for r in rows), rows
+
+
+def test_user_row_policies(ch_client, ch_settings, prefix):
+    db = f"{prefix}_urp_db"
+    role = f"{prefix}_urp_role"
+    user = f"{prefix}_urp_user"
+    _setup_policy_for_role(ch_client, ch_settings, db, role)
+    ch_client.command(f"CREATE USER IF NOT EXISTS `{user}` IDENTIFIED WITH no_password")
+    ch_client.command(f"GRANT `{role}` TO `{user}`")
+
+    rows = user_row_policies(ch_client, username=user)
+    assert any(r["database"] == db for r in rows), rows
