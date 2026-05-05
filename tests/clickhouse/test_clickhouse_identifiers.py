@@ -90,3 +90,27 @@ def test_policy_name_handles_empty_or_only_special_value():
     # Slug of '!!!' is empty after stripping; substitute the placeholder 'v' and
     # rely on the hash to make it unique.
     assert name.startswith("db_t_r_v_")
+
+
+def test_public_surface_exports_named_symbols():
+    import iris.clickhouse as ch
+
+    expected = {
+        "ClickHouseSettings",
+        "build_client",
+        "ensure_service_admin",
+        "init_user_rights",
+        "grant_select_to_database",
+        "grant_insert_update_to_table",
+        "add_row_policy",
+        "revoke_row_policy",
+        "user_grants",
+        "role_grants",
+        "user_role_memberships",
+        "user_row_policies",
+        "role_row_policies",
+        "table_row_policies",
+    }
+    assert set(ch.__all__) == expected
+    for name in expected:
+        assert hasattr(ch, name), name
