@@ -7,6 +7,7 @@ import pytest
 from iris.clickhouse.audit import (
     role_grants,
     role_row_policies,
+    table_row_policies,
     user_grants,
     user_role_memberships,
     user_row_policies,
@@ -97,3 +98,12 @@ def test_user_row_policies(ch_client, ch_settings, prefix):
 
     rows = user_row_policies(ch_client, username=user)
     assert any(r["database"] == db for r in rows), rows
+
+
+def test_table_row_policies(ch_client, ch_settings, prefix):
+    db = f"{prefix}_trp_db"
+    role = f"{prefix}_trp_role"
+    _setup_policy_for_role(ch_client, ch_settings, db, role)
+
+    rows = table_row_policies(ch_client, database=db, table="t")
+    assert any(r["database"] == db and r["table"] == "t" for r in rows), rows
