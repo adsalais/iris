@@ -1,0 +1,42 @@
+# OUs
+dn: ou=people,dc=corp,dc=local
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=corp,dc=local
+objectClass: organizationalUnit
+ou: groups
+
+# Users
+dn: uid=alice,ou=people,dc=corp,dc=local
+objectClass: inetOrgPerson
+uid: alice
+cn: Alice
+sn: Alice
+userPassword: secret
+
+dn: uid=bob,ou=people,dc=corp,dc=local
+objectClass: inetOrgPerson
+uid: bob
+cn: Bob
+sn: Bob
+userPassword: hunter2
+
+dn: uid=carol,ou=people,dc=corp,dc=local
+objectClass: inetOrgPerson
+uid: carol
+cn: Carol
+sn: Carol
+userPassword: carolpw
+
+# Groups (groupOfNames — LDAPProvider's _read_groups searches member=DN)
+dn: cn=admins,ou=groups,dc=corp,dc=local
+objectClass: groupOfNames
+cn: admins
+member: uid=alice,ou=people,dc=corp,dc=local
+
+dn: cn=users,ou=groups,dc=corp,dc=local
+objectClass: groupOfNames
+cn: users
+member: uid=alice,ou=people,dc=corp,dc=local
+member: uid=bob,ou=people,dc=corp,dc=local
