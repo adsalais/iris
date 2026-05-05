@@ -1,7 +1,7 @@
 """Generate a self-signed CA + leaf cert for integration tests.
 
-Pure cryptography, no openssl shell-out. The same leaf cert serves both
-OpenLDAP (LDAPS) and Keycloak (HTTPS) since both bind to localhost:<random-port>.
+Pure cryptography, no openssl shell-out. Used by the Keycloak fixture for
+HTTPS and by OAuthProvider for verifying the IdP's certificate chain.
 """
 
 from __future__ import annotations
@@ -42,11 +42,12 @@ def generate_ca_and_leaf(target_dir: Path) -> TLSPaths:
     ca_subject = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, "iris-test-ca"),
     ])
+    ca_public_key = ca_key.public_key()
     ca_cert = (
         x509.CertificateBuilder()
         .subject_name(ca_subject)
         .issuer_name(ca_subject)
-        .public_key(ca_key.public_key())
+        .public_key(ca_public_key)
         .serial_number(x509.random_serial_number())
         .not_valid_before(not_before)
         .not_valid_after(not_after)
@@ -67,6 +68,12 @@ def generate_ca_and_leaf(target_dir: Path) -> TLSPaths:
             ),
             critical=True,
         )
+        # SubjectKeyIdentifier is required on CA certs so that leaf certs can
+        # include a matching AuthorityKeyIdentifier — required by OpenSSL 3.x.
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(ca_public_key),
+            critical=False,
+        )
         .sign(ca_key, hashes.SHA256())
     )
 
@@ -75,11 +82,12 @@ def generate_ca_and_leaf(target_dir: Path) -> TLSPaths:
     server_subject = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
     ])
+    server_public_key = server_key.public_key()
     server_cert = (
         x509.CertificateBuilder()
         .subject_name(server_subject)
         .issuer_name(ca_subject)
-        .public_key(server_key.public_key())
+        .public_key(server_public_key)
         .serial_number(x509.random_serial_number())
         .not_valid_before(not_before)
         .not_valid_after(not_after)
@@ -92,6 +100,16 @@ def generate_ca_and_leaf(target_dir: Path) -> TLSPaths:
         )
         .add_extension(
             x509.BasicConstraints(ca=False, path_length=None), critical=True
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(server_public_key),
+            critical=False,
+        )
+        # AuthorityKeyIdentifier links the leaf back to the CA key; required by
+        # OpenSSL 3.x when building certificate chains.
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_public_key),
+            critical=False,
         )
         .sign(ca_key, hashes.SHA256())
     )
