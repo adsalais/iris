@@ -76,7 +76,9 @@ class AuthSettings:
     absolute_ttl_seconds: int
     max_per_user: int
     cookie_secure: bool
-    session_db_path: str
+    auth_db_path: str
+    bootstrap_role: str
+    bootstrap_user: str | None
     oidc: OIDCSettings | None
     ldap: LDAPSettings | None
     mock: MockSettings | None
@@ -94,8 +96,14 @@ class AuthSettings:
         absolute_ttl_seconds = _get_int("SESSION_ABSOLUTE_TTL_SECONDS", 2_592_000)  # 30 days
         max_per_user = _get_int("SESSION_MAX_PER_USER", 10)
         cookie_secure = _get_bool("COOKIE_SECURE", True)
-        session_db_path = (
-            os.environ.get("SESSION_DB_PATH", "").strip() or "./iris-sessions.db"
+        auth_db_path = (
+            os.environ.get("AUTH_DB_PATH", "").strip() or "./iris-auth.db"
+        )
+        bootstrap_role = (
+            os.environ.get("AUTHZ_BOOTSTRAP_ROLE", "").strip() or "admin"
+        )
+        bootstrap_user = (
+            os.environ.get("AUTHZ_BOOTSTRAP_USER", "").strip() or None
         )
 
         oidc = ldap = mock = None
@@ -139,7 +147,9 @@ class AuthSettings:
             absolute_ttl_seconds=absolute_ttl_seconds,
             max_per_user=max_per_user,
             cookie_secure=cookie_secure,
-            session_db_path=session_db_path,
+            auth_db_path=auth_db_path,
+            bootstrap_role=bootstrap_role,
+            bootstrap_user=bootstrap_user,
             oidc=oidc,
             ldap=ldap,
             mock=mock,

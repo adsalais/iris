@@ -33,6 +33,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     sess_closer = getattr(app.state, "auth_close_session_store", None)
     if sess_closer is not None:
         await sess_closer()
+    authz_closer = getattr(app.state, "auth_close_authz_store", None)
+    if authz_closer is not None:
+        await authz_closer()
 
 
 async def _signals(request: Request) -> dict[str, Any]:

@@ -100,7 +100,7 @@ from iris.auth import Session, OptionalSession, require_role, User, install
 
 The `Session` view exposes everything routes legitimately need from a logged-in session: `id`, `user` (a `User`), `created_at`, `expires_at`, `data` (the per-session mutable dict), and `roles` (a `frozenset[str]` of effective role names with `includes:` closure already applied). The `data` field is the same dict object as the session store's storage, so `session.data[key] = value` writes through with no commit step. All other fields are frozen.
 
-`require_role("admin")` is a dependency factory that 403s if the user's effective role set doesn't contain the named role. It returns a `Session`, so role-gated routes write `session: Session = Depends(require_role("admin"))` and access `session.user`/`session.data`/`session.roles` from the same value. See "Authorization (roles)" below for the YAML schema and inheritance semantics.
+`require_role("admin")` is a dependency factory that 403s if the user's effective role set doesn't contain the named role. It returns a `Session`, so role-gated routes write `session: Session = Depends(require_role("admin"))` and access `session.user`/`session.data`/`session.roles` from the same value. See "Authorization (roles)" below for the schema and inheritance semantics.
 
 **Two `Session` names, two import paths.** FastAPI 0.136 raises `AssertionError: Cannot specify Depends in Annotated and default value together` when an Annotated alias with `Depends` is combined with `= Depends(other)`. So:
 
@@ -149,36 +149,56 @@ Lifecycle: `data` is JSON-encoded into the SQLite row alongside the session. Mut
 
 ### Authorization (roles)
 
-Application code references **internal role names only** (`admin`, `writer`, `reader`, etc.). The mapping from role → external IdP groups/usernames lives in a YAML file outside the code, edited by operators without a redeploy.
+Application code references **internal role names only** (`admin`, `writer`, `reader`, etc.). The mapping from role → external IdP groups/usernames lives in SQLite, in the same `AUTH_DB_PATH` file as the session store. Routes never reference IdP group names directly; they use `Depends(require_role("admin"))`. Operators edit the mapping via the `RoleMappingStore` API (future admin routes); no file edits, no app restart.
 
-**YAML schema** (single file, path from `AUTHZ_CONFIG_PATH`):
+**Schema** (four tables, `authz_*` prefix):
 
-```yaml
-roles:
-  reader:
-    groups: []
-    users: []
-  writer:
-    groups: ["editors"]
-    users: ["bob"]
-    includes: ["reader"]            # writers also have reader's permissions
-  admin:
-    groups: ["ldap-admins", "platform-team"]
-    users: ["alice"]
-    includes: ["writer"]            # admins transitively get writer + reader
+```sql
+CREATE TABLE authz_roles (
+    name TEXT PRIMARY KEY                     -- regex: [a-zA-Z0-9_-]+
+);
+CREATE TABLE authz_role_groups (
+    role_name  TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    PRIMARY KEY (role_name, group_name),
+    FOREIGN KEY (role_name) REFERENCES authz_roles(name) ON DELETE CASCADE
+);
+CREATE TABLE authz_role_users (
+    role_name      TEXT NOT NULL,
+    username_lower TEXT NOT NULL,             -- case-insensitive: stored lowercased
+    PRIMARY KEY (role_name, username_lower),
+    FOREIGN KEY (role_name) REFERENCES authz_roles(name) ON DELETE CASCADE
+);
+CREATE TABLE authz_role_includes (
+    role_name     TEXT NOT NULL,
+    included_role TEXT NOT NULL,
+    PRIMARY KEY (role_name, included_role),
+    FOREIGN KEY (role_name)     REFERENCES authz_roles(name) ON DELETE CASCADE,
+    FOREIGN KEY (included_role) REFERENCES authz_roles(name) ON DELETE RESTRICT
+);
 ```
 
-Validation rules (enforced at load, fail-loud with line numbers):
-- Top-level: exactly `roles:`. Other keys reject.
-- Per-role keys restricted to `{groups, users, includes}`; all default to `[]`.
-- Role names match `[a-zA-Z0-9_-]+`.
-- `includes` must reference defined roles; the graph must be a DAG (cycles reject).
-- Duplicate top-level role keys reject (custom YAML loader; PyYAML's default would silently overwrite).
+`ON DELETE CASCADE` on the child tables means dropping a role removes its assignments automatically. `ON DELETE RESTRICT` on `included_role` prevents deleting a role that another role still includes. Cycles are rejected app-side on `add_include` — SQLite can't enforce graph acyclicity.
+
+**Mutator API** (in `iris.auth.authz.store.RoleMappingStore`, exposed on `app.state.authz_store`):
+
+```python
+await store.add_role(name)
+await store.remove_role(name)             # raises if another role includes it
+await store.add_group_to_role(role, group)
+await store.remove_group_from_role(role, group)
+await store.add_user_to_role(role, username)         # username lowercased on storage
+await store.remove_user_from_role(role, username)
+await store.add_include(role, included_role)        # cycle-checked app-side
+await store.remove_include(role, included_role)
+```
+
+Each mutator validates inputs (role names against `[a-zA-Z0-9_-]+`) and translates SQLite FK violations into `RoleMappingError` with a clean message. `add_*` are idempotent (`INSERT OR IGNORE`).
 
 **Identity matching:**
 - `groups` — exact, case-sensitive match against `User.groups` (verbatim from the IdP).
-- `users` — case-insensitive match against `User.username` (the new field on `User`).
-  - OAuth provider sources `username` from the `preferred_username` claim, falling back to `sub` (the IdP's opaque subject identifier) if absent. If your OIDC IdP doesn't issue `preferred_username`, your `users:` lists must contain the `sub` UUIDs.
+- `users` — case-insensitive match against `User.username`.
+  - OAuth provider sources `username` from the `preferred_username` claim, falling back to `sub` if absent. If your OIDC IdP doesn't issue `preferred_username`, your `users` lists must contain the `sub` UUIDs.
   - LDAP provider sources `username` from the `username` substituted into `LDAP_BIND_DN_TEMPLATE`.
   - Mock provider sources `username` from `MOCK_USERNAME`.
 
@@ -207,11 +227,26 @@ These two examples illustrate the dual-import pattern: the **class** (`from iris
 
 `require_role("reader")` admits any user whose effective role set contains `reader`, directly or via `includes` (so admins and writers get in too). `session.roles` returns the user's full effective role set as a `frozenset[str]` — useful for templates and `/api/whoami`-style endpoints.
 
-If a route names a role that isn't defined in the YAML, the request returns **500** (not 403) with a generic body — silent 403s would mask operator typos like `require_role("reder")`. The missing role name is logged server-side.
+If a route names a role that isn't defined in the DB, the request returns **500** (not 403) with a generic body — silent 403s would mask operator typos like `require_role("reder")`. The missing role name is logged server-side.
 
-**Live reload:** the loader stats the YAML file on every request and reloads when mtime changes. Edit the file, save, and the next request sees the new mapping — no restart, no waiting for sessions to expire.
+**First-install bootstrap.** Two env vars seed the initial admin user:
 
-**Robustness against bad edits:** if a YAML edit produces an invalid file (syntax error, schema error, cycle, undefined include), the loader logs an `ERROR` and **keeps serving the last-known-good mapping**. Subsequent requests keep working until the file is fixed. Note that the *initial* load at boot is not protected by this fallback — a bad initial YAML stops the app from booting (consistent with the rest of the auth config's fail-loud style).
+```
+AUTHZ_BOOTSTRAP_ROLE=admin       # default: "admin"
+AUTHZ_BOOTSTRAP_USER=alice       # if unset, no bootstrap
+```
+
+`install_authz_schema` runs at app boot. If `authz_roles` doesn't yet exist, it creates the schema AND seeds:
+- a row in `authz_roles` for the bootstrap role (default `admin`),
+- a row in `authz_roles` for `clickhouse_admin`,
+- an include edge `(admin → clickhouse_admin)` so the seeded user immediately gets ClickHouse admin powers,
+- a row in `authz_role_users` adding the bootstrap user to the admin role.
+
+Once tables exist, the function only ensures the schema (idempotent) and leaves content alone. Operators can rename/delete the bootstrap role, change includes, remove the bootstrap user — restart won't fight them. Wiping the DB file re-triggers bootstrap.
+
+If `AUTHZ_BOOTSTRAP_USER` is unset on a fresh DB, the tables are empty. Role-gated routes 500 until the operator populates the mapping via `app.state.authz_store` calls.
+
+The hardcoded string `"clickhouse_admin"` in `iris.auth.authz.bootstrap` must match `iris.clickhouse.deps.CLICKHOUSE_ADMIN_ROLE`. A drift test in `tests/auth/authz/test_authz_bootstrap.py` asserts equality.
 
 ### Configuration
 
@@ -225,9 +260,10 @@ SESSION_COOKIE_NAME=iris_session
 SESSION_TTL_SECONDS=43200            # 12h, sliding TTL refreshed on each request
 SESSION_ABSOLUTE_TTL_SECONDS=2592000 # 30d, hard cap on top of sliding TTL
 SESSION_MAX_PER_USER=10              # cap concurrent sessions per User.subject (oldest evicted)
-SESSION_DB_PATH=./iris-sessions.db   # SQLite file backing the session store; :memory: for tests
+AUTH_DB_PATH=./iris-auth.db          # SQLite file backing both sessions and authz tables; :memory: for tests
 COOKIE_SECURE=true                   # set false for local dev over http
-AUTHZ_CONFIG_PATH=./authz.yaml       # role mapping; required, fail-loud if unset
+AUTHZ_BOOTSTRAP_ROLE=admin           # role created on first install (when authz_roles doesn't yet exist)
+AUTHZ_BOOTSTRAP_USER=                # if set, seeded into the bootstrap role on first install
 
 # OAuth (OIDC discovery)
 OIDC_ISSUER_URL=https://keycloak.example.com/realms/iris
@@ -282,10 +318,10 @@ src/iris/auth/
 │   └── oauth.py       # OAuthProvider (OIDC discovery + PKCE + signed-cookie state)
 └── authz/
     ├── __init__.py    # (empty package marker)
-    ├── config.py      # AuthzSettings.from_env() — reads AUTHZ_CONFIG_PATH
-    ├── mapping.py     # RoleMapping value type + parse() with cycle detection + closure
-    ├── loader.py      # RoleMappingLoader: mtime-cached, last-good fallback on bad reload
-    ├── core.py        # resolve_roles, current_mapping helpers (no cross-package auth imports)
+    ├── mapping.py     # RoleDef / RoleMapping value types + compute_closure helper
+    ├── store.py       # RoleMappingStore: get_mapping + 8 mutators + close
+    ├── bootstrap.py   # install_authz_schema: first-install schema creation + seeding
+    ├── core.py        # resolve_roles, current_mapping helpers (read from app.state.authz_store)
     └── deps.py        # require_role(name) factory
 ```
 
@@ -293,7 +329,7 @@ src/iris/auth/
 
 ### Authorization model
 
-Roles are internal names (`admin`, `writer`, `reader`, …) defined in the YAML at `AUTHZ_CONFIG_PATH`, mapped to external IdP groups and/or usernames. Routes guard themselves with `Depends(require_role("admin"))` — they never reference IdP group names directly. Operators edit the YAML to (re)map roles to whatever the deployment's IdP exposes; no code change needed when group names differ across OAuth and LDAP. See "Authorization (roles)" above for the schema and inheritance semantics.
+Roles are internal names (`admin`, `writer`, `reader`, …) defined in SQLite (`authz_*` tables in `AUTH_DB_PATH`), mapped to external IdP groups and/or usernames. Routes guard themselves with `Depends(require_role("admin"))` — they never reference IdP group names directly. Operators edit the mapping via `app.state.authz_store` (or future admin routes) to (re)map roles to whatever the deployment's IdP exposes; no code change needed when group names differ across OAuth and LDAP. See "Authorization (roles)" above for the schema, mutator API, and inheritance semantics.
 
 ### Login flows
 
@@ -337,7 +373,7 @@ The realm seed at `tests/auth/integration/seed/keycloak-realm.json` is committed
 - Rate limiting on `POST /login` keys on `request.client.host`. Behind a reverse proxy this is the proxy's IP — the bucket becomes effectively global. Mitigation: run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy>` so `request.client.host` reflects the `X-Forwarded-For` value. Not enforced; deployment-config concern.
 - `OAuthProvider` caches the IdP's JWKS once on first discovery. If the IdP rotates signing keys, all logins fail until iris is restarted. Acceptable at ≤20-user / multi-month rotation cadence; tighten by re-fetching on `kid`-not-in-set if rotation matters.
 - OIDC discovery is now lazy: the *first* login attempt after restart pays the discovery latency. Acceptable for v1, but means a slow IdP shifts startup latency to a request boundary instead of failing loud at boot.
-- The role-mapping loader stats the YAML on every request. Sub-millisecond at ≤20-user scale; for higher request volumes, swap to a file watcher (e.g., `watchfiles`) or event-driven invalidation.
+- `RoleMappingStore.get_mapping()` runs four SELECTs per request to assemble the closure. Sub-millisecond at ≤20-user scale; for higher request volumes, add an in-process cache with a version-column invalidation.
 
 These are accepted residual risks for the ≤20-user / `--workers 1` deploy profile; revisit when scaling out or relocating behind a load balancer.
 
@@ -429,13 +465,13 @@ async def click_admin(
     return await handle.user_grants(username="alice")
 ```
 
-`get_clickhouse_handle` admits any logged-in user; the handle exposes only `query_as_user`. `require_clickhouse_admin` 403s users without the `clickhouse_admin` role (and 500s if the role isn't defined in the YAML); on success it returns a `ClickHouseAdminHandle` that adds `query_as_service` (no impersonation), the `grant_*`/`add_row_policy`/`revoke_row_policy` mutators, and the audit helpers (`user_grants`, `role_grants`, `user_row_policies`, …). Admin routes that want a user-impersonated query can still call `handle.query_as_user(...)` on the admin handle.
+`get_clickhouse_handle` admits any logged-in user; the handle exposes only `query_as_user`. `require_clickhouse_admin` 403s users without the `clickhouse_admin` role (and 500s if the role isn't defined in the authz mapping); on success it returns a `ClickHouseAdminHandle` that adds `query_as_service` (no impersonation), the `grant_*`/`add_row_policy`/`revoke_row_policy` mutators, and the audit helpers (`user_grants`, `role_grants`, `user_row_policies`, …). Admin routes that want a user-impersonated query can still call `handle.query_as_user(...)` on the admin handle.
 
 **Why two HTTP transports.** `query_as_user` prepends `EXECUTE AS <quoted_username>` to the SQL. ClickHouse's `EXECUTE AS user <SELECT>` body grammar rejects `FORMAT` clauses, but `clickhouse-connect`'s `query()` always appends `FORMAT Native` — incompatible. The handle therefore uses a separate `httpx.AsyncClient` for impersonated queries, posting to ClickHouse's HTTP endpoint with `?default_format=JSONEachRow` as a URL parameter (which the server *does* honor). `query_as_service` and the admin/audit methods keep using `clickhouse-connect`. As a consequence, `query_as_user` returns `list[dict[str, Any]]` (parsed JSON Lines) rather than a `QueryResult` — types are preserved by JSON encoding (ints stay ints, strings stay strings) but column-type metadata is lost. Routes needing column types should use the admin handle's `query_as_service`. Named parameters work via `param_<name>=<value>` URL params translated from the `parameters=` kwarg.
 
 `init_user_rights` runs on every successful login (form submit or OAuth callback) via a generic post-login hook list at `app.state.post_login_hooks`, populated by `iris.clickhouse.install(app)`. Subsequent cookie-based session refreshes do NOT re-provision. Group changes between two logins are reconciled. If ClickHouse is unreachable at boot, `ensure_service_admin` raises and the app refuses to start; if it's unreachable mid-life, the post-login hook raises and the user gets a 500.
 
-The `clickhouse_admin` role is a regular role defined in `authz.yaml` (no schema change). Operators map it to whichever IdP groups they want; the role name itself is a `Final` constant `iris.clickhouse.deps.CLICKHOUSE_ADMIN_ROLE = "clickhouse_admin"` and not env-configurable.
+The `clickhouse_admin` role is a regular role in the authz mapping (created automatically by the bootstrap on first install, seeded as an include of the bootstrap admin role). Operators map it to whichever IdP groups they want via the mutator API; the role name itself is a `Final` constant `iris.clickhouse.deps.CLICKHOUSE_ADMIN_ROLE = "clickhouse_admin"` and not env-configurable.
 
 `build_app(install_clickhouse=False)` skips the bridge entirely — used by auth tests that don't need a CH testcontainer. Set `IRIS_NO_CLICKHOUSE=1` to disable the bridge in the module-level `app = build_app()` (used by `uv run iris` for local dev when CH isn't running).
 

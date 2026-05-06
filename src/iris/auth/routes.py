@@ -171,20 +171,23 @@ def build_auth_router(
 def install(app: FastAPI) -> None:
     """Wire the auth package into a FastAPI app: settings, store, exception handlers, router."""
     from iris.auth.config import AuthSettings
-    from iris.auth.authz.config import AuthzSettings
-    from iris.auth.authz.loader import RoleMappingLoader
+    from iris.auth.authz.store import RoleMappingStore
     from iris.auth.deps import set_session_store, set_settings
     from iris.auth.exceptions import install_exception_handlers
     from iris.auth.providers import build_provider
 
     settings = AuthSettings.from_env()
-    authz_settings = AuthzSettings.from_env()
-    loader = RoleMappingLoader(authz_settings.config_path)
-    loader.get()  # eager initial load; bad YAML stops the app from booting
-    app.state.authz_loader = loader
+
+    authz_store = RoleMappingStore(path=settings.auth_db_path)
+    # Run bootstrap on the store's own connection. With :memory: each
+    # connection is a private DB, so seeding has to happen on the connection
+    # the store actually uses for queries.
+    authz_store.bootstrap(settings)
+    app.state.authz_store = authz_store
+    app.state.auth_close_authz_store = authz_store.close
 
     store = SessionStore(
-        path=settings.session_db_path,
+        path=settings.auth_db_path,
         ttl_seconds=settings.ttl_seconds,
         absolute_ttl_seconds=settings.absolute_ttl_seconds,
         max_per_user=settings.max_per_user,
