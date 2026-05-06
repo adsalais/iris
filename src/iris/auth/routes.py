@@ -16,7 +16,7 @@ from iris.auth.providers.ldap import LDAPProvider
 from iris.auth.providers.mock import MockProvider
 from iris.auth.providers.oauth import OAUTH_STATE_COOKIE, OAuthProvider
 from iris.auth.rate_limit import TokenBucket
-from iris.auth.sessions import InMemorySessionStore
+from iris.auth.sessions import SessionStore
 
 logger = logging.getLogger("iris.auth")
 
@@ -52,7 +52,7 @@ def build_auth_router(
     *,
     app: FastAPI,
     provider: Provider,
-    store: InMemorySessionStore,
+    store: SessionStore,
     cookie_name: str,
     cookie_secure: bool,
     ttl_seconds: int,
@@ -183,11 +183,13 @@ def install(app: FastAPI) -> None:
     loader.get()  # eager initial load; bad YAML stops the app from booting
     app.state.authz_loader = loader
 
-    store = InMemorySessionStore(
+    store = SessionStore(
+        path=settings.session_db_path,
         ttl_seconds=settings.ttl_seconds,
         absolute_ttl_seconds=settings.absolute_ttl_seconds,
         max_per_user=settings.max_per_user,
     )
+    app.state.auth_close_session_store = store.close
     provider = build_provider(settings)
 
     from iris.templates import TEMPLATES

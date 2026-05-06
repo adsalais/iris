@@ -76,6 +76,7 @@ class AuthSettings:
     absolute_ttl_seconds: int
     max_per_user: int
     cookie_secure: bool
+    session_db_path: str
     oidc: OIDCSettings | None
     ldap: LDAPSettings | None
     mock: MockSettings | None
@@ -93,6 +94,9 @@ class AuthSettings:
         absolute_ttl_seconds = _get_int("SESSION_ABSOLUTE_TTL_SECONDS", 2_592_000)  # 30 days
         max_per_user = _get_int("SESSION_MAX_PER_USER", 10)
         cookie_secure = _get_bool("COOKIE_SECURE", True)
+        session_db_path = (
+            os.environ.get("SESSION_DB_PATH", "").strip() or "./iris-sessions.db"
+        )
 
         oidc = ldap = mock = None
         if method == "oauth":
@@ -135,6 +139,7 @@ class AuthSettings:
             absolute_ttl_seconds=absolute_ttl_seconds,
             max_per_user=max_per_user,
             cookie_secure=cookie_secure,
+            session_db_path=session_db_path,
             oidc=oidc,
             ldap=ldap,
             mock=mock,

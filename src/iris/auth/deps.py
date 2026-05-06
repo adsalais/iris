@@ -8,10 +8,10 @@ from iris.auth.authz.core import CurrentMapping, resolve_roles
 from iris.auth.exceptions import AuthRequired
 from iris.auth.identity import UserSession
 from iris.auth.session import Session as _SessionT
-from iris.auth.sessions import InMemorySessionStore
+from iris.auth.sessions import SessionStore
 
 
-def set_session_store(app: FastAPI, store: InMemorySessionStore) -> None:
+def set_session_store(app: FastAPI, store: SessionStore) -> None:
     app.state.auth_session_store = store
 
 
@@ -20,7 +20,7 @@ def set_settings(app: FastAPI, *, cookie_name: str, cookie_secure: bool = True) 
     app.state.auth_cookie_secure = cookie_secure
 
 
-def _get_store(request: Request) -> InMemorySessionStore:
+def _get_store(request: Request) -> SessionStore:
     return request.app.state.auth_session_store
 
 
