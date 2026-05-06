@@ -156,14 +156,6 @@ def test_post_login_failure_redirect_url_encoded(client):
     assert qs.get("next") == ["/dashboard?tab=home"]
 
 
-def test_post_login_with_oauth_method_returns_405(monkeypatch):
-    """When AUTH_METHOD=oauth, POST /login is not a valid path (callback is)."""
-    pytest.skip(
-        "Building an oauth-mode app requires real OIDC discovery network call;"
-        + " covered indirectly by tests/auth/test_provider_oauth.py via _http_transport injection."
-    )
-
-
 def test_csrf_token_rotates_after_login(client):
     """A CSRF token captured pre-login must be invalidated after successful auth."""
     # Capture the CSRF token from the login form render
