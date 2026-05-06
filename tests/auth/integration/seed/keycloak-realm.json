@@ -7,6 +7,7 @@
       "username": "alice",
       "enabled": true,
       "emailVerified": true,
+      "email": "alice@example.test",
       "firstName": "Alice",
       "lastName": "Example",
       "credentials": [
@@ -18,6 +19,7 @@
       "username": "bob",
       "enabled": true,
       "emailVerified": true,
+      "email": "bob@example.test",
       "firstName": "Bob",
       "lastName": "Example",
       "credentials": [

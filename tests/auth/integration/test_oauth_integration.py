@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+from fastapi.testclient import TestClient
 
 from iris.auth.config import OIDCSettings
 from iris.auth.providers.oauth import OAuthProvider
+
+from tests.auth.integration._keycloak_helpers import simulate_login
 
 
 def test_collection_smoke():
@@ -52,3 +55,25 @@ def test_oauth_provider_discovers_against_real_keycloak(
         assert provider.userinfo_endpoint.startswith(settings.issuer_url)
     finally:
         asyncio.run(provider.close())
+
+
+def test_simulate_login_drives_authorize_to_callback(oauth_app, keycloak_http):
+    """The helper drives the full OAuth code flow against real Keycloak and
+    returns the iris-side response holding the iris_session cookie. Groups
+    from the realm's group-membership mapper land in the session user."""
+    test_client = TestClient(oauth_app)
+    response = simulate_login(
+        test_client=test_client, http=keycloak_http,
+        username="alice", password="secret",
+    )
+    assert response.status_code == 302
+    assert response.cookies.get("iris_session") is not None
+
+    # The iris_session cookie should let /api/whoami succeed; groups come
+    # from the oidc-group-membership-mapper attached to the iris client in
+    # the realm seed (no `groups` scope is required because the mapper is
+    # client-level, not scope-gated).
+    me = test_client.get("/api/whoami")
+    assert me.status_code == 200
+    body = me.json()
+    assert set(body["groups"]) == {"admins", "users"}
