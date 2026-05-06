@@ -96,7 +96,7 @@ The `iris.auth` package adds session-based authentication to all routes. Public 
 from iris.auth import Session, OptionalSession, require_role, User, install
 ```
 
-`Session` requires a valid session (cookie or `Authorization: Bearer <session-id>`); routes that take it 401 if no session is present. `OptionalSession` returns `None` when there's no session and never raises. Both are FastAPI dependency aliases — use them as parameter type annotations (`async def f(session: Session): ...`) and the dep system fills in a request-scoped `Session` view.
+`Session` requires a valid session (only via the `iris_session` cookie); routes that take it 401 if no session is present. `OptionalSession` returns `None` when there's no session and never raises. Both are FastAPI dependency aliases — use them as parameter type annotations (`async def f(session: Session): ...`) and the dep system fills in a request-scoped `Session` view.
 
 The `Session` view exposes everything routes legitimately need from a logged-in session: `id`, `user` (a `User`), `created_at`, `expires_at`, `data` (the per-session mutable dict), and `roles` (a `frozenset[str]` of effective role names with `includes:` closure already applied). The `data` field is the same dict object as the session store's storage, so `session.data[key] = value` writes through with no commit step. All other fields are frozen.
 
@@ -180,7 +180,20 @@ CREATE TABLE authz_role_includes (
 
 `ON DELETE CASCADE` on the child tables means dropping a role removes its assignments automatically. `ON DELETE RESTRICT` on `included_role` prevents deleting a role that another role still includes. Cycles are rejected app-side on `add_include` — SQLite can't enforce graph acyclicity.
 
-**Mutator API** (in `iris.auth.authz.store.RoleMappingStore`, exposed on `app.state.authz_store`):
+**Mutator API** — two paths, same underlying SQL:
+
+1. **Session-scoped (recommended for routes).** Obtain a mutator from the store; each call re-checks the session has the configured admin role:
+
+```python
+mutator = request.app.state.authz_store.for_session(session)
+await mutator.add_role(name)
+await mutator.remove_role(name)
+# ... etc — same surface as the bare store ...
+```
+
+`for_session(session, *, required_role="admin")` returns a `RoleMappingStoreMutator` bound to the caller's session. Defense-in-depth: even if a route forgets the `Depends(require_role("admin"))` gate, the mutator catches the call with `AuthForbidden`. Operators with a non-default authz-admin role pass it explicitly.
+
+2. **Bare store (internal trusted code only).** Bootstrap, install, and test fixtures call directly:
 
 ```python
 await store.add_role(name)
@@ -192,6 +205,8 @@ await store.remove_user_from_role(role, username)
 await store.add_include(role, included_role)        # cycle-checked app-side
 await store.remove_include(role, included_role)
 ```
+
+Routes should NOT call the bare store; route bugs that bypass `for_session` lose the defense-in-depth check.
 
 Each mutator validates inputs (role names against `[a-zA-Z0-9_-]+`) and translates SQLite FK violations into `RoleMappingError` with a clean message. `add_*` are idempotent (`INSERT OR IGNORE`).
 
@@ -500,7 +515,7 @@ CREATE TABLE clickhouse_database_admins_roles (
 );
 ```
 
-The `DatabaseAdminStore` class wraps these tables. It's installed by `iris.clickhouse.install` and exposed on `app.state.clickhouse_database_admins`.
+The `DatabaseAdminStore` class wraps these tables. It's installed by `iris.clickhouse.install` and exposed on `app.state.clickhouse_database_admins`. Routes that need to mutate per-DB admin assignments should obtain a session+database-scoped mutator via `store.for_session(session, database=...)`; the mutator re-checks `is_admin` before each call. Bare store methods are reserved for internal trusted code (the creator/admin handles, install, fixtures).
 
 Example routes:
 

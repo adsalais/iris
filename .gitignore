@@ -9,6 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
+# Coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+
 # Git worktrees
 .worktrees/
 

@@ -286,20 +286,41 @@ class ClickHouseDatabaseAdminHandle:
 
     # ---- grants ----
 
+    async def _ensure_ch_role(self, role: str) -> None:
+        """``CREATE ROLE IF NOT EXISTS`` for the named CH role.
+
+        Pre-creating the role makes grant/policy operations idempotent
+        regardless of whether the iris user/group has logged in yet:
+        the grant is recorded against the role, and ``init_user_rights``
+        attaches the role to the CH user on first login. Without this
+        pre-creation, a missing role would surface as a CH error which
+        leaks "user-X has not yet authenticated" information to the
+        admin caller.
+        """
+        validate_identifier(role, kind="role")
+        role_q = quote_identifier(role, kind="role")
+        await asyncio.to_thread(
+            self._client.command, f"CREATE ROLE IF NOT EXISTS {role_q}"
+        )
+
     async def grant_select_to_user(self, username: str) -> None:
+        role = f"{username}{USER_ROLE_SUFFIX}"
+        await self._ensure_ch_role(role)
         await asyncio.to_thread(
             grant_select_to_database,
             self._client,
             database=self._database,
-            role=f"{username}{USER_ROLE_SUFFIX}",
+            role=role,
         )
 
     async def grant_select_to_group(self, group: str) -> None:
+        role = f"{group}{GROUP_ROLE_SUFFIX}"
+        await self._ensure_ch_role(role)
         await asyncio.to_thread(
             grant_select_to_database,
             self._client,
             database=self._database,
-            role=f"{group}{GROUP_ROLE_SUFFIX}",
+            role=role,
         )
 
     async def revoke_select_from_user(self, username: str) -> None:
@@ -323,13 +344,15 @@ class ClickHouseDatabaseAdminHandle:
     async def add_row_policy_for_user(
         self, *, table: str, column: str, username: str, value: str
     ) -> None:
+        role = f"{username}{USER_ROLE_SUFFIX}"
+        await self._ensure_ch_role(role)
         await asyncio.to_thread(
             add_row_policy,
             self._client,
             database=self._database,
             table=table,
             column=column,
-            role=f"{username}{USER_ROLE_SUFFIX}",
+            role=role,
             value=value,
             settings=self._settings,
         )
@@ -337,13 +360,15 @@ class ClickHouseDatabaseAdminHandle:
     async def add_row_policy_for_group(
         self, *, table: str, column: str, group: str, value: str
     ) -> None:
+        role = f"{group}{GROUP_ROLE_SUFFIX}"
+        await self._ensure_ch_role(role)
         await asyncio.to_thread(
             add_row_policy,
             self._client,
             database=self._database,
             table=table,
             column=column,
-            role=f"{group}{GROUP_ROLE_SUFFIX}",
+            role=role,
             value=value,
             settings=self._settings,
         )

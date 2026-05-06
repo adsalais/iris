@@ -76,16 +76,22 @@ def test_grant_select_to_user_translates_to_user_role() -> None:
     client = MagicMock()
     handle = _make_handle(client=client, database="orders")
     asyncio.run(handle.grant_select_to_user("bob"))
-    args, _ = client.command.call_args
-    assert args[0] == "GRANT SELECT ON `orders`.* TO `bob_USER`"
+    sqls = [c.args[0] for c in client.command.call_args_list]
+    assert sqls == [
+        "CREATE ROLE IF NOT EXISTS `bob_USER`",
+        "GRANT SELECT ON `orders`.* TO `bob_USER`",
+    ]
 
 
 def test_grant_select_to_group_translates_to_group_role() -> None:
     client = MagicMock()
     handle = _make_handle(client=client, database="orders")
     asyncio.run(handle.grant_select_to_group("editors"))
-    args, _ = client.command.call_args
-    assert args[0] == "GRANT SELECT ON `orders`.* TO `editors_GRP`"
+    sqls = [c.args[0] for c in client.command.call_args_list]
+    assert sqls == [
+        "CREATE ROLE IF NOT EXISTS `editors_GRP`",
+        "GRANT SELECT ON `orders`.* TO `editors_GRP`",
+    ]
 
 
 def test_revoke_select_from_user_translates_to_user_role() -> None:

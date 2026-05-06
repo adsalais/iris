@@ -28,20 +28,9 @@ def _get_cookie_name(request: Request) -> str:
     return request.app.state.auth_cookie_name
 
 
-def _bearer(authorization: str | None) -> str | None:
-    if not authorization:
-        return None
-    parts = authorization.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-    return parts[1].strip() or None
-
-
 async def _resolve_stored(request: Request) -> UserSession | None:
     cookie_name = _get_cookie_name(request)
-    sid = request.cookies.get(cookie_name) or _bearer(
-        request.headers.get("authorization")
-    )
+    sid = request.cookies.get(cookie_name)
     if not sid:
         return None
     store = _get_store(request)
