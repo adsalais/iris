@@ -8,7 +8,7 @@ from iris.auth.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD
 def client():
     from iris.app import build_app
 
-    return TestClient(build_app())
+    return TestClient(build_app(install_clickhouse=False))
 
 
 def test_login_rate_limit_kicks_in_on_burst(client):

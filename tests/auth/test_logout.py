@@ -8,7 +8,7 @@ from iris.auth.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD
 def authed_client():
     from iris.app import build_app
 
-    client = TestClient(build_app())
+    client = TestClient(build_app(install_clickhouse=False))
     r = client.get("/login")
     csrf = r.cookies[CSRF_COOKIE_NAME]
     client.post(
@@ -48,7 +48,7 @@ def test_logout_without_csrf_rejected(authed_client):
 def test_logout_without_session_returns_401_or_400():
     from iris.app import build_app
 
-    client = TestClient(build_app())
+    client = TestClient(build_app(install_clickhouse=False))
     r = client.post("/logout", data={}, headers={"accept": "application/json"})
     # No CSRF cookie either, so 400 (CSRF mismatch) is the most likely outcome
     assert r.status_code in (400, 401)

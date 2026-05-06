@@ -13,7 +13,7 @@ def test_forbidden_html_renders_template(monkeypatch):
     monkeypatch.setenv("MOCK_GROUPS", "users")  # NOT admins
     from iris.app import build_app
 
-    app = build_app()
+    app = build_app(install_clickhouse=False)
 
     @app.get("/admin-only")
     async def admin_only(_: Session = Depends(require_role("admin"))):

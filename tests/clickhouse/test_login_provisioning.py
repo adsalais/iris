@@ -4,9 +4,8 @@ These build a real iris app with install_clickhouse=True and drive a form-login
 through TestClient against the testcontainer. They verify the post-login hook
 actually creates the CH user/role/group memberships.
 
-The IRIS_NO_CLICKHOUSE env var is set to "0" within these tests so build_app()
-doesn't short-circuit; ch_settings ensures the CH env vars are pointing at the
-testcontainer.
+ch_settings ensures the CLICKHOUSE_* env vars point at the testcontainer
+before each test calls build_app(install_clickhouse=True).
 """
 from __future__ import annotations
 
