@@ -270,6 +270,67 @@ def test_provider_code_reuse_raises_oauth_exchange_on_second_call(
     assert exc.value.token == "oauth_exchange"
 
 
+def test_route_oauth_alice_full_flow_creates_session_with_admin_role(
+    oauth_app, keycloak_http
+):
+    """End-to-end: authorize -> Keycloak login -> callback -> iris session
+    cookie set; whoami succeeds and the realm's admins group resolves
+    transitively to {reader, writer, admin} per the test authz YAML."""
+    from iris.auth.authz.core import resolve_roles
+
+    test_client = TestClient(oauth_app)
+    response = simulate_login(
+        test_client=test_client, http=keycloak_http,
+        username="alice", password="secret",
+    )
+    assert response.status_code == 302
+    sid = response.cookies.get("iris_session")
+    assert sid is not None
+
+    me = test_client.get("/api/whoami")
+    assert me.status_code == 200
+    body = me.json()
+    assert body["display_name"] == "Alice Example"
+    assert set(body["groups"]) == {"admins", "users"}
+
+    # Roles aren't surfaced by /api/whoami; resolve them via the store and
+    # the role-mapping loader to confirm the YAML mapping was applied.
+    store = oauth_app.state.auth_session_store
+    user_session = asyncio.run(store.get_and_refresh(sid))
+    assert user_session is not None
+    mapping = oauth_app.state.authz_loader.get()
+    roles = resolve_roles(user_session.user, mapping)
+    assert {"reader", "writer", "admin"} <= roles
+
+
+def test_route_oauth_bob_full_flow_creates_session_with_no_roles(
+    oauth_app, keycloak_http
+):
+    """Bob is only in the `users` group; the test authz YAML maps no role
+    to that group, so the session is valid but resolves to an empty role
+    set. Whoami still succeeds — being authenticated doesn't require a role."""
+    from iris.auth.authz.core import resolve_roles
+
+    test_client = TestClient(oauth_app)
+    response = simulate_login(
+        test_client=test_client, http=keycloak_http,
+        username="bob", password="hunter2",
+    )
+    assert response.status_code == 302
+    sid = response.cookies.get("iris_session")
+    assert sid is not None
+
+    me = test_client.get("/api/whoami")
+    assert me.status_code == 200
+    assert set(me.json()["groups"]) == {"users"}
+
+    store = oauth_app.state.auth_session_store
+    user_session = asyncio.run(store.get_and_refresh(sid))
+    assert user_session is not None
+    mapping = oauth_app.state.authz_loader.get()
+    assert resolve_roles(user_session.user, mapping) == frozenset()
+
+
 def test_provider_wrong_ca_bundle_raises_oauth_discovery(
     keycloak_container, tmp_path
 ):
