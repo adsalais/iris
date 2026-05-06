@@ -177,6 +177,7 @@ def install(app: FastAPI) -> None:
     from iris.auth.providers import build_provider
 
     settings = AuthSettings.from_env()
+    app.state.auth_db_path = settings.auth_db_path
 
     authz_store = RoleMappingStore(path=settings.auth_db_path)
     # Run bootstrap on the store's own connection. With :memory: each

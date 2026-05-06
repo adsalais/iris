@@ -13,9 +13,16 @@ from fastapi import Request
 from iris.auth.authz.core import CurrentMapping
 from iris.auth.deps import Session
 from iris.auth.exceptions import AuthForbidden, AuthorizationMisconfigured
-from iris.clickhouse.handle import ClickHouseAdminHandle, ClickHouseHandle
+from iris.clickhouse.handle import (
+    ClickHouseAdminHandle,
+    ClickHouseDatabaseAdminHandle,
+    ClickHouseDatabaseCreatorHandle,
+    ClickHouseHandle,
+)
+from iris.clickhouse.identifiers import validate_identifier
 
 CLICKHOUSE_ADMIN_ROLE: Final = "clickhouse_admin"
+CLICKHOUSE_DATABASE_CREATOR_ROLE: Final = "clickhouse_database_creator"
 
 
 async def get_clickhouse_handle(
@@ -48,4 +55,57 @@ async def require_clickhouse_admin(
         http_client=request.app.state.clickhouse_http_client,
         username=session.user.username,
         settings=request.app.state.clickhouse_settings,
+    )
+
+
+async def require_clickhouse_database_creator(
+    request: Request,
+    session: Session,
+    mapping: CurrentMapping,
+) -> ClickHouseDatabaseCreatorHandle:
+    """Return a database-creator handle. 403 unless the user has
+    ``clickhouse_database_creator``. 500 if the role isn't defined."""
+    if CLICKHOUSE_DATABASE_CREATOR_ROLE not in mapping.roles:
+        raise AuthorizationMisconfigured(CLICKHOUSE_DATABASE_CREATOR_ROLE)
+    if CLICKHOUSE_DATABASE_CREATOR_ROLE not in session.roles:
+        raise AuthForbidden(
+            needed=(CLICKHOUSE_DATABASE_CREATOR_ROLE,),
+            have=tuple(sorted(session.roles)),
+        )
+    return ClickHouseDatabaseCreatorHandle(
+        client=request.app.state.clickhouse_client,
+        settings=request.app.state.clickhouse_settings,
+        db_admin_store=request.app.state.clickhouse_database_admins,
+        username=session.user.username,
+    )
+
+
+async def require_clickhouse_database_admin(
+    request: Request,
+    database: str,
+    session: Session,
+) -> ClickHouseDatabaseAdminHandle:
+    """Return a per-database admin handle. ``database`` is bound from the
+    calling route's path/query params by FastAPI. 403 unless the session is
+    listed as admin of this database (or has clickhouse_admin)."""
+    validate_identifier(database, kind="database")
+    db_admin_store = request.app.state.clickhouse_database_admins
+    is_admin = await db_admin_store.is_admin(
+        database=database,
+        username_lower=session.user.username.lower(),
+        roles=session.roles,
+    )
+    if not is_admin:
+        raise AuthForbidden(
+            needed=(f"admin of database {database!r}",),
+            have=tuple(sorted(session.roles)),
+        )
+    return ClickHouseDatabaseAdminHandle(
+        client=request.app.state.clickhouse_client,
+        http_client=request.app.state.clickhouse_http_client,
+        settings=request.app.state.clickhouse_settings,
+        db_admin_store=db_admin_store,
+        authz_store=request.app.state.authz_store,
+        database=database,
+        username=session.user.username,
     )

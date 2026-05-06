@@ -15,6 +15,7 @@ from iris.clickhouse.users import GROUP_ROLE_SUFFIX, USER_ROLE_SUFFIX
 def test_install_populates_app_state(ch_settings) -> None:
     app = FastAPI()
     app.state.post_login_hooks = []
+    app.state.auth_db_path = ":memory:"
 
     install(app)
 
@@ -22,6 +23,8 @@ def test_install_populates_app_state(ch_settings) -> None:
     assert app.state.clickhouse_settings is not None
     assert app.state.clickhouse_http_client is not None
     assert callable(app.state.clickhouse_close_http)
+    assert app.state.clickhouse_database_admins is not None
+    assert callable(app.state.clickhouse_close_database_admins)
     assert len(app.state.post_login_hooks) == 1
 
 
@@ -31,6 +34,7 @@ def test_install_http_client_aclose_runs_clean(ch_settings) -> None:
 
     app = FastAPI()
     app.state.post_login_hooks = []
+    app.state.auth_db_path = ":memory:"
     install(app)
 
     asyncio.run(app.state.clickhouse_close_http())
@@ -39,6 +43,7 @@ def test_install_http_client_aclose_runs_clean(ch_settings) -> None:
 
 def test_install_appends_to_existing_hooks(ch_settings) -> None:
     app = FastAPI()
+    app.state.auth_db_path = ":memory:"
 
     async def existing_hook(_user: User) -> None:
         pass
@@ -55,6 +60,7 @@ def test_install_creates_post_login_hooks_list_if_missing(ch_settings) -> None:
     the hook list if absent. (Production wiring still calls auth first, but
     install() is robust to call order.)"""
     app = FastAPI()
+    app.state.auth_db_path = ":memory:"
     install(app)
     assert isinstance(app.state.post_login_hooks, list)
     assert len(app.state.post_login_hooks) == 1
@@ -64,6 +70,7 @@ def test_install_hook_calls_init_user_rights(ch_settings, prefix) -> None:
     """The provisioning hook actually creates the user/role/grants in CH."""
     app = FastAPI()
     app.state.post_login_hooks = []
+    app.state.auth_db_path = ":memory:"
     install(app)
 
     user = User(

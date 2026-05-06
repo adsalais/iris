@@ -21,6 +21,7 @@ from iris.auth.identity import User
 from iris.clickhouse.bootstrap import ensure_service_admin
 from iris.clickhouse.client import build_client
 from iris.clickhouse.config import ClickHouseSettings
+from iris.clickhouse.database_admins import DatabaseAdminStore
 from iris.clickhouse.users import init_user_rights
 
 logger = logging.getLogger("iris.clickhouse")
@@ -67,3 +68,11 @@ def install(app: FastAPI) -> None:
     if not hasattr(app.state, "post_login_hooks"):
         app.state.post_login_hooks = []
     app.state.post_login_hooks.append(_provision_on_login)
+
+    # Per-database admin store. Reads the auth DB path stashed by
+    # iris.auth.routes.install on app.state.
+    auth_db_path = app.state.auth_db_path
+    db_admin_store = DatabaseAdminStore(path=auth_db_path)
+    db_admin_store.bootstrap()
+    app.state.clickhouse_database_admins = db_admin_store
+    app.state.clickhouse_close_database_admins = db_admin_store.close
