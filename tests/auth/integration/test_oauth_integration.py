@@ -277,8 +277,11 @@ def test_route_oauth_alice_full_flow_creates_session_with_admin_role(
     oauth_app, keycloak_http
 ):
     """End-to-end: authorize -> Keycloak login -> callback -> iris session
-    cookie set; whoami succeeds and the realm's admins group resolves
-    transitively to {reader, writer, admin} per the test authz YAML."""
+    cookie set; whoami succeeds. Alice is the bootstrap admin user
+    (AUTHZ_BOOTSTRAP_USER=alice from tests/conftest.py), so she resolves
+    to {admin, clickhouse_admin} — admin from the bootstrap-seeded users
+    list, clickhouse_admin via the include edge.
+    """
     from iris.auth.authz.core import resolve_roles
 
     test_client = TestClient(oauth_app)
@@ -297,21 +300,23 @@ def test_route_oauth_alice_full_flow_creates_session_with_admin_role(
     assert set(body["groups"]) == {"admins", "users"}
 
     # Roles aren't surfaced by /api/whoami; resolve them via the store and
-    # the role-mapping loader to confirm the YAML mapping was applied.
+    # the role-mapping store to confirm the bootstrap-seeded mapping was applied.
     store = oauth_app.state.auth_session_store
     user_session = asyncio.run(store.get_and_refresh(sid))
     assert user_session is not None
-    mapping = oauth_app.state.authz_loader.get()
+    mapping = asyncio.run(oauth_app.state.authz_store.get_mapping())
     roles = resolve_roles(user_session.user, mapping)
-    assert {"reader", "writer", "admin"} <= roles
+    assert "admin" in roles
+    assert "clickhouse_admin" in roles  # via the bootstrap include edge
 
 
 def test_route_oauth_bob_full_flow_creates_session_with_no_roles(
     oauth_app, keycloak_http
 ):
-    """Bob is only in the `users` group; the test authz YAML maps no role
-    to that group, so the session is valid but resolves to an empty role
-    set. Whoami still succeeds — being authenticated doesn't require a role."""
+    """Bob is only in the `users` group and is NOT the bootstrap admin user.
+    The bootstrap-seeded mapping has no users:[bob] entry and no `users`
+    group on any role, so bob's effective role set is empty. Whoami still
+    succeeds — being authenticated doesn't require a role."""
     from iris.auth.authz.core import resolve_roles
 
     test_client = TestClient(oauth_app)
@@ -330,7 +335,7 @@ def test_route_oauth_bob_full_flow_creates_session_with_no_roles(
     store = oauth_app.state.auth_session_store
     user_session = asyncio.run(store.get_and_refresh(sid))
     assert user_session is not None
-    mapping = oauth_app.state.authz_loader.get()
+    mapping = asyncio.run(oauth_app.state.authz_store.get_mapping())
     assert resolve_roles(user_session.user, mapping) == frozenset()
 
 

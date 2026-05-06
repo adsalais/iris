@@ -132,7 +132,7 @@ def oauth_app(monkeypatch, keycloak_container, tls_paths) -> FastAPI:
     monkeypatch.setenv("COOKIE_SECURE", "false")
 
     from iris.app import build_app
-    return build_app()
+    return build_app(install_clickhouse=False)
 
 
 @pytest.fixture
