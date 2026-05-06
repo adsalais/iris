@@ -176,3 +176,127 @@ def test_provider_exchange_code_returns_bob_with_users_group(
 
     assert user.username == "bob"
     assert set(user.groups) == {"users"}
+
+
+def test_provider_wrong_client_secret_raises_oauth_exchange(
+    keycloak_container, tls_paths, oauth_app, keycloak_http
+):
+    """An OAuthProvider configured with a wrong client_secret must fail
+    the token exchange with AuthError('oauth_exchange')."""
+    import pytest
+
+    from iris.auth.exceptions import AuthError
+
+    test_client = TestClient(oauth_app)
+    code, _state = obtain_authorization_code(
+        test_client=test_client, http=keycloak_http,
+        username="alice", password="secret",
+    )
+    verifier = _verifier_from_oauth_state(test_client)
+
+    with pytest.raises(AuthError) as exc:
+        asyncio.run(
+            _exchange_and_close(
+                _oauth_provider(
+                    keycloak_container, tls_paths, client_secret="WRONG-SECRET"
+                ),
+                code=code, verifier=verifier,
+                redirect_uri="http://testserver/login/callback",
+            )
+        )
+    assert exc.value.token == "oauth_exchange"
+
+
+def test_provider_redirect_uri_mismatch_raises_oauth_exchange(
+    keycloak_container, tls_paths, oauth_app, keycloak_http
+):
+    """Code obtained against http://testserver/login/callback exchanged with
+    a different redirect_uri must be rejected by Keycloak."""
+    import pytest
+
+    from iris.auth.exceptions import AuthError
+
+    test_client = TestClient(oauth_app)
+    code, _state = obtain_authorization_code(
+        test_client=test_client, http=keycloak_http,
+        username="alice", password="secret",
+    )
+    verifier = _verifier_from_oauth_state(test_client)
+
+    with pytest.raises(AuthError) as exc:
+        asyncio.run(
+            _exchange_and_close(
+                _oauth_provider(keycloak_container, tls_paths),
+                code=code, verifier=verifier,
+                redirect_uri="http://testserver/some-other-path",
+            )
+        )
+    assert exc.value.token == "oauth_exchange"
+
+
+def test_provider_code_reuse_raises_oauth_exchange_on_second_call(
+    keycloak_container, tls_paths, oauth_app, keycloak_http
+):
+    """Keycloak invalidates an authorization code on first use. Reusing it
+    for a second exchange must fail with AuthError('oauth_exchange')."""
+    import pytest
+
+    from iris.auth.exceptions import AuthError
+
+    test_client = TestClient(oauth_app)
+    code, _state = obtain_authorization_code(
+        test_client=test_client, http=keycloak_http,
+        username="alice", password="secret",
+    )
+    verifier = _verifier_from_oauth_state(test_client)
+    redirect_uri = "http://testserver/login/callback"
+
+    async def _exchange_twice():
+        provider = _oauth_provider(keycloak_container, tls_paths)
+        try:
+            user = await provider.exchange_code(
+                code=code, code_verifier=verifier, redirect_uri=redirect_uri,
+            )
+            assert user.username == "alice"
+            # Second call against the same code: Keycloak invalidates on use.
+            await provider.exchange_code(
+                code=code, code_verifier=verifier, redirect_uri=redirect_uri,
+            )
+        finally:
+            await provider.close()
+
+    with pytest.raises(AuthError) as exc:
+        asyncio.run(_exchange_twice())
+    assert exc.value.token == "oauth_exchange"
+
+
+def test_provider_wrong_ca_bundle_raises_oauth_discovery(
+    keycloak_container, tmp_path
+):
+    """OAuthProvider configured with a CA bundle that doesn't include
+    Keycloak's CA must fail discovery with AuthError('oauth_discovery')."""
+    import pytest
+
+    from iris.auth.exceptions import AuthError
+    from tests.auth.integration._tls import generate_ca_and_leaf
+
+    bad_paths = generate_ca_and_leaf(tmp_path / "wrong-ca")
+    settings = OIDCSettings(
+        issuer_url=keycloak_container.issuer_url,
+        client_id="iris",
+        client_secret="iris-test-secret",
+        scopes=("openid",),
+        ca_cert_path=str(bad_paths.ca_pem),
+    )
+    provider = OAuthProvider(settings)
+
+    async def _trigger_discovery_and_close():
+        try:
+            # Property access triggers _ensure_discovered().
+            _ = provider.authorize_endpoint
+        finally:
+            await provider.close()
+
+    with pytest.raises(AuthError) as exc:
+        asyncio.run(_trigger_discovery_and_close())
+    assert exc.value.token == "oauth_discovery"
