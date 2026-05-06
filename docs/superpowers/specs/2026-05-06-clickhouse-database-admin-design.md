@@ -15,7 +15,7 @@ Real deployments need a middle tier. Some users should be able to **create datab
 ## Non-goals
 
 - Schema-level grants for non-`SELECT` permissions (`INSERT`, `ALTER UPDATE`, `DELETE`). Write grants stay with global `clickhouse_admin` for now.
-- Row policies scoped to iris roles or groups. The per-DB admin manages user-scoped row policies only.
+- Row policies attached to iris roles. Row policies attach to a CH user role (`<username>_USER`) or a CH group role (`<group>_GRP`); iris-role-level row policies aren't in scope.
 - Per-table admin (admin of `db.table_a` but not `db.table_b`). The unit of admin authority is the database.
 - HTTP routes. The spec ships the deps + handles + storage; routes are example-grade only.
 
@@ -166,12 +166,18 @@ class ClickHouseDatabaseAdminHandle:
     async def grant_select_to_group(self, group: str) -> None
     async def revoke_select_from_group(self, group: str) -> None
 
-    # Row policies on tables in this database (per-user)
-    async def add_row_policy(
+    # Row policies on tables in this database
+    async def add_row_policy_for_user(
         self, *, table: str, column: str, username: str, value: str
     ) -> None
-    async def revoke_row_policy(
+    async def revoke_row_policy_for_user(
         self, *, table: str, column: str, username: str, value: str
+    ) -> None
+    async def add_row_policy_for_group(
+        self, *, table: str, column: str, group: str, value: str
+    ) -> None
+    async def revoke_row_policy_for_group(
+        self, *, table: str, column: str, group: str, value: str
     ) -> None
 
     # Delegate admin to others
@@ -194,7 +200,7 @@ class ClickHouseDatabaseAdminHandle:
 
 Both delegate to the existing `iris.clickhouse.grants.grant_select_to_database(client, database=self._database, role=...)`. The handle methods are thin wrappers that compute the CH role name from the iris-friendly identifier.
 
-**Row policies** delegate to the existing `iris.clickhouse.policies.add_row_policy(...)` with `database=self._database` and `role=f"{username}{USER_ROLE_SUFFIX}"`. Per-user only (the user wants per-user filters; per-role row policies aren't in scope).
+**Row policies** delegate to the existing `iris.clickhouse.policies.add_row_policy(...)` with `database=self._database`. The role is computed from the iris-friendly identifier: `f"{username}{USER_ROLE_SUFFIX}"` for the per-user variants, `f"{group}{GROUP_ROLE_SUFFIX}"` for the per-group variants. Mirrors the `grant_select_to_user` / `grant_select_to_group` split. Iris-role-scoped row policies aren't supported (operators wanting that map roles to groups in the authz mapping and use the group variant).
 
 **Admin delegation:**
 
@@ -404,7 +410,9 @@ Mocked Client + httpx + DatabaseAdminStore + RoleMappingStore. Covers all handle
 - `grant_select_to_user("alice")` issues `GRANT SELECT ON \`db\`.* TO \`alice_USER\``.
 - `grant_select_to_group("admins")` issues `GRANT SELECT ON \`db\`.* TO \`admins_GRP\``.
 - `revoke_select_*` issues `REVOKE`.
-- `add_row_policy(table=t, column=c, username=u, value=v)` calls the underlying `add_row_policy` with `database=self._database` and `role=f"{u}_USER"`.
+- `add_row_policy_for_user(table=t, column=c, username=u, value=v)` calls the underlying `iris.clickhouse.policies.add_row_policy` with `database=self._database` and `role=f"{u}_USER"`.
+- `add_row_policy_for_group(table=t, column=c, group=g, value=v)` calls the underlying `iris.clickhouse.policies.add_row_policy` with `database=self._database` and `role=f"{g}_GRP"`.
+- `revoke_row_policy_for_*` mirror the add path through `iris.clickhouse.policies.revoke_row_policy`.
 - `add_admin_user` / `add_admin_role` delegate to the store.
 - `add_admin_role` verifies the role exists in the authz mapping; raises `RoleMappingError` if not.
 - `list_*` audit methods round-trip.
