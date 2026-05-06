@@ -33,6 +33,9 @@ roles:
     groups: ["admins"]
     users: []
     includes: ["writer"]
+  clickhouse_admin:
+    groups: ["admins"]
+    users: []
 """
 
 _authz_path = os.path.join(tempfile.gettempdir(), "iris-test-authz.yaml")
@@ -45,7 +48,7 @@ os.environ.setdefault("AUTHZ_CONFIG_PATH", _authz_path)
 def app():
     from iris.app import build_app
 
-    return build_app()
+    return build_app(install_clickhouse=False)
 
 
 @pytest.fixture

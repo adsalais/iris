@@ -96,20 +96,26 @@ def test_public_surface_exports_named_symbols():
     import iris.clickhouse as ch
 
     expected = {
+        "CLICKHOUSE_ADMIN_ROLE",
+        "ClickHouseAdminHandle",
+        "ClickHouseHandle",
         "ClickHouseSettings",
+        "add_row_policy",
         "build_client",
         "ensure_service_admin",
-        "init_user_rights",
-        "grant_select_to_database",
+        "get_clickhouse_handle",
         "grant_insert_update_to_table",
-        "add_row_policy",
+        "grant_select_to_database",
+        "init_user_rights",
+        "install",
+        "require_clickhouse_admin",
         "revoke_row_policy",
-        "user_grants",
         "role_grants",
-        "user_role_memberships",
-        "user_row_policies",
         "role_row_policies",
         "table_row_policies",
+        "user_grants",
+        "user_role_memberships",
+        "user_row_policies",
     }
     assert set(ch.__all__) == expected
     for name in expected:
