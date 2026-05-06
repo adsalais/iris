@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from iris.auth.identity import User
-from iris.auth.session import Session
+from iris.auth.session import SessionView
 from iris.clickhouse.config import ClickHouseSettings
 from iris.clickhouse.deps import (
     CLICKHOUSE_ADMIN_ROLE,
@@ -33,7 +33,7 @@ def _settings() -> ClickHouseSettings:
     )
 
 
-def _session(*, roles: frozenset[str] = frozenset()) -> Session:
+def _session(*, roles: frozenset[str] = frozenset()) -> SessionView:
     user = User(
         subject="mock:alice",
         username="alice",
@@ -41,7 +41,7 @@ def _session(*, roles: frozenset[str] = frozenset()) -> Session:
         groups=("admins",),
     )
     now = datetime.now(UTC)
-    return Session(
+    return SessionView(
         id="sid",
         user=user,
         created_at=now,
@@ -73,7 +73,7 @@ def test_get_clickhouse_handle_returns_handle_for_session() -> None:
 
     app, _client = _make_app()
 
-    async def fake_session() -> Session:
+    async def fake_session() -> SessionView:
         return _session()
 
     app.dependency_overrides[_build_required] = fake_session
@@ -121,7 +121,7 @@ def _admin_app(mapping, session_roles: frozenset[str]):
 
     app, _client = _make_app()
 
-    async def fake_session() -> Session:
+    async def fake_session() -> SessionView:
         return _session(roles=session_roles)
 
     async def fake_mapping():

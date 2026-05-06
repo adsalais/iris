@@ -23,7 +23,7 @@ from iris.auth.authz.mapping import (
 
 if TYPE_CHECKING:
     from iris.auth.authz.bootstrap import BootstrapSettings
-    from iris.auth.session import Session
+    from iris.auth.session import SessionView
 
 
 # Default capability required by RoleMappingStoreMutator. Operators can pass a
@@ -251,7 +251,7 @@ class RoleMappingStore:
 
     def for_session(
         self,
-        session: "Session",
+        session: "SessionView",
         *,
         required_role: str = _DEFAULT_AUTHORIZED_ROLE,
     ) -> "RoleMappingStoreMutator":
@@ -281,7 +281,7 @@ class RoleMappingStoreMutator:
     def __init__(
         self,
         store: RoleMappingStore,
-        session: "Session",
+        session: "SessionView",
         required_role: str,
     ) -> None:
         self._store = store

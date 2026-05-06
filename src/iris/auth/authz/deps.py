@@ -3,11 +3,11 @@ from __future__ import annotations
 from iris.auth.authz.core import CurrentMapping
 from iris.auth.deps import Session
 from iris.auth.exceptions import AuthForbidden, AuthorizationMisconfigured
-from iris.auth.session import Session as _SessionT
+from iris.auth.session import SessionView
 
 
 def require_role(role: str):
-    async def _check(session: Session, mapping: CurrentMapping) -> _SessionT:
+    async def _check(session: Session, mapping: CurrentMapping) -> SessionView:
         if role not in mapping.roles:
             raise AuthorizationMisconfigured(role)
         if role not in session.roles:

@@ -4,13 +4,13 @@ from pathlib import Path
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from iris.auth import Session as RequireSession
+from iris.auth import Session
 from iris.auth.authz.deps import require_role
 from iris.auth.authz.store import RoleMappingStore
 from iris.auth.deps import set_session_store, set_settings
 from iris.auth.exceptions import install_exception_handlers
 from iris.auth.identity import User
-from iris.auth.session import Session
+from iris.auth.session import SessionView
 from iris.auth.sessions import SessionStore
 
 
@@ -52,19 +52,19 @@ def _build_app(tmp_path: Path) -> tuple[FastAPI, SessionStore, RoleMappingStore]
     app.state.authz_store = authz_store
 
     @app.get("/reader-only")
-    async def reader_only(session: Session = Depends(require_role("reader"))):
+    async def reader_only(session: SessionView = Depends(require_role("reader"))):
         return {"subject": session.user.subject}
 
     @app.get("/admin-only")
-    async def admin_only(session: Session = Depends(require_role("admin"))):
+    async def admin_only(session: SessionView = Depends(require_role("admin"))):
         return {"subject": session.user.subject}
 
     @app.get("/needs-undefined-role")
-    async def needs_undefined(session: Session = Depends(require_role("super_admin"))):
+    async def needs_undefined(session: SessionView = Depends(require_role("super_admin"))):
         return {"subject": session.user.subject}
 
     @app.get("/my-roles")
-    async def my_roles(session: RequireSession):
+    async def my_roles(session: Session):
         return {"roles": sorted(session.roles)}
 
     return app, sess_store, authz_store

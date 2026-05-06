@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI, Request
 from iris.auth.authz.core import CurrentMapping, resolve_roles
 from iris.auth.exceptions import AuthRequired
 from iris.auth.identity import UserSession
-from iris.auth.session import Session as _SessionT
+from iris.auth.session import SessionView
 from iris.auth.sessions import SessionStore
 
 
@@ -43,10 +43,10 @@ _StoredSession = Annotated[UserSession | None, Depends(_resolve_stored)]
 async def _build_optional(
     stored: _StoredSession,
     mapping: CurrentMapping,
-) -> _SessionT | None:
+) -> SessionView | None:
     if stored is None:
         return None
-    return _SessionT(
+    return SessionView(
         id=stored.id,
         user=stored.user,
         created_at=stored.created_at,
@@ -56,14 +56,14 @@ async def _build_optional(
     )
 
 
-_BuiltOptional = Annotated[_SessionT | None, Depends(_build_optional)]
+_BuiltOptional = Annotated[SessionView | None, Depends(_build_optional)]
 
 
-async def _build_required(view: _BuiltOptional) -> _SessionT:
+async def _build_required(view: _BuiltOptional) -> SessionView:
     if view is None:
         raise AuthRequired()
     return view
 
 
-Session = Annotated[_SessionT, Depends(_build_required)]
-OptionalSession = Annotated[_SessionT | None, Depends(_build_optional)]
+Session = Annotated[SessionView, Depends(_build_required)]
+OptionalSession = Annotated[SessionView | None, Depends(_build_optional)]

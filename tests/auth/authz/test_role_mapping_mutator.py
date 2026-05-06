@@ -15,13 +15,13 @@ import pytest
 from iris.auth.authz.store import RoleMappingStore
 from iris.auth.exceptions import AuthForbidden
 from iris.auth.identity import User
-from iris.auth.session import Session
+from iris.auth.session import SessionView
 
 
-def _session(*, roles: frozenset[str]) -> Session:
+def _session(*, roles: frozenset[str]) -> SessionView:
     user = User(subject="x", username="alice", display_name="Alice", groups=())
     now = datetime.now(UTC)
-    return Session(
+    return SessionView(
         id="sid",
         user=user,
         created_at=now,

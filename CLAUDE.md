@@ -102,13 +102,13 @@ The `Session` view exposes everything routes legitimately need from a logged-in 
 
 `require_role("admin")` is a dependency factory that 403s if the user's effective role set doesn't contain the named role. It returns a `Session`, so role-gated routes write `session: Session = Depends(require_role("admin"))` and access `session.user`/`session.data`/`session.roles` from the same value. See "Authorization (roles)" below for the schema and inheritance semantics.
 
-**Two `Session` names, two import paths.** FastAPI 0.136 raises `AssertionError: Cannot specify Depends in Annotated and default value together` when an Annotated alias with `Depends` is combined with `= Depends(other)`. So:
+**`Session` (the alias) vs `SessionView` (the class).** Two distinct names so the two route styles don't collide. FastAPI 0.136 raises `AssertionError: Cannot specify Depends in Annotated and default value together` when an `Annotated` alias with `Depends` is combined with `= Depends(other)`, so the dual API exists to keep both styles working:
 
-- **Bare-auth routes** (no role check) write `session: Session` with no `=`. Import the **alias** from the package: `from iris.auth import Session`. The alias has `Depends(_build_required)` baked into its `Annotated` metadata, which FastAPI uses to inject the value.
-- **Role-gated routes** write `session: Session = Depends(require_role("admin"))`. Import the **class** from the submodule: `from iris.auth.session import Session`. The class has no `Depends` metadata, so the explicit `= Depends(require_role(...))` provides the dep.
-- Both `Session` names evaluate to the same underlying class for type-checker purposes (`Annotated[X, ...]` IS `X` for typing), so `session.user`, `session.data`, etc. work identically in either form.
-- **A file mixing both patterns** imports the alias under a local name. Convention: `from iris.auth import Session as RequireSession` (used by `tests/auth/authz/test_authz_deps.py`).
-- If you ever see FastAPI raise the "Cannot specify Depends in Annotated and default value together" error at app construction, you imported the wrong `Session` for the route style. Switch the import path.
+- **Bare-auth routes** (no role check) write `session: Session` with no `=`. Import from the package: `from iris.auth import Session`. The alias is `Annotated[SessionView, Depends(_build_required)]` — FastAPI sees the metadata and injects a `SessionView` automatically.
+- **Role-gated routes** write `session: SessionView = Depends(require_role("admin"))`. Import the underlying class from `iris.auth.session` (also re-exported as `iris.auth.SessionView`). The class has no `Depends` metadata, so the explicit `= Depends(require_role(...))` provides the dep.
+- The runtime value is identical in both styles: a `SessionView` instance with `id`, `user`, `created_at`, `expires_at`, `data`, and `roles`.
+- A file using both styles can simply `from iris.auth import Session, SessionView` — the names don't collide.
+- If you ever see FastAPI raise the "Cannot specify Depends in Annotated and default value together" error at app construction, the route is using `Session` (the alias) with `= Depends(...)`. Switch the type to `SessionView`.
 
 ### Per-session server-side data
 
@@ -220,11 +220,11 @@ Each mutator validates inputs (role names against `[a-zA-Z0-9_-]+`) and translat
 **Use in routes:**
 
 ```python
-from iris.auth.session import Session
+from iris.auth import SessionView
 from iris.auth.authz.deps import require_role
 
 @app.get("/docs")
-async def list_docs(session: Session = Depends(require_role("reader"))):
+async def list_docs(session: SessionView = Depends(require_role("reader"))):
     ...
 ```
 
@@ -238,7 +238,7 @@ async def my_roles(session: Session):
     return {"roles": sorted(session.roles)}
 ```
 
-These two examples illustrate the dual-import pattern: the **class** (`from iris.auth.session import Session`) for role-gated routes that combine `= Depends(require_role(...))` with the type, and the **alias** (`from iris.auth import Session`) for bare-auth routes that rely on the alias's baked-in `Depends` metadata.
+These two examples illustrate the alias-vs-class split: `SessionView` (the class) for role-gated routes that combine `= Depends(require_role(...))` with the type, and `Session` (the `Annotated` alias) for bare-auth routes that rely on the alias's baked-in `Depends` metadata.
 
 `require_role("reader")` admits any user whose effective role set contains `reader`, directly or via `includes` (so admins and writers get in too). `session.roles` returns the user's full effective role set as a `frozenset[str]` — useful for templates and `/api/whoami`-style endpoints.
 

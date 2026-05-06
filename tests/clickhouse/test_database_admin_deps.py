@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from iris.auth.authz.mapping import RoleDef, RoleMapping
 from iris.auth.identity import User
-from iris.auth.session import Session
+from iris.auth.session import SessionView
 from iris.clickhouse.config import ClickHouseSettings
 from iris.clickhouse.deps import (
     CLICKHOUSE_DATABASE_CREATOR_ROLE,
@@ -42,7 +42,7 @@ def _settings() -> ClickHouseSettings:
     )
 
 
-def _session(*, username: str = "alice", roles: frozenset[str] = frozenset()) -> Session:
+def _session(*, username: str = "alice", roles: frozenset[str] = frozenset()) -> SessionView:
     user = User(
         subject="mock:" + username,
         username=username,
@@ -50,7 +50,7 @@ def _session(*, username: str = "alice", roles: frozenset[str] = frozenset()) ->
         groups=(),
     )
     now = datetime.now(UTC)
-    return Session(
+    return SessionView(
         id="sid",
         user=user,
         created_at=now,
@@ -94,7 +94,7 @@ def test_require_creator_500s_when_role_missing_from_yaml() -> None:
     app.state.templates = MagicMock()
     install_exception_handlers(app, cookie_name="iris_session")
 
-    async def fake_session() -> Session:
+    async def fake_session() -> SessionView:
         return _session(roles=frozenset())
 
     async def fake_mapping():
@@ -124,7 +124,7 @@ def test_require_creator_403s_when_user_lacks_role() -> None:
     app.state.templates = MagicMock()
     install_exception_handlers(app, cookie_name="iris_session")
 
-    async def fake_session() -> Session:
+    async def fake_session() -> SessionView:
         return _session(roles=frozenset({"reader"}))
 
     async def fake_mapping():
@@ -153,7 +153,7 @@ def test_require_creator_returns_handle_on_success() -> None:
     db_store.add_admin_user = AsyncMock()
     app = _make_app(db_admin_store=db_store)
 
-    async def fake_session() -> Session:
+    async def fake_session() -> SessionView:
         return _session(roles=frozenset({CLICKHOUSE_DATABASE_CREATOR_ROLE}))
 
     async def fake_mapping():
@@ -188,7 +188,7 @@ def test_require_db_admin_403s_for_non_admin() -> None:
     app.state.templates = MagicMock()
     install_exception_handlers(app, cookie_name="iris_session")
 
-    async def fake_session() -> Session:
+    async def fake_session() -> SessionView:
         return _session(username="dave", roles=frozenset())
 
     app.dependency_overrides[_build_required] = fake_session
@@ -215,7 +215,7 @@ def test_require_db_admin_admits_listed_user() -> None:
     db_store.is_admin = AsyncMock(return_value=True)
     app = _make_app(db_admin_store=db_store)
 
-    async def fake_session() -> Session:
+    async def fake_session() -> SessionView:
         return _session(username="alice", roles=frozenset())
 
     app.dependency_overrides[_build_required] = fake_session
@@ -249,7 +249,7 @@ def test_require_db_admin_short_circuits_for_clickhouse_admin() -> None:
     db_store.is_admin = AsyncMock(side_effect=fake_is_admin)
     app = _make_app(db_admin_store=db_store)
 
-    async def fake_session() -> Session:
+    async def fake_session() -> SessionView:
         return _session(username="globaladmin", roles=frozenset({"clickhouse_admin"}))
 
     app.dependency_overrides[_build_required] = fake_session
@@ -274,7 +274,7 @@ def test_require_db_admin_rejects_invalid_database_name() -> None:
 
     app = _make_app()
 
-    async def fake_session() -> Session:
+    async def fake_session() -> SessionView:
         return _session(roles=frozenset({"clickhouse_admin"}))
 
     app.dependency_overrides[_build_required] = fake_session
