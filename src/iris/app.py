@@ -1,4 +1,5 @@
 import asyncio
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -41,12 +42,20 @@ async def _clock_stream():
         await asyncio.sleep(1)
 
 
-def build_app() -> FastAPI:
+def build_app(*, install_clickhouse: bool | None = None) -> FastAPI:
+    if install_clickhouse is None:
+        install_clickhouse = os.environ.get("IRIS_NO_CLICKHOUSE") != "1"
+
     app = FastAPI(title="Iris", lifespan=_lifespan)
 
     from iris.auth.routes import install as install_auth
 
     install_auth(app)
+
+    if install_clickhouse:
+        from iris.clickhouse.install import install as install_clickhouse_fn
+
+        install_clickhouse_fn(app)
 
     app.add_middleware(SecurityHeadersMiddleware)
 
