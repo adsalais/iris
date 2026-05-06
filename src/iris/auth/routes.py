@@ -50,6 +50,7 @@ def _safe_next(next_url: str) -> str:
 
 def build_auth_router(
     *,
+    app: FastAPI,
     provider: Provider,
     store: InMemorySessionStore,
     cookie_name: str,
@@ -63,6 +64,8 @@ def build_auth_router(
         *, user: User, target: str, method: str
     ) -> RedirectResponse:
         session = await store.create(user)
+        for hook in app.state.post_login_hooks:
+            await hook(user)
         logger.info(
             "auth: login user=%s subject=%s method=%s groups=%s",
             user.display_name,
@@ -196,7 +199,10 @@ def install(app: FastAPI) -> None:
     )
     install_exception_handlers(app, cookie_name=settings.cookie_name)
 
+    app.state.post_login_hooks = []
+
     router = build_auth_router(
+        app=app,
         provider=provider,
         store=store,
         cookie_name=settings.cookie_name,

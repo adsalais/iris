@@ -13,6 +13,9 @@ os.environ.setdefault("MOCK_PASSWORD", "secret")
 os.environ.setdefault("MOCK_GROUPS", "admins,users")
 os.environ.setdefault("MOCK_DISPLAY_NAME", "Alice")
 os.environ.setdefault("COOKIE_SECURE", "false")
+# Tests don't want the CH bridge installed by default (auth tests don't need
+# a CH testcontainer). Bridge tests opt in via build_app(install_clickhouse=True).
+os.environ.setdefault("IRIS_NO_CLICKHOUSE", "1")
 
 # Write a fixture role mapping that maps the mock user's groups into roles
 # so authed_client can hit role-gated routes. Lives in a tempfile that's
@@ -30,6 +33,9 @@ roles:
     groups: ["admins"]
     users: []
     includes: ["writer"]
+  clickhouse_admin:
+    groups: ["admins"]
+    users: []
 """
 
 _authz_path = os.path.join(tempfile.gettempdir(), "iris-test-authz.yaml")
@@ -42,7 +48,7 @@ os.environ.setdefault("AUTHZ_CONFIG_PATH", _authz_path)
 def app():
     from iris.app import build_app
 
-    return build_app()
+    return build_app(install_clickhouse=False)
 
 
 @pytest.fixture

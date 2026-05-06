@@ -1,4 +1,5 @@
 import asyncio
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -19,12 +20,15 @@ from iris.templates import TEMPLATES
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup is no-op; install() runs eagerly during build_app(). On shutdown,
-    # close any teardown hooks registered by the auth layer (e.g. OAuthProvider's
-    # httpx clients).
+    # close any teardown hooks registered by the auth or clickhouse layers
+    # (e.g. OAuthProvider's httpx client, the impersonation httpx client).
     yield
     closer = getattr(app.state, "auth_close_provider", None)
     if closer is not None:
         await closer()
+    ch_closer = getattr(app.state, "clickhouse_close_http", None)
+    if ch_closer is not None:
+        await ch_closer()
 
 
 async def _signals(request: Request) -> dict[str, Any]:
@@ -41,12 +45,20 @@ async def _clock_stream():
         await asyncio.sleep(1)
 
 
-def build_app() -> FastAPI:
+def build_app(*, install_clickhouse: bool | None = None) -> FastAPI:
+    if install_clickhouse is None:
+        install_clickhouse = os.environ.get("IRIS_NO_CLICKHOUSE") != "1"
+
     app = FastAPI(title="Iris", lifespan=_lifespan)
 
     from iris.auth.routes import install as install_auth
 
     install_auth(app)
+
+    if install_clickhouse:
+        from iris.clickhouse.install import install as install_clickhouse_fn
+
+        install_clickhouse_fn(app)
 
     app.add_middleware(SecurityHeadersMiddleware)
 
