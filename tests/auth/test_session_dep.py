@@ -112,7 +112,9 @@ def test_cookie_credential_resolves_session(tmp_path):
         _close(sess_store, authz_store)
 
 
-def test_bearer_credential_resolves_session(tmp_path):
+def test_bearer_token_no_longer_accepted(tmp_path):
+    """Authorization: Bearer <sid> is no longer a valid credential mode.
+    Sessions must come from the iris_session cookie."""
     app, sess_store, authz_store = _build_app(tmp_path)
     try:
         sid = _seed(sess_store)
@@ -120,8 +122,7 @@ def test_bearer_credential_resolves_session(tmp_path):
             "/me",
             headers={"accept": "application/json", "authorization": f"Bearer {sid}"},
         )
-        assert r.status_code == 200
-        assert r.json() == {"subject": "alice"}
+        assert r.status_code == 401
     finally:
         _close(sess_store, authz_store)
 
