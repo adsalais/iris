@@ -4,13 +4,12 @@ from pathlib import Path
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from iris.auth import Session
+from iris.auth import SessionView, require_session
 from iris.auth.authz.deps import require_role
 from iris.auth.authz.store import RoleMappingStore
 from iris.auth.deps import set_session_store, set_settings
 from iris.auth.exceptions import install_exception_handlers
 from iris.auth.identity import User
-from iris.auth.session import SessionView
 from iris.auth.sessions import SessionStore
 
 
@@ -64,7 +63,7 @@ def _build_app(tmp_path: Path) -> tuple[FastAPI, SessionStore, RoleMappingStore]
         return {"subject": session.user.subject}
 
     @app.get("/my-roles")
-    async def my_roles(session: Session):
+    async def my_roles(session: SessionView = Depends(require_session)):
         return {"roles": sorted(session.roles)}
 
     return app, sess_store, authz_store

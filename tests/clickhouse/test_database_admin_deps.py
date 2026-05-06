@@ -87,7 +87,7 @@ def _make_app(*, db_admin_store=None, authz_store=None) -> FastAPI:
 
 def test_require_creator_500s_when_role_missing_from_yaml() -> None:
     from iris.auth.authz.core import current_mapping
-    from iris.auth.deps import _build_required
+    from iris.auth.deps import require_session
     from iris.auth.exceptions import install_exception_handlers
 
     app = _make_app()
@@ -100,7 +100,7 @@ def test_require_creator_500s_when_role_missing_from_yaml() -> None:
     async def fake_mapping():
         return _mapping([])
 
-    app.dependency_overrides[_build_required] = fake_session
+    app.dependency_overrides[require_session] = fake_session
     app.dependency_overrides[current_mapping] = fake_mapping
 
     @app.get("/create")
@@ -117,7 +117,7 @@ def test_require_creator_500s_when_role_missing_from_yaml() -> None:
 
 def test_require_creator_403s_when_user_lacks_role() -> None:
     from iris.auth.authz.core import current_mapping
-    from iris.auth.deps import _build_required
+    from iris.auth.deps import require_session
     from iris.auth.exceptions import install_exception_handlers
 
     app = _make_app()
@@ -130,7 +130,7 @@ def test_require_creator_403s_when_user_lacks_role() -> None:
     async def fake_mapping():
         return _mapping([CLICKHOUSE_DATABASE_CREATOR_ROLE])
 
-    app.dependency_overrides[_build_required] = fake_session
+    app.dependency_overrides[require_session] = fake_session
     app.dependency_overrides[current_mapping] = fake_mapping
 
     @app.get("/create")
@@ -147,7 +147,7 @@ def test_require_creator_403s_when_user_lacks_role() -> None:
 
 def test_require_creator_returns_handle_on_success() -> None:
     from iris.auth.authz.core import current_mapping
-    from iris.auth.deps import _build_required
+    from iris.auth.deps import require_session
 
     db_store = MagicMock()
     db_store.add_admin_user = AsyncMock()
@@ -159,7 +159,7 @@ def test_require_creator_returns_handle_on_success() -> None:
     async def fake_mapping():
         return _mapping([CLICKHOUSE_DATABASE_CREATOR_ROLE])
 
-    app.dependency_overrides[_build_required] = fake_session
+    app.dependency_overrides[require_session] = fake_session
     app.dependency_overrides[current_mapping] = fake_mapping
 
     @app.get("/create")
@@ -179,7 +179,7 @@ def test_require_creator_returns_handle_on_success() -> None:
 
 
 def test_require_db_admin_403s_for_non_admin() -> None:
-    from iris.auth.deps import _build_required
+    from iris.auth.deps import require_session
     from iris.auth.exceptions import install_exception_handlers
 
     db_store = MagicMock()
@@ -191,7 +191,7 @@ def test_require_db_admin_403s_for_non_admin() -> None:
     async def fake_session() -> SessionView:
         return _session(username="dave", roles=frozenset())
 
-    app.dependency_overrides[_build_required] = fake_session
+    app.dependency_overrides[require_session] = fake_session
 
     @app.get("/db/{database}")
     async def admin_route(
@@ -209,7 +209,7 @@ def test_require_db_admin_403s_for_non_admin() -> None:
 
 
 def test_require_db_admin_admits_listed_user() -> None:
-    from iris.auth.deps import _build_required
+    from iris.auth.deps import require_session
 
     db_store = MagicMock()
     db_store.is_admin = AsyncMock(return_value=True)
@@ -218,7 +218,7 @@ def test_require_db_admin_admits_listed_user() -> None:
     async def fake_session() -> SessionView:
         return _session(username="alice", roles=frozenset())
 
-    app.dependency_overrides[_build_required] = fake_session
+    app.dependency_overrides[require_session] = fake_session
 
     @app.get("/db/{database}")
     async def admin_route(
@@ -240,7 +240,7 @@ def test_require_db_admin_admits_listed_user() -> None:
 def test_require_db_admin_short_circuits_for_clickhouse_admin() -> None:
     """Global admin: is_admin sees clickhouse_admin in roles and returns True
     without consulting the per-DB tables."""
-    from iris.auth.deps import _build_required
+    from iris.auth.deps import require_session
 
     db_store = MagicMock()
     async def fake_is_admin(*, database, username_lower, roles):
@@ -252,7 +252,7 @@ def test_require_db_admin_short_circuits_for_clickhouse_admin() -> None:
     async def fake_session() -> SessionView:
         return _session(username="globaladmin", roles=frozenset({"clickhouse_admin"}))
 
-    app.dependency_overrides[_build_required] = fake_session
+    app.dependency_overrides[require_session] = fake_session
 
     @app.get("/db/{database}")
     async def admin_route(
@@ -270,14 +270,14 @@ def test_require_db_admin_short_circuits_for_clickhouse_admin() -> None:
 
 def test_require_db_admin_rejects_invalid_database_name() -> None:
     """Invalid CH identifier as database name -> 500 (programming error)."""
-    from iris.auth.deps import _build_required
+    from iris.auth.deps import require_session
 
     app = _make_app()
 
     async def fake_session() -> SessionView:
         return _session(roles=frozenset({"clickhouse_admin"}))
 
-    app.dependency_overrides[_build_required] = fake_session
+    app.dependency_overrides[require_session] = fake_session
 
     @app.get("/db/{database}")
     async def admin_route(

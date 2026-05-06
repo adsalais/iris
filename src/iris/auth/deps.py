@@ -40,10 +40,15 @@ async def _resolve_stored(request: Request) -> UserSession | None:
 _StoredSession = Annotated[UserSession | None, Depends(_resolve_stored)]
 
 
-async def _build_optional(
+async def optional_session(
     stored: _StoredSession,
     mapping: CurrentMapping,
 ) -> SessionView | None:
+    """FastAPI dep: returns a ``SessionView`` if the request has a valid
+    session cookie, ``None`` otherwise. Use as
+    ``session: SessionView | None = Depends(optional_session)`` on routes
+    that work with or without an authenticated user.
+    """
     if stored is None:
         return None
     return SessionView(
@@ -56,14 +61,15 @@ async def _build_optional(
     )
 
 
-_BuiltOptional = Annotated[SessionView | None, Depends(_build_optional)]
+_OptionalSessionDep = Annotated[SessionView | None, Depends(optional_session)]
 
 
-async def _build_required(view: _BuiltOptional) -> SessionView:
+async def require_session(view: _OptionalSessionDep) -> SessionView:
+    """FastAPI dep: returns the request's ``SessionView`` or raises
+    ``AuthRequired`` (401) if no session cookie is present. Use as
+    ``session: SessionView = Depends(require_session)`` on routes that
+    need an authenticated user without a specific role check.
+    """
     if view is None:
         raise AuthRequired()
     return view
-
-
-Session = Annotated[SessionView, Depends(_build_required)]
-OptionalSession = Annotated[SessionView | None, Depends(_build_optional)]

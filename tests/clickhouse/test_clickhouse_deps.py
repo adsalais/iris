@@ -69,14 +69,14 @@ def test_get_clickhouse_handle_returns_handle_for_session() -> None:
     We override the auth dep on the app — the focus of this test is the CH
     dep, not the auth chain.
     """
-    from iris.auth.deps import _build_required
+    from iris.auth.deps import require_session
 
     app, _client = _make_app()
 
     async def fake_session() -> SessionView:
         return _session()
 
-    app.dependency_overrides[_build_required] = fake_session
+    app.dependency_overrides[require_session] = fake_session
 
     @app.get("/use")
     async def use(handle: ClickHouseHandle = Depends(get_clickhouse_handle)) -> dict[str, Any]:
@@ -114,7 +114,7 @@ def _mapping_without_admin_role():
 
 def _admin_app(mapping, session_roles: frozenset[str]):
     from iris.auth.authz.core import current_mapping
-    from iris.auth.deps import _build_required
+    from iris.auth.deps import require_session
     from iris.auth.exceptions import install_exception_handlers
     from iris.clickhouse.deps import require_clickhouse_admin
     from iris.clickhouse.handle import ClickHouseAdminHandle
@@ -127,7 +127,7 @@ def _admin_app(mapping, session_roles: frozenset[str]):
     async def fake_mapping():
         return mapping
 
-    app.dependency_overrides[_build_required] = fake_session
+    app.dependency_overrides[require_session] = fake_session
     app.dependency_overrides[current_mapping] = fake_mapping
 
     @app.get("/admin")

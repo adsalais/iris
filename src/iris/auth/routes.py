@@ -8,8 +8,9 @@ from fastapi import APIRouter, Depends, FastAPI, Form, Request, Response
 from fastapi.responses import RedirectResponse
 
 from iris.auth.csrf import delete_csrf_cookie, verify_csrf_form
-from iris.auth.deps import Session
+from iris.auth.deps import require_session
 from iris.auth.exceptions import AuthError
+from iris.auth.session import SessionView
 from iris.auth.identity import User
 from iris.auth.providers.base import Provider
 from iris.auth.providers.ldap import LDAPProvider
@@ -142,7 +143,7 @@ def build_auth_router(
     @router.post("/logout")
     async def logout(
         request: Request,
-        session: Session,
+        session: SessionView = Depends(require_session),
         _: None = Depends(verify_csrf_form),
     ) -> Response:
         sid = request.cookies.get(cookie_name) or ""
@@ -158,7 +159,7 @@ def build_auth_router(
         return response
 
     @router.get("/api/whoami")
-    async def whoami(session: Session) -> dict[str, Any]:
+    async def whoami(session: SessionView = Depends(require_session)) -> dict[str, Any]:
         return {
             "subject": session.user.subject,
             "display_name": session.user.display_name,

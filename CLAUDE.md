@@ -93,22 +93,32 @@ Routes then take `signals: Signals` and get a guaranteed dict — no None handli
 The `iris.auth` package adds session-based authentication to all routes. Public surface:
 
 ```python
-from iris.auth import Session, OptionalSession, require_role, User, install
+from iris.auth import (
+    SessionView, require_session, optional_session, require_role, User, install,
+)
 ```
 
-`Session` requires a valid session (only via the `iris_session` cookie); routes that take it 401 if no session is present. `OptionalSession` returns `None` when there's no session and never raises. Both are FastAPI dependency aliases — use them as parameter type annotations (`async def f(session: Session): ...`) and the dep system fills in a request-scoped `Session` view.
+Routes get a session via one of three FastAPI deps, all of which return a `SessionView`:
+
+- `require_session` — `session: SessionView = Depends(require_session)` — 401 if no session cookie.
+- `optional_session` — `session: SessionView | None = Depends(optional_session)` — returns `None` when there's no session, never raises.
+- `require_role(name)` — `session: SessionView = Depends(require_role("admin"))` — 401 if no session, 403 if the session lacks the named role, 500 if the role isn't defined in the YAML/store.
+
+All three return the same `SessionView` shape: `id`, `user`, `created_at`, `expires_at`, `data`, `roles`.
 
 The `Session` view exposes everything routes legitimately need from a logged-in session: `id`, `user` (a `User`), `created_at`, `expires_at`, `data` (the per-session mutable dict), and `roles` (a `frozenset[str]` of effective role names with `includes:` closure already applied). The `data` field is the same dict object as the session store's storage, so `session.data[key] = value` writes through with no commit step. All other fields are frozen.
 
 `require_role("admin")` is a dependency factory that 403s if the user's effective role set doesn't contain the named role. It returns a `Session`, so role-gated routes write `session: Session = Depends(require_role("admin"))` and access `session.user`/`session.data`/`session.roles` from the same value. See "Authorization (roles)" below for the schema and inheritance semantics.
 
-**`Session` (the alias) vs `SessionView` (the class).** Two distinct names so the two route styles don't collide. FastAPI 0.136 raises `AssertionError: Cannot specify Depends in Annotated and default value together` when an `Annotated` alias with `Depends` is combined with `= Depends(other)`, so the dual API exists to keep both styles working:
+**One type, three deps.** Every auth-flavored route parameter has the same uniform shape: `session: SessionView = Depends(<dep>)`. The choice of dep determines the access-control policy:
 
-- **Bare-auth routes** (no role check) write `session: Session` with no `=`. Import from the package: `from iris.auth import Session`. The alias is `Annotated[SessionView, Depends(_build_required)]` — FastAPI sees the metadata and injects a `SessionView` automatically.
-- **Role-gated routes** write `session: SessionView = Depends(require_role("admin"))`. Import the underlying class from `iris.auth.session` (also re-exported as `iris.auth.SessionView`). The class has no `Depends` metadata, so the explicit `= Depends(require_role(...))` provides the dep.
-- The runtime value is identical in both styles: a `SessionView` instance with `id`, `user`, `created_at`, `expires_at`, `data`, and `roles`.
-- A file using both styles can simply `from iris.auth import Session, SessionView` — the names don't collide.
-- If you ever see FastAPI raise the "Cannot specify Depends in Annotated and default value together" error at app construction, the route is using `Session` (the alias) with `= Depends(...)`. Switch the type to `SessionView`.
+| Dep | When it admits | When it raises |
+|---|---|---|
+| `require_session` | any logged-in user | 401 with no session |
+| `optional_session` | any caller (returns `None` if no session) | never |
+| `require_role(name)` | session has `name` in `roles` (closure-resolved) | 401 / 403 / 500 |
+
+There used to be `Session` and `OptionalSession` `Annotated` aliases that baked `Depends` into the type metadata, but that conflicts with FastAPI's "no `Depends` in both `Annotated` and default value" rule and forced a dual-import dance. The aliases are gone — every route uses the explicit-`Depends` form, which composes cleanly with `require_role(...)`.
 
 ### Per-session server-side data
 
@@ -231,14 +241,14 @@ async def list_docs(session: SessionView = Depends(require_role("reader"))):
 For routes that want bare auth and need to read roles:
 
 ```python
-from iris.auth import Session
+from iris.auth import SessionView, require_session
 
 @app.get("/me/roles")
-async def my_roles(session: Session):
+async def my_roles(session: SessionView = Depends(require_session)):
     return {"roles": sorted(session.roles)}
 ```
 
-These two examples illustrate the alias-vs-class split: `SessionView` (the class) for role-gated routes that combine `= Depends(require_role(...))` with the type, and `Session` (the `Annotated` alias) for bare-auth routes that rely on the alias's baked-in `Depends` metadata.
+Same shape, different dep — the route author picks `require_role(...)` when they need a specific role and `require_session` when any authenticated user is fine.
 
 `require_role("reader")` admits any user whose effective role set contains `reader`, directly or via `includes` (so admins and writers get in too). `session.roles` returns the user's full effective role set as a `frozenset[str]` — useful for templates and `/api/whoami`-style endpoints.
 
@@ -315,13 +325,13 @@ Sessions also survive process restarts. `uv run iris` and a redeploy no longer l
 
 ```
 src/iris/auth/
-├── __init__.py        # public surface: Session, OptionalSession, require_role, User, install
+├── __init__.py        # public surface: SessionView, require_session, optional_session, require_role, User, install
 ├── session.py         # Session frozen dataclass (request-scoped view)
 ├── config.py          # AuthSettings.from_env() + per-method sub-settings
 ├── identity.py        # User (frozen+slots), UserSession (mutable for sliding TTL; internal)
 ├── sessions.py        # SessionStore (SQLite): create / get_and_refresh / update_data / delete / close
 ├── exceptions.py      # AuthRequired, AuthForbidden, AuthError, AuthorizationMisconfigured + install_exception_handlers
-├── deps.py            # Session, OptionalSession, set_session_store, set_settings
+├── deps.py            # require_session, optional_session, set_session_store, set_settings
 ├── csrf.py            # double-submit CSRF: mint_csrf_token, attach_csrf_cookie, issue_csrf_token, verify_csrf_form, delete_csrf_cookie
 ├── rate_limit.py      # TokenBucket: in-process per-key token-bucket limiter (used on POST /login)
 ├── routes.py          # /login, /login/callback, /logout, /api/whoami; install(app)
