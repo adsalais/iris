@@ -40,7 +40,8 @@ from iris.clickhouse.grants import (
     grant_insert_update_to_table,
     grant_select_to_database,
 )
-from iris.clickhouse.identifiers import quote_identifier
+from iris.clickhouse.database_admins import DatabaseAdminStore
+from iris.clickhouse.identifiers import quote_identifier, validate_identifier
 from iris.clickhouse.policies import add_row_policy, revoke_row_policy
 from iris.clickhouse.users import init_user_rights
 
@@ -211,4 +212,39 @@ class ClickHouseAdminHandle(ClickHouseHandle):
     ) -> list[dict[str, Any]]:
         return await asyncio.to_thread(
             table_row_policies, self._client, database=database, table=table
+        )
+
+
+class ClickHouseDatabaseCreatorHandle:
+    """Handle for users with the ``clickhouse_database_creator`` role.
+
+    Exposes only ``create_database`` — creates a CH database and atomically
+    records the calling iris user as an admin of the new database.
+    """
+
+    def __init__(
+        self,
+        *,
+        client: Client,
+        settings: ClickHouseSettings,
+        db_admin_store: DatabaseAdminStore,
+        username: str,
+    ) -> None:
+        self._client = client
+        self._settings = settings
+        self._db_admin_store = db_admin_store
+        self._username = username
+
+    async def create_database(self, name: str) -> None:
+        """``CREATE DATABASE IF NOT EXISTS <name>``; record the calling user as
+        an admin of the new database. The CH ``IF NOT EXISTS`` and the store's
+        ``INSERT OR IGNORE`` together make this safe to retry after a partial
+        failure."""
+        validate_identifier(name, kind="database")
+        quoted = quote_identifier(name, kind="database")
+        await asyncio.to_thread(
+            self._client.command, f"CREATE DATABASE IF NOT EXISTS {quoted}"
+        )
+        await self._db_admin_store.add_admin_user(
+            database=name, username=self._username
         )
