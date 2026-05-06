@@ -85,8 +85,7 @@ def test_create_database_then_grant_then_read(
             # Step 3: a sample table for the target to read.
             await asyncio.to_thread(
                 ch_client.command,
-                f"CREATE TABLE IF NOT EXISTS `{new_db}`.t (n UInt32) "
-                "ENGINE = MergeTree ORDER BY n",
+                f"CREATE TABLE IF NOT EXISTS `{new_db}`.t (n UInt32) ENGINE = MergeTree ORDER BY n",
             )
             await asyncio.to_thread(
                 ch_client.command,

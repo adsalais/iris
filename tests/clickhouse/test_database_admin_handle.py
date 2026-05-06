@@ -143,7 +143,7 @@ def test_revoke_row_policy_for_user_calls_underlying_helper() -> None:
     with patch("iris.clickhouse.handle.revoke_row_policy") as mock_revoke:
         asyncio.run(
             handle.revoke_row_policy_for_user(
-                table="lines", column="region", username="bob", value="EU"
+                table="lines", username="bob", value="EU"
             )
         )
     _, kwargs = mock_revoke.call_args
@@ -156,7 +156,7 @@ def test_revoke_row_policy_for_group_calls_underlying_helper() -> None:
     with patch("iris.clickhouse.handle.revoke_row_policy") as mock_revoke:
         asyncio.run(
             handle.revoke_row_policy_for_group(
-                table="lines", column="region", group="editors", value="EU"
+                table="lines", group="editors", value="EU"
             )
         )
     _, kwargs = mock_revoke.call_args

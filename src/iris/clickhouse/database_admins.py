@@ -86,8 +86,7 @@ class DatabaseAdminStore:
         self, database: str, username_lower: str, roles: frozenset[str]
     ) -> bool:
         row = self._conn.execute(
-            "SELECT 1 FROM clickhouse_database_admins_users "
-            "WHERE database_name = ? AND username_lower = ?",
+            "SELECT 1 FROM clickhouse_database_admins_users WHERE database_name = ? AND username_lower = ?",
             (database, username_lower),
         ).fetchone()
         if row is not None:
@@ -96,8 +95,7 @@ class DatabaseAdminStore:
             return False
         placeholders = ",".join("?" * len(roles))
         row = self._conn.execute(
-            f"SELECT 1 FROM clickhouse_database_admins_roles "
-            f"WHERE database_name = ? AND role_name IN ({placeholders}) LIMIT 1",
+            f"SELECT 1 FROM clickhouse_database_admins_roles WHERE database_name = ? AND role_name IN ({placeholders}) LIMIT 1",
             (database, *sorted(roles)),
         ).fetchone()
         return row is not None
@@ -106,8 +104,7 @@ class DatabaseAdminStore:
         async with self._lock:
             await asyncio.to_thread(
                 self._conn.execute,
-                "INSERT OR IGNORE INTO clickhouse_database_admins_users"
-                "(database_name, username_lower) VALUES (?, ?)",
+                "INSERT OR IGNORE INTO clickhouse_database_admins_users(database_name, username_lower) VALUES (?, ?)",
                 (database, username.lower()),
             )
 
@@ -115,8 +112,7 @@ class DatabaseAdminStore:
         async with self._lock:
             await asyncio.to_thread(
                 self._conn.execute,
-                "DELETE FROM clickhouse_database_admins_users "
-                "WHERE database_name = ? AND username_lower = ?",
+                "DELETE FROM clickhouse_database_admins_users WHERE database_name = ? AND username_lower = ?",
                 (database, username.lower()),
             )
 
@@ -124,8 +120,7 @@ class DatabaseAdminStore:
         async with self._lock:
             await asyncio.to_thread(
                 self._conn.execute,
-                "INSERT OR IGNORE INTO clickhouse_database_admins_roles"
-                "(database_name, role_name) VALUES (?, ?)",
+                "INSERT OR IGNORE INTO clickhouse_database_admins_roles(database_name, role_name) VALUES (?, ?)",
                 (database, role),
             )
 
@@ -133,8 +128,7 @@ class DatabaseAdminStore:
         async with self._lock:
             await asyncio.to_thread(
                 self._conn.execute,
-                "DELETE FROM clickhouse_database_admins_roles "
-                "WHERE database_name = ? AND role_name = ?",
+                "DELETE FROM clickhouse_database_admins_roles WHERE database_name = ? AND role_name = ?",
                 (database, role),
             )
 
@@ -144,8 +138,7 @@ class DatabaseAdminStore:
                 lambda: [
                     r["username_lower"]
                     for r in self._conn.execute(
-                        "SELECT username_lower FROM clickhouse_database_admins_users "
-                        "WHERE database_name = ? ORDER BY username_lower",
+                        "SELECT username_lower FROM clickhouse_database_admins_users WHERE database_name = ? ORDER BY username_lower",
                         (database,),
                     ).fetchall()
                 ]
@@ -157,8 +150,7 @@ class DatabaseAdminStore:
                 lambda: [
                     r["role_name"]
                     for r in self._conn.execute(
-                        "SELECT role_name FROM clickhouse_database_admins_roles "
-                        "WHERE database_name = ? ORDER BY role_name",
+                        "SELECT role_name FROM clickhouse_database_admins_roles WHERE database_name = ? ORDER BY role_name",
                         (database,),
                     ).fetchall()
                 ]

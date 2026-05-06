@@ -349,7 +349,7 @@ class ClickHouseDatabaseAdminHandle:
         )
 
     async def revoke_row_policy_for_user(
-        self, *, table: str, column: str, username: str, value: str
+        self, *, table: str, username: str, value: str
     ) -> None:
         await asyncio.to_thread(
             revoke_row_policy,
@@ -361,7 +361,7 @@ class ClickHouseDatabaseAdminHandle:
         )
 
     async def revoke_row_policy_for_group(
-        self, *, table: str, column: str, group: str, value: str
+        self, *, table: str, group: str, value: str
     ) -> None:
         await asyncio.to_thread(
             revoke_row_policy,
