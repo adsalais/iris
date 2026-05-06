@@ -18,7 +18,7 @@ os.environ.setdefault("COOKIE_SECURE", "false")
 os.environ.setdefault("IRIS_NO_CLICKHOUSE", "1")
 # Sessions are stored in SQLite. One connection per process means :memory:
 # works for single-process tests; multi-process tests use a tempfile.
-os.environ.setdefault("SESSION_DB_PATH", ":memory:")
+os.environ.setdefault("AUTH_DB_PATH", ":memory:")
 
 # Write a fixture role mapping that maps the mock user's groups into roles
 # so authed_client can hit role-gated routes. Lives in a tempfile that's

@@ -184,7 +184,7 @@ def install(app: FastAPI) -> None:
     app.state.authz_loader = loader
 
     store = SessionStore(
-        path=settings.session_db_path,
+        path=settings.auth_db_path,
         ttl_seconds=settings.ttl_seconds,
         absolute_ttl_seconds=settings.absolute_ttl_seconds,
         max_per_user=settings.max_per_user,
