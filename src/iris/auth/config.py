@@ -48,6 +48,7 @@ class OIDCSettings:
     client_id: str
     client_secret: str
     scopes: tuple[str, ...]
+    ca_cert_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ class AuthSettings:
                 client_id=_get_required("OIDC_CLIENT_ID"),
                 client_secret=_get_required("OIDC_CLIENT_SECRET"),
                 scopes=_split_ws(os.environ.get("OIDC_SCOPES", "openid profile email groups")),
+                ca_cert_path=os.environ.get("OIDC_CA_CERT_PATH") or None,
             )
         elif method == "ldap":
             url = _get_required("LDAP_URL")

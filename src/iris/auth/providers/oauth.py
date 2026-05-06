@@ -31,14 +31,26 @@ class OAuthProvider:
         _http_transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._settings = settings
-        self._client = httpx.Client(transport=_http_transport, timeout=10.0)
-        # httpx.MockTransport (used in tests) implements both sync and async
-        # dispatch but only inherits from BaseTransport, so we cast for the
-        # async client. Real production code passes None and gets the default.
-        self._async_client = httpx.AsyncClient(
-            transport=cast("httpx.AsyncBaseTransport | None", _http_transport),
-            timeout=10.0,
+        # When _http_transport is set (offline tests), the transport replaces
+        # httpx's network stack entirely and `verify` is irrelevant. When it's
+        # None (production + integration tests), honor settings.ca_cert_path
+        # so an internal/private CA can sign the IdP cert.
+        verify_arg: bool | str = (
+            settings.ca_cert_path if settings.ca_cert_path else True
         )
+        if _http_transport is not None:
+            self._client = httpx.Client(transport=_http_transport, timeout=10.0)
+            # httpx.MockTransport implements both sync and async dispatch but
+            # only inherits from BaseTransport. Pyright sees BaseTransport and
+            # AsyncBaseTransport as unrelated; the double cast through object
+            # bypasses that check while preserving the runtime behavior.
+            self._async_client = httpx.AsyncClient(
+                transport=cast("httpx.AsyncBaseTransport", cast(object, _http_transport)),
+                timeout=10.0,
+            )
+        else:
+            self._client = httpx.Client(verify=verify_arg, timeout=10.0)
+            self._async_client = httpx.AsyncClient(verify=verify_arg, timeout=10.0)
         self._signer = URLSafeTimedSerializer(settings.client_secret, salt="iris-oauth-state")
         # Lazy: discovery + JWKS fetched on first property access so app
         # construction doesn't block on a slow IdP. The endpoints below are

@@ -229,6 +229,7 @@ OIDC_ISSUER_URL=https://keycloak.example.com/realms/iris
 OIDC_CLIENT_ID=iris
 OIDC_CLIENT_SECRET=...
 OIDC_SCOPES=openid profile email groups
+OIDC_CA_CERT_PATH=                     # optional: PEM bundle for IdP cert validation (private CA)
 
 # LDAP
 LDAP_URL=ldaps://ldap.example.com:636
@@ -307,6 +308,18 @@ The CSRF cookie is rotated on successful login: the post-auth `/login` redirect 
 Provider tests are offline:
 - LDAP: `ldap3.MOCK_SYNC` strategy with an in-memory directory (`tests/auth/test_provider_ldap.py`).
 - OAuth: `httpx.MockTransport` mocking discovery / token / userinfo (`tests/auth/test_provider_oauth.py`).
+
+### Integration tests (`tests/auth/integration/`)
+
+A second tier under `tests/auth/integration/` runs the OAuth provider end-to-end against a real `quay.io/keycloak/keycloak:26.0` container via `testcontainers-python`. Covers happy paths and natural failure paths exercisable against a real IdP (wrong client secret, code reuse, redirect_uri mismatch, wrong CA bundle) plus full TLS coverage. The existing offline tests stay as the fast unit tier. (LDAP integration tests were originally in scope but descoped — see `docs/superpowers/plans/2026-05-05-auth-testcontainers.md`.)
+
+- Run only the integration tier: `uv run pytest tests/auth/integration`
+- Skip the integration tier (no Docker required): `uv run pytest --ignore=tests/auth/integration`
+- Runtime: ~25s on a warm cache (Keycloak boot ~12s dominates). Session-scoped containers amortize across the full integration suite.
+
+The realm seed at `tests/auth/integration/seed/keycloak-realm.json` is committed and declarative — it defines an `iris-test` realm with two users (`alice`/`secret` in `admins`+`users`, `bob`/`hunter2` in `users`) and an `iris` client wired up with an explicit `oidc-group-membership-mapper`. Without that mapper Keycloak doesn't emit a `groups` claim, so users would land in iris with `groups=()`. TLS certs are generated at session start via `_tls.py` and not committed. The `_keycloak_helpers.simulate_login` helper drives Keycloak's authorize → login form → callback flow through `TestClient`; the form-action regex is the only place coupled to Keycloak's login HTML.
+
+`OIDC_SCOPES` for the integration tests is `openid profile email` (no `groups`). The realm doesn't ship a `groups` client scope by default, but the client-level mapper emits the claim regardless of requested scope — so production deployments can choose to add a `groups` scope or rely on the mapper directly.
 
 ### Open redirect protection
 

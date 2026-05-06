@@ -33,7 +33,7 @@ dev = [
     "basedpyright>=1.39.3",
     "httpx>=0.28.1",
     "pytest>=9.0.3",
-    "testcontainers[clickhouse]>=4.14.2",
+    "testcontainers[clickhouse,keycloak]>=4.14.2",
 ]
 
 [tool.pytest.ini_options]
@@ -42,6 +42,7 @@ addopts = ["--import-mode=importlib", "-ra"]
 
 [tool.basedpyright]
 include = ["src", "tests"]
+extraPaths = ["."]
 pythonVersion = "3.13"
 
 # Disabled globally: these checks fire on intentional FastAPI/Pydantic patterns
