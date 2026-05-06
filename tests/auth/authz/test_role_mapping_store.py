@@ -192,3 +192,74 @@ def test_remove_user_from_role_lowercases(store):
     asyncio.run(store.remove_user_from_role("admin", "ALICE"))
     mapping = asyncio.run(store.get_mapping())
     assert mapping.roles["admin"].users_lower == frozenset()
+
+
+def test_add_include_creates_edge(store):
+    asyncio.run(store.add_role("reader"))
+    asyncio.run(store.add_role("writer"))
+    asyncio.run(store.add_include("writer", "reader"))
+    mapping = asyncio.run(store.get_mapping())
+    assert mapping.roles["writer"].includes == ("reader",)
+    assert mapping.closure["writer"] == frozenset({"reader", "writer"})
+
+
+def test_add_include_is_idempotent(store):
+    asyncio.run(store.add_role("reader"))
+    asyncio.run(store.add_role("writer"))
+    asyncio.run(store.add_include("writer", "reader"))
+    asyncio.run(store.add_include("writer", "reader"))
+    mapping = asyncio.run(store.get_mapping())
+    assert mapping.roles["writer"].includes == ("reader",)
+
+
+def test_add_include_rejects_self_cycle(store):
+    asyncio.run(store.add_role("admin"))
+    with pytest.raises(RoleMappingError, match="cycle"):
+        asyncio.run(store.add_include("admin", "admin"))
+
+
+def test_add_include_rejects_two_role_cycle(store):
+    asyncio.run(store.add_role("a"))
+    asyncio.run(store.add_role("b"))
+    asyncio.run(store.add_include("a", "b"))
+    with pytest.raises(RoleMappingError, match="cycle"):
+        asyncio.run(store.add_include("b", "a"))
+
+
+def test_add_include_rejects_transitive_cycle(store):
+    """a -> b -> c, then c -> a would create a cycle through three nodes."""
+    for r in ("a", "b", "c"):
+        asyncio.run(store.add_role(r))
+    asyncio.run(store.add_include("a", "b"))
+    asyncio.run(store.add_include("b", "c"))
+    with pytest.raises(RoleMappingError, match="cycle"):
+        asyncio.run(store.add_include("c", "a"))
+
+
+def test_add_include_rejects_missing_included_role(store):
+    asyncio.run(store.add_role("a"))
+    with pytest.raises(RoleMappingError):
+        asyncio.run(store.add_include("a", "nonexistent"))
+
+
+def test_add_include_rejects_missing_role(store):
+    asyncio.run(store.add_role("a"))
+    with pytest.raises(RoleMappingError):
+        asyncio.run(store.add_include("nonexistent", "a"))
+
+
+def test_remove_include_deletes_edge(store):
+    asyncio.run(store.add_role("a"))
+    asyncio.run(store.add_role("b"))
+    asyncio.run(store.add_include("a", "b"))
+    asyncio.run(store.remove_include("a", "b"))
+    mapping = asyncio.run(store.get_mapping())
+    assert mapping.roles["a"].includes == ()
+
+
+def test_remove_role_blocked_when_included_by_another(store):
+    asyncio.run(store.add_role("base"))
+    asyncio.run(store.add_role("admin"))
+    asyncio.run(store.add_include("admin", "base"))
+    with pytest.raises(RoleMappingError, match="included"):
+        asyncio.run(store.remove_role("base"))

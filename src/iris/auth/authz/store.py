@@ -192,3 +192,61 @@ class RoleMappingStore:
                 "DELETE FROM authz_role_users WHERE role_name = ? AND username_lower = ?",
                 (role, username_lower),
             )
+
+    async def add_include(self, role: str, included_role: str) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._add_include_sync, role, included_role)
+
+    def _add_include_sync(self, role: str, included_role: str) -> None:
+        # Both roles must exist (FKs would catch this, but we want clean errors).
+        rows = self._conn.execute(
+            "SELECT name FROM authz_roles WHERE name IN (?, ?)",
+            (role, included_role),
+        ).fetchall()
+        existing = {r["name"] for r in rows}
+        if role not in existing:
+            raise RoleMappingError(f"role {role!r} not defined")
+        if included_role not in existing:
+            raise RoleMappingError(f"included role {included_role!r} not defined")
+
+        # Cycle check: walk the existing graph plus the prospective new edge.
+        # If we can reach `role` starting from `included_role`, the new edge
+        # closes a cycle.
+        edges_rows = self._conn.execute(
+            "SELECT role_name, included_role FROM authz_role_includes"
+        ).fetchall()
+        adj: dict[str, list[str]] = {}
+        for r in edges_rows:
+            adj.setdefault(r["role_name"], []).append(r["included_role"])
+        adj.setdefault(role, []).append(included_role)  # prospective edge
+
+        visiting: set[str] = set()
+
+        def reaches(start: str, current: str) -> bool:
+            if current == start:
+                return True
+            if current in visiting:
+                return False
+            visiting.add(current)
+            for nxt in adj.get(current, []):
+                if reaches(start, nxt):
+                    return True
+            return False
+
+        if reaches(role, included_role):
+            raise RoleMappingError(
+                f"cycle detected: {role!r} -> ... -> {role!r}"
+            )
+
+        self._conn.execute(
+            "INSERT OR IGNORE INTO authz_role_includes(role_name, included_role) VALUES (?, ?)",
+            (role, included_role),
+        )
+
+    async def remove_include(self, role: str, included_role: str) -> None:
+        async with self._lock:
+            await asyncio.to_thread(
+                self._conn.execute,
+                "DELETE FROM authz_role_includes WHERE role_name = ? AND included_role = ?",
+                (role, included_role),
+            )
