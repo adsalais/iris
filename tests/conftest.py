@@ -16,6 +16,9 @@ os.environ.setdefault("COOKIE_SECURE", "false")
 # Tests don't want the CH bridge installed by default (auth tests don't need
 # a CH testcontainer). Bridge tests opt in via build_app(install_clickhouse=True).
 os.environ.setdefault("IRIS_NO_CLICKHOUSE", "1")
+# Sessions are stored in SQLite. One connection per process means :memory:
+# works for single-process tests; multi-process tests use a tempfile.
+os.environ.setdefault("SESSION_DB_PATH", ":memory:")
 
 # Write a fixture role mapping that maps the mock user's groups into roles
 # so authed_client can hit role-gated routes. Lives in a tempfile that's

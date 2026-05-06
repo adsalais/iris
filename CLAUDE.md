@@ -115,11 +115,15 @@ The `Session` view exposes everything routes legitimately need from a logged-in 
 Each `UserSession` carries a mutable `data: dict[str, Any]` field for arbitrary route-managed state (drafts, wizard steps, recently-viewed lists, etc.). The `Session` dep exposes it via `session.data`:
 
 ```python
+from fastapi import Request
 from iris.auth import Session
 
 @app.post("/draft")
-async def save_draft(session: Session, body: dict):
-    session.data["draft"] = body         # direct mutation persists; no commit step
+async def save_draft(request: Request, session: Session, body: dict):
+    session.data["draft"] = body
+    await request.app.state.auth_session_store.update_data(
+        session.id, session.data
+    )
     return {"ok": True}
 
 @app.get("/draft")
@@ -136,12 +140,12 @@ async def me_full(session: Session):
     }
 ```
 
-- `Session.data` is the dict directly — mutation writes through to the store.
+- `session.data` is a per-request snapshot — a fresh `dict` deserialized from the SQLite row on every request. Mutations to the dict do **not** auto-persist; routes that want the change to survive call `await request.app.state.auth_session_store.update_data(session.id, session.data)` before returning.
 - `Session` exposes `id`, `user`, `created_at`, `expires_at`, `data`, and `roles` on a single value. Routes that need only the user write `session.user`; routes that need the per-session bag write `session.data`.
 
 A single `Session` dep injection resolves the underlying session lookup, the per-request `Session` view construction, and the role computation exactly once. A route taking both `session: Session` and `Depends(require_role(...))` makes one store hit, computes roles once, and runs the role check on the cached view.
 
-Lifecycle: data lives in-memory alongside the session and is wiped on logout / expiry / process restart. The store API doesn't persist `data` separately; if/when the v1.1 Redis-backed store arrives, `data` will need to be serializable (JSON-ish values only). For v1, anything Python can hold is fair game. Read-modify-write across an `await` between two requests for the same session has the standard interleaving race — acceptable at ≤20-user scale; document or use `asyncio.Lock` if a route needs atomic updates.
+Lifecycle: `data` is JSON-encoded into the SQLite row alongside the session. Mutations are persisted by `update_data` and survive process restarts. Values must be JSON-encodable (strings, ints, floats, bools, `None`, lists, dicts) — anything else raises `TypeError` at write time. Read-modify-write across an `await` between two requests for the same session has the standard interleaving race; acceptable at ≤20-user scale, document or use `asyncio.Lock` if a route needs atomic updates.
 
 ### Authorization (roles)
 
@@ -221,6 +225,7 @@ SESSION_COOKIE_NAME=iris_session
 SESSION_TTL_SECONDS=43200            # 12h, sliding TTL refreshed on each request
 SESSION_ABSOLUTE_TTL_SECONDS=2592000 # 30d, hard cap on top of sliding TTL
 SESSION_MAX_PER_USER=10              # cap concurrent sessions per User.subject (oldest evicted)
+SESSION_DB_PATH=./iris-sessions.db   # SQLite file backing the session store; :memory: for tests
 COOKIE_SECURE=true                   # set false for local dev over http
 AUTHZ_CONFIG_PATH=./authz.yaml       # role mapping; required, fail-loud if unset
 
@@ -249,9 +254,11 @@ MOCK_DISPLAY_NAME=Alice
 
 **`.env` permissions:** the file may contain secrets (`OIDC_CLIENT_SECRET`, `MOCK_PASSWORD`, etc.). On a multi-user host, `chmod 600 .env` so it's only readable by the iris service user. The file is gitignored; check that your container/build pipeline doesn't bake it into images.
 
-### Deployment constraint: single worker only
+### Multi-worker deployment
 
-`InMemorySessionStore` is per-process: each uvicorn worker has its own store. Running with `uvicorn --workers >1` will silently break sessions (a request's cookie may hit a worker that doesn't know the session, manifesting as a logged-in user being redirected to `/login`). For ≤20 users this is fine — keep the deploy at `--workers 1`. To go beyond, swap the store for a Redis/DB-backed implementation; the API surface is small enough (`create` / `get_and_refresh` / `delete`) that it's a focused change.
+Sessions live in a SQLite file; multiple uvicorn workers share state by pointing at the same `SESSION_DB_PATH`. The store opens its connection in WAL mode (`PRAGMA journal_mode=WAL`) so concurrent readers don't block on a writer, and `PRAGMA synchronous=NORMAL` keeps writes cheap. Workers can scale freely on a single host (e.g., `uvicorn --workers 4`) as long as the DB path is on local disk reachable by every worker. Cross-host deploys still need a shared filesystem — or swap the store backend.
+
+Sessions also survive process restarts. `uv run iris` and a redeploy no longer log every user out.
 
 ### Module map
 
@@ -261,7 +268,7 @@ src/iris/auth/
 ├── session.py         # Session frozen dataclass (request-scoped view)
 ├── config.py          # AuthSettings.from_env() + per-method sub-settings
 ├── identity.py        # User (frozen+slots), UserSession (mutable for sliding TTL; internal)
-├── sessions.py        # InMemorySessionStore: create / get_and_refresh / delete
+├── sessions.py        # SessionStore (SQLite): create / get_and_refresh / update_data / delete / close
 ├── exceptions.py      # AuthRequired, AuthForbidden, AuthError, AuthorizationMisconfigured + install_exception_handlers
 ├── deps.py            # Session, OptionalSession, set_session_store, set_settings
 ├── csrf.py            # double-submit CSRF: mint_csrf_token, attach_csrf_cookie, issue_csrf_token, verify_csrf_form, delete_csrf_cookie
@@ -327,7 +334,6 @@ The realm seed at `tests/auth/integration/seed/keycloak-realm.json` is committed
 
 ### Open security follow-ups (v1.1)
 
-- `InMemorySessionStore` is per-process, which forces `--workers 1` (see "Deployment constraint" above). Swapping to a Redis/DB-backed store would lift the constraint and also survive process restarts.
 - Rate limiting on `POST /login` keys on `request.client.host`. Behind a reverse proxy this is the proxy's IP — the bucket becomes effectively global. Mitigation: run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy>` so `request.client.host` reflects the `X-Forwarded-For` value. Not enforced; deployment-config concern.
 - `OAuthProvider` caches the IdP's JWKS once on first discovery. If the IdP rotates signing keys, all logins fail until iris is restarted. Acceptable at ≤20-user / multi-month rotation cadence; tighten by re-fetching on `kid`-not-in-set if rotation matters.
 - OIDC discovery is now lazy: the *first* login attempt after restart pays the discovery latency. Acceptable for v1, but means a slow IdP shifts startup latency to a request boundary instead of failing loud at boot.
