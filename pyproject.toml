@@ -47,14 +47,14 @@ filterwarnings = [
     "error::DeprecationWarning",
     # ldap3 imports `tagMap` / `typeMap` from pyasn1, which renamed them.
     # Fix lands when ldap3 publishes a release using TAG_MAP/TYPE_MAP.
-    "default:.*(tagMap|typeMap) is deprecated.*:DeprecationWarning",
+    "ignore:.*(tagMap|typeMap) is deprecated.*:DeprecationWarning",
     # Some transitive dep still uses array.array('u', ...). Python 3.16 will
     # remove the `u` type code. Triggered at import time before our code runs.
-    "default:.*'u' type code is deprecated.*:DeprecationWarning",
+    "ignore:.*'u' type code is deprecated.*:DeprecationWarning",
     # testcontainers' own clickhouse module uses its (now-deprecated)
     # @wait_container_is_ready decorator at import time. Internal to that lib;
     # fix lands when testcontainers-python migrates to LogMessageWaitStrategy.
-    "default:.*@wait_container_is_ready decorator is deprecated.*:DeprecationWarning",
+    "ignore:.*@wait_container_is_ready decorator is deprecated.*:DeprecationWarning",
 ]
 
 [tool.basedpyright]
