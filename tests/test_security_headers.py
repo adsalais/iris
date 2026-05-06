@@ -7,6 +7,7 @@ def test_html_responses_have_security_headers(authed_client):
     csp = r.headers.get("Content-Security-Policy", "")
     assert "default-src 'self'" in csp
     assert "cdn.jsdelivr.net" in csp  # Datastar
+    assert "'unsafe-eval'" in csp  # Datastar uses new Function() for reactive expressions
     assert "frame-ancestors 'none'" in csp
 
 
