@@ -84,3 +84,76 @@ def test_get_clickhouse_handle_returns_handle_for_session() -> None:
 
 def test_clickhouse_admin_role_constant() -> None:
     assert CLICKHOUSE_ADMIN_ROLE == "clickhouse_admin"
+
+
+def _mapping_with_admin_role():
+    from iris.auth.authz.mapping import RoleDef, RoleMapping
+
+    role = RoleDef(
+        name=CLICKHOUSE_ADMIN_ROLE,
+        groups=frozenset({"admins"}),
+        users_lower=frozenset(),
+        includes=(),
+    )
+    return RoleMapping(
+        roles={CLICKHOUSE_ADMIN_ROLE: role},
+        closure={CLICKHOUSE_ADMIN_ROLE: frozenset({CLICKHOUSE_ADMIN_ROLE})},
+    )
+
+
+def _mapping_without_admin_role():
+    from iris.auth.authz.mapping import RoleMapping
+
+    return RoleMapping(roles={}, closure={})
+
+
+def _admin_app(mapping, session_roles: frozenset[str]):
+    from iris.auth.authz.core import current_mapping
+    from iris.auth.deps import _build_required
+    from iris.auth.exceptions import install_exception_handlers
+    from iris.clickhouse.deps import require_clickhouse_admin
+    from iris.clickhouse.handle import ClickHouseAdminHandle
+
+    app, _client = _make_app()
+
+    async def fake_session() -> Session:
+        return _session(roles=session_roles)
+
+    async def fake_mapping():
+        return mapping
+
+    app.dependency_overrides[_build_required] = fake_session
+    app.dependency_overrides[current_mapping] = fake_mapping
+
+    @app.get("/admin")
+    async def admin_route(
+        handle: ClickHouseAdminHandle = Depends(require_clickhouse_admin),
+    ) -> dict[str, Any]:
+        return {"ok": True, "username": handle._username}
+
+    app.state.templates = MagicMock()
+    install_exception_handlers(app, cookie_name="iris_session")
+    return app
+
+
+def test_require_clickhouse_admin_500s_when_role_missing_from_yaml() -> None:
+    app = _admin_app(_mapping_without_admin_role(), frozenset())
+    response = TestClient(app, raise_server_exceptions=False).get("/admin")
+    assert response.status_code == 500
+
+
+def test_require_clickhouse_admin_403s_when_user_lacks_role() -> None:
+    app = _admin_app(_mapping_with_admin_role(), frozenset({"reader"}))
+    response = TestClient(app).get(
+        "/admin", headers={"accept": "application/json"}
+    )
+    assert response.status_code == 403
+
+
+def test_require_clickhouse_admin_returns_admin_handle_on_success() -> None:
+    app = _admin_app(
+        _mapping_with_admin_role(), frozenset({CLICKHOUSE_ADMIN_ROLE})
+    )
+    response = TestClient(app).get("/admin")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "username": "alice"}
