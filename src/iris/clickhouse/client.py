@@ -22,4 +22,4 @@ def build_client(settings: ClickHouseSettings) -> Client:
     }
     if settings.ca_cert_path:
         kwargs["ca_cert"] = settings.ca_cert_path
-    return clickhouse_connect.get_client(**kwargs)  # pyright: ignore[reportUnknownMemberType]
+    return clickhouse_connect.get_client(**kwargs)
