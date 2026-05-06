@@ -23,6 +23,13 @@ from iris.auth.authz.mapping import (
 
 if TYPE_CHECKING:
     from iris.auth.authz.bootstrap import BootstrapSettings
+    from iris.auth.session import Session
+
+
+# Default capability required by RoleMappingStoreMutator. Operators can pass a
+# different role via for_session(...). Hardcoded as the conventional
+# bootstrap admin role — change requires explicit caller intent.
+_DEFAULT_AUTHORIZED_ROLE = "admin"
 
 
 class RoleMappingStore:
@@ -241,3 +248,87 @@ class RoleMappingStore:
                 "DELETE FROM authz_role_includes WHERE role_name = ? AND included_role = ?",
                 (role, included_role),
             )
+
+    def for_session(
+        self,
+        session: "Session",
+        *,
+        required_role: str = _DEFAULT_AUTHORIZED_ROLE,
+    ) -> "RoleMappingStoreMutator":
+        """Return a session-bound mutator that re-checks ``required_role`` is
+        in ``session.roles`` before each mutation.
+
+        Routes that need to mutate the role mapping should obtain a mutator
+        this way rather than calling the bare ``RoleMappingStore`` mutators
+        directly. This is defense-in-depth: even if the route forgets to
+        gate with ``Depends(require_role(...))`` first, the mutator
+        re-checks before delegating to the underlying SQL.
+
+        ``required_role`` defaults to ``"admin"`` — the conventional bootstrap
+        admin role. Operators with a different admin role pass it explicitly.
+        """
+        return RoleMappingStoreMutator(self, session, required_role)
+
+
+class RoleMappingStoreMutator:
+    """Session-scoped wrapper around RoleMappingStore.
+
+    Re-checks ``required_role`` ∈ ``session.roles`` before each mutation.
+    Constructed via ``RoleMappingStore.for_session(...)`` — don't instantiate
+    directly.
+    """
+
+    def __init__(
+        self,
+        store: RoleMappingStore,
+        session: "Session",
+        required_role: str,
+    ) -> None:
+        self._store = store
+        self._session = session
+        self._required_role = required_role
+
+    def _check(self) -> None:
+        # Late import to avoid the iris.auth.session ↔ iris.auth.authz.store
+        # cycle on the AuthForbidden import path. AuthForbidden is in
+        # iris.auth.exceptions, no cycle there — but session.py and
+        # authz/store.py both touch each other transitively.
+        from iris.auth.exceptions import AuthForbidden
+
+        if self._required_role not in self._session.roles:
+            raise AuthForbidden(
+                needed=(self._required_role,),
+                have=tuple(sorted(self._session.roles)),
+            )
+
+    async def add_role(self, name: str) -> None:
+        self._check()
+        await self._store.add_role(name)
+
+    async def remove_role(self, name: str) -> None:
+        self._check()
+        await self._store.remove_role(name)
+
+    async def add_group_to_role(self, role: str, group: str) -> None:
+        self._check()
+        await self._store.add_group_to_role(role, group)
+
+    async def remove_group_from_role(self, role: str, group: str) -> None:
+        self._check()
+        await self._store.remove_group_from_role(role, group)
+
+    async def add_user_to_role(self, role: str, username: str) -> None:
+        self._check()
+        await self._store.add_user_to_role(role, username)
+
+    async def remove_user_from_role(self, role: str, username: str) -> None:
+        self._check()
+        await self._store.remove_user_from_role(role, username)
+
+    async def add_include(self, role: str, included_role: str) -> None:
+        self._check()
+        await self._store.add_include(role, included_role)
+
+    async def remove_include(self, role: str, included_role: str) -> None:
+        self._check()
+        await self._store.remove_include(role, included_role)

@@ -8,7 +8,6 @@ import asyncio
 from pathlib import Path
 
 import httpx
-import pytest
 
 from iris.auth.authz.store import RoleMappingStore
 from iris.clickhouse.database_admins import DatabaseAdminStore
@@ -146,8 +145,6 @@ def test_grant_to_user_who_has_never_logged_in_succeeds(
     user, and the grant becomes effective. Closes the username
     enumeration leak (F1) noted in the security review.
     """
-    import pytest as _pytest  # noqa: F401  (kept for parity)
-
     db_path = str(tmp_path / "auth.db")
     db_admin_store = DatabaseAdminStore(path=db_path)
     db_admin_store.bootstrap()
@@ -179,8 +176,7 @@ def test_grant_to_user_who_has_never_logged_in_succeeds(
             # The role exists in CH and the grant is recorded against it.
             rows = list(
                 ch_client.query(
-                    "SELECT role_name, access_type FROM system.grants "
-                    "WHERE role_name = {r:String} AND database = {d:String}",
+                    "SELECT role_name, access_type FROM system.grants WHERE role_name = {r:String} AND database = {d:String}",
                     parameters={
                         "r": f"{not_yet_logged_in}_USER",
                         "d": db,

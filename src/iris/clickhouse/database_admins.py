@@ -21,6 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from iris.auth.session import Session
 
 # Must match iris.clickhouse.deps.CLICKHOUSE_ADMIN_ROLE — the global
 # admin role short-circuits is_admin without needing a per-DB row.
@@ -161,3 +165,75 @@ class DatabaseAdminStore:
             return
         self._closed = True
         await asyncio.to_thread(self._conn.close)
+
+    def for_session(
+        self, session: "Session", *, database: str
+    ) -> "DatabaseAdminStoreMutator":
+        """Return a per-database, session-bound mutator that re-checks
+        ``is_admin(database, session.user.username, session.roles)`` before
+        each mutation.
+
+        Routes that need to manage per-DB admin assignments should obtain a
+        mutator this way rather than calling the bare ``DatabaseAdminStore``
+        mutators directly — defense-in-depth so a route that forgets the
+        ``require_clickhouse_database_admin`` gate still can't grant powers
+        across databases the caller doesn't admin.
+        """
+        return DatabaseAdminStoreMutator(self, session, database)
+
+
+class DatabaseAdminStoreMutator:
+    """Session+database-scoped wrapper around DatabaseAdminStore.
+
+    Re-checks the session's authority over ``database`` before each mutation.
+    Constructed via ``DatabaseAdminStore.for_session(...)`` — don't instantiate
+    directly.
+    """
+
+    def __init__(
+        self,
+        store: DatabaseAdminStore,
+        session: "Session",
+        database: str,
+    ) -> None:
+        self._store = store
+        self._session = session
+        self._database = database
+
+    async def _check(self) -> None:
+        from iris.auth.exceptions import AuthForbidden
+
+        admitted = await self._store.is_admin(
+            database=self._database,
+            username_lower=self._session.user.username.lower(),
+            roles=self._session.roles,
+        )
+        if not admitted:
+            raise AuthForbidden(
+                needed=(f"admin of database {self._database!r}",),
+                have=tuple(sorted(self._session.roles)),
+            )
+
+    async def add_admin_user(self, username: str) -> None:
+        await self._check()
+        await self._store.add_admin_user(database=self._database, username=username)
+
+    async def remove_admin_user(self, username: str) -> None:
+        await self._check()
+        await self._store.remove_admin_user(database=self._database, username=username)
+
+    async def add_admin_role(self, role: str) -> None:
+        await self._check()
+        await self._store.add_admin_role(database=self._database, role=role)
+
+    async def remove_admin_role(self, role: str) -> None:
+        await self._check()
+        await self._store.remove_admin_role(database=self._database, role=role)
+
+    async def list_admin_users(self) -> list[str]:
+        await self._check()
+        return await self._store.list_admin_users(database=self._database)
+
+    async def list_admin_roles(self) -> list[str]:
+        await self._check()
+        return await self._store.list_admin_roles(database=self._database)
