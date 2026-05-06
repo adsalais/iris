@@ -14,6 +14,13 @@ def grant_select_to_database(client: Client, *, database: str, role: str) -> Non
     client.command(f"GRANT SELECT ON {db_q}.* TO {role_q}")
 
 
+def revoke_select_from_database(client: Client, *, database: str, role: str) -> None:
+    """``REVOKE SELECT ON <database>.* FROM <role>``. Idempotent (CH no-ops if no grant)."""
+    db_q = quote_identifier(database, kind="database")
+    role_q = quote_identifier(role, kind="role")
+    client.command(f"REVOKE SELECT ON {db_q}.* FROM {role_q}")
+
+
 def grant_insert_update_to_table(
     client: Client, *, database: str, table: str, role: str
 ) -> None:

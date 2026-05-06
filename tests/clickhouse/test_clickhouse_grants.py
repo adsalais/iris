@@ -87,3 +87,46 @@ def test_grant_insert_update_to_table_is_idempotent(ch_client, ch_settings, pref
     )
     for row in rows:
         assert row["n"] == 1
+
+
+def test_revoke_select_from_database_drops_grant(ch_client, ch_settings, prefix) -> None:
+    from iris.clickhouse.grants import (
+        grant_select_to_database,
+        revoke_select_from_database,
+    )
+
+    role = f"{prefix}_role"
+    db = f"{prefix}_db"
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{role}`")
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+
+    grant_select_to_database(ch_client, database=db, role=role)
+    pre = list(
+        ch_client.query(
+            "SELECT access_type FROM system.grants WHERE role_name = {r:String} AND database = {d:String}",
+            parameters={"r": role, "d": db},
+        ).named_results()
+    )
+    assert any(row["access_type"] == "SELECT" for row in pre), pre
+
+    revoke_select_from_database(ch_client, database=db, role=role)
+    post = list(
+        ch_client.query(
+            "SELECT access_type FROM system.grants WHERE role_name = {r:String} AND database = {d:String}",
+            parameters={"r": role, "d": db},
+        ).named_results()
+    )
+    assert not any(row["access_type"] == "SELECT" for row in post), post
+
+
+def test_revoke_select_from_database_idempotent(ch_client, ch_settings, prefix) -> None:
+    from iris.clickhouse.grants import revoke_select_from_database
+
+    role = f"{prefix}_role2"
+    db = f"{prefix}_db2"
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{role}`")
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+
+    # No grant exists; revoke should not raise.
+    revoke_select_from_database(ch_client, database=db, role=role)
+    revoke_select_from_database(ch_client, database=db, role=role)

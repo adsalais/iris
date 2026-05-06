@@ -260,7 +260,7 @@ SESSION_COOKIE_NAME=iris_session
 SESSION_TTL_SECONDS=43200            # 12h, sliding TTL refreshed on each request
 SESSION_ABSOLUTE_TTL_SECONDS=2592000 # 30d, hard cap on top of sliding TTL
 SESSION_MAX_PER_USER=10              # cap concurrent sessions per User.subject (oldest evicted)
-AUTH_DB_PATH=./iris-auth.db          # SQLite file backing both sessions and authz tables; :memory: for tests
+AUTH_DB_PATH=./iris-auth.db          # SQLite file backing sessions, authz, and per-database admin tables; :memory: for tests
 COOKIE_SECURE=true                   # set false for local dev over http
 AUTHZ_BOOTSTRAP_ROLE=admin           # role created on first install (when authz_roles doesn't yet exist)
 AUTHZ_BOOTSTRAP_USER=                # if set, seeded into the bootstrap role on first install
@@ -474,6 +474,67 @@ async def click_admin(
 The `clickhouse_admin` role is a regular role in the authz mapping (created automatically by the bootstrap on first install, seeded as an include of the bootstrap admin role). Operators map it to whichever IdP groups they want via the mutator API; the role name itself is a `Final` constant `iris.clickhouse.deps.CLICKHOUSE_ADMIN_ROLE = "clickhouse_admin"` and not env-configurable.
 
 `build_app(install_clickhouse=False)` skips the bridge entirely — used by auth tests that don't need a CH testcontainer. Set `IRIS_NO_CLICKHOUSE=1` to disable the bridge in the module-level `app = build_app()` (used by `uv run iris` for local dev when CH isn't running).
+
+### Per-database admin tier
+
+Three tiers of CH authorization, in increasing privilege:
+
+1. **Any logged-in user** — `get_clickhouse_handle` returns a `ClickHouseHandle` that runs impersonated SELECTs.
+2. **Per-database admin** — `require_clickhouse_database_admin` returns a `ClickHouseDatabaseAdminHandle` scoped to one database. Methods cover `grant_select_to_user/group`, `revoke_select_from_user/group`, `add_row_policy_for_user/group`, `revoke_row_policy_for_user/group`, `add/remove_admin_user`, `add/remove_admin_role` (delegation), plus listing/audit. The dep takes `database: str` as a regular FastAPI parameter that gets bound from the calling route's path/query. A user is admin of a database if they're listed in `clickhouse_database_admins_users` for that DB, or any of their effective roles is listed in `clickhouse_database_admins_roles`. Global admins (`clickhouse_admin`) short-circuit to admin-of-everything.
+3. **Global admin** — `require_clickhouse_admin` returns the existing `ClickHouseAdminHandle`. Strict superset of the per-DB tier.
+
+A separate role gates **database creation**: `require_clickhouse_database_creator` returns a `ClickHouseDatabaseCreatorHandle` whose only method, `create_database(name)`, runs `CREATE DATABASE IF NOT EXISTS` and atomically records the calling user in `clickhouse_database_admins_users`. The bootstrap creates the empty `clickhouse_database_creator` role on first install but does NOT include it in the bootstrap admin role — operators decide via the mutator API.
+
+Two new SQLite tables live in the same `AUTH_DB_PATH` file:
+
+```sql
+CREATE TABLE clickhouse_database_admins_users (
+    database_name  TEXT NOT NULL,
+    username_lower TEXT NOT NULL,
+    PRIMARY KEY (database_name, username_lower)
+);
+CREATE TABLE clickhouse_database_admins_roles (
+    database_name  TEXT NOT NULL,
+    role_name      TEXT NOT NULL,
+    PRIMARY KEY (database_name, role_name)
+);
+```
+
+The `DatabaseAdminStore` class wraps these tables. It's installed by `iris.clickhouse.install` and exposed on `app.state.clickhouse_database_admins`.
+
+Example routes:
+
+```python
+@app.post("/clickhouse/databases/{database}")
+async def create_database(
+    database: str,
+    handle: ClickHouseDatabaseCreatorHandle = Depends(require_clickhouse_database_creator),
+):
+    await handle.create_database(database)
+    return {"created": database}
+
+
+@app.post("/clickhouse/databases/{database}/grants/users/{username}")
+async def grant_read(
+    database: str,
+    username: str,
+    handle: ClickHouseDatabaseAdminHandle = Depends(require_clickhouse_database_admin),
+):
+    await handle.grant_select_to_user(username)
+    return {"granted": True}
+
+
+@app.post("/clickhouse/databases/{database}/admins/users/{username}")
+async def delegate_admin(
+    database: str,
+    username: str,
+    handle: ClickHouseDatabaseAdminHandle = Depends(require_clickhouse_database_admin),
+):
+    await handle.add_admin_user(username)
+    return {"ok": True}
+```
+
+**Pre-existing target user constraint.** Grants and row policies target `<username>_USER` (or `<group>_GRP`) roles. These exist only after the user/group has been provisioned, which happens at login time via the existing `init_user_rights` post-login hook. Granting access to a user who has never logged in raises a CH error; the user must authenticate at least once first.
 
 ### Tests
 

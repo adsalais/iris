@@ -33,7 +33,7 @@ def test_first_install_seeds_admin_with_clickhouse_admin_include(tmp_path: Path)
         roles = {
             r["name"] for r in conn.execute("SELECT name FROM authz_roles").fetchall()
         }
-        assert roles == {"admin", "clickhouse_admin"}
+        assert roles == {"admin", "clickhouse_admin", "clickhouse_database_creator"}
 
         includes = conn.execute(
             "SELECT role_name, included_role FROM authz_role_includes"
@@ -97,7 +97,7 @@ def test_custom_bootstrap_role_name(tmp_path: Path):
         roles = {
             r["name"] for r in conn.execute("SELECT name FROM authz_roles").fetchall()
         }
-        assert roles == {"superuser", "clickhouse_admin"}
+        assert roles == {"superuser", "clickhouse_admin", "clickhouse_database_creator"}
         includes = conn.execute(
             "SELECT role_name, included_role FROM authz_role_includes"
         ).fetchall()
@@ -116,6 +116,20 @@ def test_username_lowercased(tmp_path: Path):
             "SELECT username_lower FROM authz_role_users"
         ).fetchall()
         assert [r["username_lower"] for r in users] == ["alice"]
+    finally:
+        conn.close()
+
+
+def test_bootstrap_admin_does_not_include_database_creator(tmp_path: Path):
+    """Operators decide whether bootstrap admins also create databases."""
+    conn = _open(tmp_path / "auth.db")
+    try:
+        install_authz_schema(conn, _StubSettings())
+        includes = conn.execute(
+            "SELECT included_role FROM authz_role_includes WHERE role_name = 'admin'"
+        ).fetchall()
+        included = {r["included_role"] for r in includes}
+        assert included == {"clickhouse_admin"}  # NOT clickhouse_database_creator
     finally:
         conn.close()
 

@@ -17,6 +17,8 @@ from typing import Protocol
 
 # Must match iris.clickhouse.deps.CLICKHOUSE_ADMIN_ROLE.
 _CLICKHOUSE_ADMIN_ROLE = "clickhouse_admin"
+# Must match iris.clickhouse.deps.CLICKHOUSE_DATABASE_CREATOR_ROLE.
+_CLICKHOUSE_DATABASE_CREATOR_ROLE = "clickhouse_database_creator"
 
 _AUTHZ_SCHEMA = """
 CREATE TABLE IF NOT EXISTS authz_roles (
@@ -84,6 +86,10 @@ def install_authz_schema(
     conn.execute("INSERT INTO authz_roles(name) VALUES (?)", (role,))
     conn.execute(
         "INSERT INTO authz_roles(name) VALUES (?)", (_CLICKHOUSE_ADMIN_ROLE,)
+    )
+    conn.execute(
+        "INSERT INTO authz_roles(name) VALUES (?)",
+        (_CLICKHOUSE_DATABASE_CREATOR_ROLE,),
     )
     conn.execute(
         "INSERT INTO authz_role_includes(role_name, included_role) VALUES (?, ?)",

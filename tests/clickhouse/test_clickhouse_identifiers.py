@@ -97,9 +97,13 @@ def test_public_surface_exports_named_symbols():
 
     expected = {
         "CLICKHOUSE_ADMIN_ROLE",
+        "CLICKHOUSE_DATABASE_CREATOR_ROLE",
         "ClickHouseAdminHandle",
+        "ClickHouseDatabaseAdminHandle",
+        "ClickHouseDatabaseCreatorHandle",
         "ClickHouseHandle",
         "ClickHouseSettings",
+        "DatabaseAdminStore",
         "add_row_policy",
         "build_client",
         "ensure_service_admin",
@@ -109,6 +113,8 @@ def test_public_surface_exports_named_symbols():
         "init_user_rights",
         "install",
         "require_clickhouse_admin",
+        "require_clickhouse_database_admin",
+        "require_clickhouse_database_creator",
         "revoke_row_policy",
         "role_grants",
         "role_row_policies",

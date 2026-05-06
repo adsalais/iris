@@ -36,6 +36,9 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     authz_closer = getattr(app.state, "auth_close_authz_store", None)
     if authz_closer is not None:
         await authz_closer()
+    db_admin_closer = getattr(app.state, "clickhouse_close_database_admins", None)
+    if db_admin_closer is not None:
+        await db_admin_closer()
 
 
 async def _signals(request: Request) -> dict[str, Any]:
