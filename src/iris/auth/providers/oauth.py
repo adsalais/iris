@@ -4,6 +4,7 @@ import base64
 import hashlib
 import logging
 import secrets
+import ssl
 from typing import Any, cast
 from urllib.parse import urlencode
 
@@ -35,9 +36,9 @@ class OAuthProvider:
         # httpx's network stack entirely and `verify` is irrelevant. When it's
         # None (production + integration tests), honor settings.ca_cert_path
         # so an internal/private CA can sign the IdP cert.
-        verify_arg: bool | str = (
-            settings.ca_cert_path if settings.ca_cert_path else True
-        )
+        verify_arg: bool | ssl.SSLContext = True
+        if settings.ca_cert_path:
+            verify_arg = ssl.create_default_context(cafile=settings.ca_cert_path)
         if _http_transport is not None:
             self._client = httpx.Client(transport=_http_transport, timeout=10.0)
             # httpx.MockTransport implements both sync and async dispatch but

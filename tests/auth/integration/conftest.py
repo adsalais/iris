@@ -17,6 +17,8 @@ Skip this tier (no Docker): uv run pytest --ignore=tests/auth/integration
 
 from __future__ import annotations
 
+import re
+import ssl
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,9 +26,14 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from testcontainers.core.container import DockerContainer
-from testcontainers.core.waiting_utils import wait_for_logs
+from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
 from tests.auth.integration._tls import TLSPaths, generate_ca_and_leaf
+
+
+def _ssl_context_trusting(ca_pem: Path) -> ssl.SSLContext:
+    """SSLContext that verifies against the integration tier's self-signed CA."""
+    return ssl.create_default_context(cafile=str(ca_pem))
 
 
 @pytest.fixture(scope="session")
@@ -69,6 +76,13 @@ def keycloak_container(tls_paths):
     ).resolve()
     cert_dir = tls_paths.ca_pem.parent
 
+    # Quarkus prints "Listening on: http://... and https://..." once both the
+    # realm import is done and the HTTPS listener is up. Generous timeout
+    # because cold JVM start can take ~30s on slower hosts.
+    wait_strategy = LogMessageWaitStrategy(
+        re.compile(r"Listening on:")
+    ).with_startup_timeout(120)
+
     container = (
         DockerContainer("quay.io/keycloak/keycloak:26.0")
         .with_env("KC_BOOTSTRAP_ADMIN_USERNAME", "admin")
@@ -85,12 +99,9 @@ def keycloak_container(tls_paths):
         .with_volume_mapping(str(cert_dir), "/certs", "ro")
         .with_command("start-dev --import-realm")
         .with_exposed_ports(8443)
+        .waiting_for(wait_strategy)
     )
     with container as c:
-        # Quarkus prints "Listening on: http://... and https://..." once both
-        # the realm import is done and the HTTPS listener is up. Generous
-        # timeout because cold JVM start can take ~30s on slower hosts.
-        wait_for_logs(c, "Listening on:", timeout=120)
         host = c.get_container_host_ip()
         yield KeycloakHandle(
             host=host,
@@ -136,6 +147,8 @@ def keycloak_http(tls_paths):
     Lifetime: per-test, so cookies/state don't leak between tests.
     """
     with httpx.Client(
-        verify=str(tls_paths.ca_pem), follow_redirects=True, timeout=10.0
+        verify=_ssl_context_trusting(tls_paths.ca_pem),
+        follow_redirects=True,
+        timeout=10.0,
     ) as client:
         yield client

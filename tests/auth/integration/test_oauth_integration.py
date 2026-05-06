@@ -54,10 +54,13 @@ def test_collection_smoke():
 def test_keycloak_container_serves_oidc_discovery(keycloak_container, tls_paths):
     """The fixture starts Keycloak with HTTPS + the iris-test realm imported,
     and discovery returns a valid OIDC document with the expected endpoints."""
+    import ssl
+
     issuer = keycloak_container.issuer_url
     discovery_url = f"{issuer}/.well-known/openid-configuration"
+    ctx = ssl.create_default_context(cafile=str(tls_paths.ca_pem))
 
-    with httpx.Client(verify=str(tls_paths.ca_pem), timeout=10.0) as http:
+    with httpx.Client(verify=ctx, timeout=10.0) as http:
         r = http.get(discovery_url)
     r.raise_for_status()
     doc = r.json()

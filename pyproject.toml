@@ -39,6 +39,23 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--import-mode=importlib", "-ra"]
+# Treat deprecations as errors so we notice when our own code drifts onto
+# deprecated APIs. The allow-list below covers known third-party deprecations
+# we cannot fix in this repo (transitive lib code). Each entry should be
+# revisited when we next bump the underlying dep.
+filterwarnings = [
+    "error::DeprecationWarning",
+    # ldap3 imports `tagMap` / `typeMap` from pyasn1, which renamed them.
+    # Fix lands when ldap3 publishes a release using TAG_MAP/TYPE_MAP.
+    "default:.*(tagMap|typeMap) is deprecated.*:DeprecationWarning",
+    # Some transitive dep still uses array.array('u', ...). Python 3.16 will
+    # remove the `u` type code. Triggered at import time before our code runs.
+    "default:.*'u' type code is deprecated.*:DeprecationWarning",
+    # testcontainers' own clickhouse module uses its (now-deprecated)
+    # @wait_container_is_ready decorator at import time. Internal to that lib;
+    # fix lands when testcontainers-python migrates to LogMessageWaitStrategy.
+    "default:.*@wait_container_is_ready decorator is deprecated.*:DeprecationWarning",
+]
 
 [tool.basedpyright]
 include = ["src", "tests"]
