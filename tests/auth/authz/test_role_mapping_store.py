@@ -20,9 +20,15 @@ def store_path(tmp_path: Path) -> Path:
     return tmp_path / "auth.db"
 
 
+class _NoSeedSettings:
+    bootstrap_role = "admin"
+    bootstrap_user = None
+
+
 @pytest.fixture
 def store(store_path):
     s = RoleMappingStore(path=str(store_path))
+    s.bootstrap(_NoSeedSettings())  # create schema, no seeding
     yield s
     asyncio.run(s.close())
 
@@ -76,6 +82,7 @@ def test_get_mapping_users_lookup_is_case_insensitive_via_lowered_storage(store)
 
 def test_close_is_idempotent(store_path):
     s = RoleMappingStore(path=str(store_path))
+    s.bootstrap(_NoSeedSettings())
     asyncio.run(s.close())
     asyncio.run(s.close())  # must not raise
 

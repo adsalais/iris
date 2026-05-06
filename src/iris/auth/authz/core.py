@@ -24,7 +24,7 @@ def resolve_roles(user: User, mapping: RoleMapping) -> frozenset[str]:
 
 
 async def current_mapping(request: Request) -> RoleMapping:
-    return request.app.state.authz_loader.get()
+    return await request.app.state.authz_store.get_mapping()
 
 
 CurrentMapping = Annotated[RoleMapping, Depends(current_mapping)]

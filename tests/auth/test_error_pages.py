@@ -6,6 +6,10 @@ from iris.auth.session import Session
 
 
 def test_forbidden_html_renders_template(monkeypatch):
+    # Use a username that's NOT the bootstrap admin user (conftest sets
+    # AUTHZ_BOOTSTRAP_USER=alice). Bob has no role assignments, so the
+    # admin-gated route should 403.
+    monkeypatch.setenv("MOCK_USERNAME", "bob")
     monkeypatch.setenv("MOCK_GROUPS", "users")  # NOT admins
     from iris.app import build_app
 
@@ -24,7 +28,7 @@ def test_forbidden_html_renders_template(monkeypatch):
         "/login",
         data={
             CSRF_FORM_FIELD: csrf,
-            "username": "alice",
+            "username": "bob",
             "password": "secret",
             "next": "/",
         },

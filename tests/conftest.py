@@ -1,6 +1,5 @@
 import asyncio
 import os
-import tempfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,35 +15,14 @@ os.environ.setdefault("COOKIE_SECURE", "false")
 # Tests don't want the CH bridge installed by default (auth tests don't need
 # a CH testcontainer). Bridge tests opt in via build_app(install_clickhouse=True).
 os.environ.setdefault("IRIS_NO_CLICKHOUSE", "1")
-# Sessions are stored in SQLite. One connection per process means :memory:
-# works for single-process tests; multi-process tests use a tempfile.
+# Sessions and authz both live in SQLite. One connection per process means
+# :memory: works for single-process tests; multi-process tests use a tempfile.
 os.environ.setdefault("AUTH_DB_PATH", ":memory:")
-
-# Write a fixture role mapping that maps the mock user's groups into roles
-# so authed_client can hit role-gated routes. Lives in a tempfile that's
-# not cleaned up — leaks one file per test session, acceptable for v1.
-_AUTHZ_FIXTURE = """\
-roles:
-  reader:
-    groups: []
-    users: []
-  writer:
-    groups: []
-    users: []
-    includes: ["reader"]
-  admin:
-    groups: ["admins"]
-    users: []
-    includes: ["writer"]
-  clickhouse_admin:
-    groups: ["admins"]
-    users: []
-"""
-
-_authz_path = os.path.join(tempfile.gettempdir(), "iris-test-authz.yaml")
-with open(_authz_path, "w") as f:
-    f.write(_AUTHZ_FIXTURE)
-os.environ.setdefault("AUTHZ_CONFIG_PATH", _authz_path)
+# The conftest seeds a single bootstrap admin user that matches MOCK_USERNAME.
+# Any test that wants additional roles or richer fixtures builds them via
+# RoleMappingStore mutators in its own fixture.
+os.environ.setdefault("AUTHZ_BOOTSTRAP_ROLE", "admin")
+os.environ.setdefault("AUTHZ_BOOTSTRAP_USER", "alice")
 
 
 @pytest.fixture

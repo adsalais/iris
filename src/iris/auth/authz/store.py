@@ -11,46 +11,18 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from typing import TYPE_CHECKING
 
 from iris.auth.authz.mapping import (
-    _ROLE_NAME_RE,
+    ROLE_NAME_RE,
     RoleDef,
     RoleMapping,
     RoleMappingError,
-    _compute_closure,
+    compute_closure,
 )
 
-_AUTHZ_SCHEMA = """
-CREATE TABLE IF NOT EXISTS authz_roles (
-    name TEXT PRIMARY KEY
-);
-
-CREATE TABLE IF NOT EXISTS authz_role_groups (
-    role_name  TEXT NOT NULL,
-    group_name TEXT NOT NULL,
-    PRIMARY KEY (role_name, group_name),
-    FOREIGN KEY (role_name) REFERENCES authz_roles(name) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS authz_role_users (
-    role_name      TEXT NOT NULL,
-    username_lower TEXT NOT NULL,
-    PRIMARY KEY (role_name, username_lower),
-    FOREIGN KEY (role_name) REFERENCES authz_roles(name) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS authz_role_includes (
-    role_name     TEXT NOT NULL,
-    included_role TEXT NOT NULL,
-    PRIMARY KEY (role_name, included_role),
-    FOREIGN KEY (role_name)     REFERENCES authz_roles(name) ON DELETE CASCADE,
-    FOREIGN KEY (included_role) REFERENCES authz_roles(name) ON DELETE RESTRICT
-);
-
-CREATE INDEX IF NOT EXISTS idx_authz_role_groups_group ON authz_role_groups(group_name);
-CREATE INDEX IF NOT EXISTS idx_authz_role_users_user   ON authz_role_users(username_lower);
-CREATE INDEX IF NOT EXISTS idx_authz_role_includes_inc ON authz_role_includes(included_role);
-"""
+if TYPE_CHECKING:
+    from iris.auth.authz.bootstrap import BootstrapSettings
 
 
 class RoleMappingStore:
@@ -67,13 +39,13 @@ class RoleMappingStore:
 
     def _init_schema(self) -> None:
         # Same PRAGMAs as SessionStore. journal_mode=WAL is file-level and
-        # idempotent. synchronous + busy_timeout are connection-level and
-        # need to be set on this connection too.
+        # idempotent. synchronous + busy_timeout are connection-level.
+        # Schema creation is deferred to bootstrap(); see the docstring on
+        # bootstrap for why.
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA busy_timeout=5000")
-        self._conn.executescript(_AUTHZ_SCHEMA)
 
     async def get_mapping(self) -> RoleMapping:
         async with self._lock:
@@ -90,8 +62,7 @@ class RoleMappingStore:
             "SELECT role_name, username_lower FROM authz_role_users"
         ).fetchall()
         include_rows = self._conn.execute(
-            "SELECT role_name, included_role FROM authz_role_includes "
-            "ORDER BY role_name, included_role"
+            "SELECT role_name, included_role FROM authz_role_includes ORDER BY role_name, included_role"
         ).fetchall()
 
         groups_by_role: dict[str, set[str]] = {}
@@ -114,7 +85,7 @@ class RoleMappingStore:
                 includes=tuple(includes_by_role.get(name, [])),
             )
 
-        closure = _compute_closure(roles)
+        closure = compute_closure(roles)
         return RoleMapping(roles=roles, closure=closure)
 
     async def close(self) -> None:
@@ -123,8 +94,28 @@ class RoleMappingStore:
         self._closed = True
         await asyncio.to_thread(self._conn.close)
 
+    def bootstrap(self, settings: "BootstrapSettings") -> None:
+        """Create the schema (idempotent) and on first install seed the admin user.
+
+        Why this isn't in __init__: bootstrap detects "first install" by
+        checking whether `authz_roles` exists BEFORE running the schema
+        statements. Creating the schema in __init__ would always make that
+        check return True, so the seed branch would never fire. This method
+        is the only place the schema is created.
+
+        Called from iris.auth.routes.install at app construction; tests call
+        it from their fixtures (with bootstrap_user=None to skip seeding).
+        Synchronous because install runs eagerly before any request loop is
+        active. With a :memory: DB the seed and the queries MUST share the
+        same connection — each connection to ":memory:" is a private DB.
+        """
+        # Late import to avoid the circular bootstrap -> store -> bootstrap chain.
+        from iris.auth.authz.bootstrap import install_authz_schema
+
+        install_authz_schema(self._conn, settings)
+
     def _validate_role_name(self, name: str) -> None:
-        if not _ROLE_NAME_RE.fullmatch(name):
+        if not ROLE_NAME_RE.fullmatch(name):
             raise RoleMappingError(f"invalid role name {name!r}")
 
     async def add_role(self, name: str) -> None:
