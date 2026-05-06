@@ -137,11 +137,17 @@ def test_non_admin_user_cannot_admin_database(
         asyncio.run(authz_store.close())
 
 
-def test_pre_existing_target_user_constraint(
+def test_grant_to_user_who_has_never_logged_in_succeeds(
     ch_client, ch_settings, tmp_path: Path, prefix
 ) -> None:
-    """grant_select_to_user against a username that has never logged in
-    fails because <username>_USER doesn't exist in CH yet."""
+    """grant_select_to_user pre-creates the CH role, so it succeeds even
+    when the target iris user has never logged in. When that user later
+    logs in, init_user_rights attaches the existing role to their CH
+    user, and the grant becomes effective. Closes the username
+    enumeration leak (F1) noted in the security review.
+    """
+    import pytest as _pytest  # noqa: F401  (kept for parity)
+
     db_path = str(tmp_path / "auth.db")
     db_admin_store = DatabaseAdminStore(path=db_path)
     db_admin_store.bootstrap()
@@ -152,9 +158,7 @@ def test_pre_existing_target_user_constraint(
     creator = f"{prefix}_creator2"
     init_user_rights(ch_client, username=creator, groups=[], settings=ch_settings)
 
-    # Create the DB + record creator as admin (parallel to ClickHouseDatabaseCreatorHandle).
     asyncio.run(asyncio.to_thread(ch_client.command, f"CREATE DATABASE IF NOT EXISTS `{db}`"))
-    asyncio.run(db_admin_store.add_admin_user(database=db, username=creator))
 
     not_yet_logged_in = f"{prefix}_unborn"  # no CH user provisioned
 
@@ -169,9 +173,23 @@ def test_pre_existing_target_user_constraint(
                 database=db,
                 username=creator,
             )
-            with pytest.raises(Exception):
-                # CH raises a DatabaseError; we don't translate it in this slice.
-                await handle.grant_select_to_user(not_yet_logged_in)
+            # Should succeed: handle pre-creates <username>_USER role.
+            await handle.grant_select_to_user(not_yet_logged_in)
+
+            # The role exists in CH and the grant is recorded against it.
+            rows = list(
+                ch_client.query(
+                    "SELECT role_name, access_type FROM system.grants "
+                    "WHERE role_name = {r:String} AND database = {d:String}",
+                    parameters={
+                        "r": f"{not_yet_logged_in}_USER",
+                        "d": db,
+                    },
+                ).named_results()
+            )
+            assert any(
+                row["access_type"] == "SELECT" for row in rows
+            ), rows
 
     try:
         asyncio.run(run())
