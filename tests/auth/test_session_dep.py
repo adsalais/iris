@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
-from iris.auth import SessionView, optional_session, require_session
+from iris.auth import Session, optional_session, require_session
 from iris.auth.authz.store import RoleMappingStore
 from iris.auth.deps import set_session_store, set_settings
 from iris.auth.exceptions import install_exception_handlers
@@ -43,15 +43,15 @@ def _build_app(tmp_path: Path) -> tuple[FastAPI, SessionStore, RoleMappingStore]
     app.state.authz_store = authz_store
 
     @app.get("/me")
-    async def me(session: SessionView = Depends(require_session)):
+    async def me(session: Session = Depends(require_session)):
         return {"subject": session.user.subject}
 
     @app.get("/optional")
-    async def optional(session: SessionView | None = Depends(optional_session)):
+    async def optional(session: Session | None = Depends(optional_session)):
         return {"present": session is not None}
 
     @app.get("/whoami-full")
-    async def whoami_full(session: SessionView = Depends(require_session)):
+    async def whoami_full(session: Session = Depends(require_session)):
         return {
             "id": session.id,
             "subject": session.user.subject,
@@ -60,11 +60,11 @@ def _build_app(tmp_path: Path) -> tuple[FastAPI, SessionStore, RoleMappingStore]
         }
 
     @app.get("/data")
-    async def read_data(session: SessionView = Depends(require_session)):
+    async def read_data(session: Session = Depends(require_session)):
         return {"counter": session.data.get("counter", 0)}
 
     @app.post("/data")
-    async def bump_data(request: Request, session: SessionView = Depends(require_session)):
+    async def bump_data(request: Request, session: Session = Depends(require_session)):
         session.data["counter"] = session.data.get("counter", 0) + 1
         await request.app.state.auth_session_store.update_data(
             session.id, session.data

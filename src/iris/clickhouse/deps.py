@@ -13,7 +13,7 @@ from fastapi import Depends, Request
 from iris.auth.authz.core import CurrentMapping
 from iris.auth.deps import require_session
 from iris.auth.exceptions import AuthForbidden, AuthorizationMisconfigured
-from iris.auth.session import SessionView
+from iris.auth.session import Session
 from iris.clickhouse.handle import (
     ClickHouseAdminHandle,
     ClickHouseDatabaseAdminHandle,
@@ -27,7 +27,7 @@ CLICKHOUSE_DATABASE_CREATOR_ROLE: Final = "clickhouse_database_creator"
 
 
 async def get_clickhouse_handle(
-    request: Request, session: SessionView = Depends(require_session)
+    request: Request, session: Session = Depends(require_session)
 ) -> ClickHouseHandle:
     """Return a user-handle bound to the session's username. Any logged-in user."""
     return ClickHouseHandle(
@@ -40,7 +40,7 @@ async def get_clickhouse_handle(
 async def require_clickhouse_admin(
     request: Request,
     mapping: CurrentMapping,
-    session: SessionView = Depends(require_session),
+    session: Session = Depends(require_session),
 ) -> ClickHouseAdminHandle:
     """Return an admin-handle. 403 unless the user has ``clickhouse_admin``.
     500 if ``clickhouse_admin`` is not defined in the role mapping."""
@@ -62,7 +62,7 @@ async def require_clickhouse_admin(
 async def require_clickhouse_database_creator(
     request: Request,
     mapping: CurrentMapping,
-    session: SessionView = Depends(require_session),
+    session: Session = Depends(require_session),
 ) -> ClickHouseDatabaseCreatorHandle:
     """Return a database-creator handle. 403 unless the user has
     ``clickhouse_database_creator``. 500 if the role isn't defined."""
@@ -84,7 +84,7 @@ async def require_clickhouse_database_creator(
 async def require_clickhouse_database_admin(
     request: Request,
     database: str,
-    session: SessionView = Depends(require_session),
+    session: Session = Depends(require_session),
 ) -> ClickHouseDatabaseAdminHandle:
     """Return a per-database admin handle. ``database`` is bound from the
     calling route's path/query params by FastAPI. 403 unless the session is

@@ -8,20 +8,20 @@ from iris.auth.identity import User
 
 
 @dataclass(frozen=True, slots=True)
-class SessionView:
+class Session:
     """Request-scoped view of a logged-in session.
 
     Built once per request by the auth dep. Routes normally receive a
-    ``SessionView`` via the ``Session`` (required) or ``OptionalSession``
+    ``Session`` via the ``Session`` (required) or ``OptionalSession``
     (optional) annotated aliases from ``iris.auth.deps`` — those aliases
     bake in ``Depends(...)`` metadata so a route can write
-    ``session: Session`` and the dep system fills in a ``SessionView``
+    ``session: Session`` and the dep system fills in a ``Session``
     automatically.
 
     Role-gated routes that combine the type with an explicit ``Depends``
     (e.g. ``= Depends(require_role("admin"))``) can't reuse the alias —
     FastAPI rejects ``Annotated[X, Depends(a)]`` plus ``= Depends(b)``
-    on the same parameter — so they import the bare ``SessionView``
+    on the same parameter — so they import the bare ``Session``
     type from ``iris.auth.session``.
 
     Frozen except for ``data``: the dict is a per-request snapshot

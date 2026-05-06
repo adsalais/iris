@@ -24,7 +24,7 @@ import sqlite3
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from iris.auth.session import SessionView
+    from iris.auth.session import Session
 
 # Must match iris.clickhouse.deps.CLICKHOUSE_ADMIN_ROLE — the global
 # admin role short-circuits is_admin without needing a per-DB row.
@@ -167,7 +167,7 @@ class DatabaseAdminStore:
         await asyncio.to_thread(self._conn.close)
 
     def for_session(
-        self, session: "SessionView", *, database: str
+        self, session: "Session", *, database: str
     ) -> "DatabaseAdminStoreMutator":
         """Return a per-database, session-bound mutator that re-checks
         ``is_admin(database, session.user.username, session.roles)`` before
@@ -193,7 +193,7 @@ class DatabaseAdminStoreMutator:
     def __init__(
         self,
         store: DatabaseAdminStore,
-        session: "SessionView",
+        session: "Session",
         database: str,
     ) -> None:
         self._store = store

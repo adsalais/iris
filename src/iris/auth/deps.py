@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI, Request
 from iris.auth.authz.core import CurrentMapping, resolve_roles
 from iris.auth.exceptions import AuthRequired
 from iris.auth.identity import UserSession
-from iris.auth.session import SessionView
+from iris.auth.session import Session
 from iris.auth.sessions import SessionStore
 
 
@@ -43,15 +43,15 @@ _StoredSession = Annotated[UserSession | None, Depends(_resolve_stored)]
 async def optional_session(
     stored: _StoredSession,
     mapping: CurrentMapping,
-) -> SessionView | None:
-    """FastAPI dep: returns a ``SessionView`` if the request has a valid
+) -> Session | None:
+    """FastAPI dep: returns a ``Session`` if the request has a valid
     session cookie, ``None`` otherwise. Use as
-    ``session: SessionView | None = Depends(optional_session)`` on routes
+    ``session: Session | None = Depends(optional_session)`` on routes
     that work with or without an authenticated user.
     """
     if stored is None:
         return None
-    return SessionView(
+    return Session(
         id=stored.id,
         user=stored.user,
         created_at=stored.created_at,
@@ -61,13 +61,13 @@ async def optional_session(
     )
 
 
-_OptionalSessionDep = Annotated[SessionView | None, Depends(optional_session)]
+_OptionalSessionDep = Annotated[Session | None, Depends(optional_session)]
 
 
-async def require_session(view: _OptionalSessionDep) -> SessionView:
-    """FastAPI dep: returns the request's ``SessionView`` or raises
+async def require_session(view: _OptionalSessionDep) -> Session:
+    """FastAPI dep: returns the request's ``Session`` or raises
     ``AuthRequired`` (401) if no session cookie is present. Use as
-    ``session: SessionView = Depends(require_session)`` on routes that
+    ``session: Session = Depends(require_session)`` on routes that
     need an authenticated user without a specific role check.
     """
     if view is None:

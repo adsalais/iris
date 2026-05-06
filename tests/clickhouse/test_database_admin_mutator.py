@@ -13,14 +13,14 @@ import pytest
 
 from iris.auth.exceptions import AuthForbidden
 from iris.auth.identity import User
-from iris.auth.session import SessionView
+from iris.auth.session import Session
 from iris.clickhouse.database_admins import DatabaseAdminStore
 
 
-def _session(*, username: str = "alice", roles: frozenset[str] = frozenset()) -> SessionView:
+def _session(*, username: str = "alice", roles: frozenset[str] = frozenset()) -> Session:
     user = User(subject="x", username=username, display_name=username.title(), groups=())
     now = datetime.now(UTC)
-    return SessionView(
+    return Session(
         id="sid",
         user=user,
         created_at=now,

@@ -10,7 +10,7 @@ from datastar_py.fastapi import ServerSentEventGenerator as SSE
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse
 
-from iris.auth import SessionView, require_session
+from iris.auth import Session, require_session
 from iris.auth.csrf import attach_csrf_cookie, mint_csrf_token
 from iris.middleware import SecurityHeadersMiddleware
 from iris.templates import TEMPLATES
@@ -69,7 +69,7 @@ def build_app(*, install_clickhouse: bool = True) -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
 
     @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request, session: SessionView = Depends(require_session)):
+    async def index(request: Request, session: Session = Depends(require_session)):
         # Mint (or reuse) the CSRF token, then attach the cookie to the
         # TemplateResponse explicitly. Routes that return their own Response
         # bypass FastAPI's dep-injected-Response cookie merge, so we can't
@@ -82,7 +82,7 @@ def build_app(*, install_clickhouse: bool = True) -> FastAPI:
         return response
 
     @app.get("/api/greet")
-    async def greet(signals: Signals, session: SessionView = Depends(require_session)) -> DatastarResponse:
+    async def greet(signals: Signals, session: Session = Depends(require_session)) -> DatastarResponse:
         raw = str(signals.get("name") or session.user.display_name).strip()
         name = escape(raw) if raw else "stranger"
         return DatastarResponse(
@@ -90,7 +90,7 @@ def build_app(*, install_clickhouse: bool = True) -> FastAPI:
         )
 
     @app.get("/api/clock")
-    async def clock(_session: SessionView = Depends(require_session)) -> DatastarResponse:
+    async def clock(_session: Session = Depends(require_session)) -> DatastarResponse:
         return DatastarResponse(_clock_stream())
 
     return app

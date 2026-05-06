@@ -94,23 +94,23 @@ The `iris.auth` package adds session-based authentication to all routes. Public 
 
 ```python
 from iris.auth import (
-    SessionView, require_session, optional_session, require_role, User, install,
+    Session, require_session, optional_session, require_role, User, install,
 )
 ```
 
-Routes get a session via one of three FastAPI deps, all of which return a `SessionView`:
+Routes get a session via one of three FastAPI deps, all of which return a `Session`:
 
-- `require_session` — `session: SessionView = Depends(require_session)` — 401 if no session cookie.
-- `optional_session` — `session: SessionView | None = Depends(optional_session)` — returns `None` when there's no session, never raises.
-- `require_role(name)` — `session: SessionView = Depends(require_role("admin"))` — 401 if no session, 403 if the session lacks the named role, 500 if the role isn't defined in the YAML/store.
+- `require_session` — `session: Session = Depends(require_session)` — 401 if no session cookie.
+- `optional_session` — `session: Session | None = Depends(optional_session)` — returns `None` when there's no session, never raises.
+- `require_role(name)` — `session: Session = Depends(require_role("admin"))` — 401 if no session, 403 if the session lacks the named role, 500 if the role isn't defined in the YAML/store.
 
-All three return the same `SessionView` shape: `id`, `user`, `created_at`, `expires_at`, `data`, `roles`.
+All three return the same `Session` shape: `id`, `user`, `created_at`, `expires_at`, `data`, `roles`.
 
 The `Session` view exposes everything routes legitimately need from a logged-in session: `id`, `user` (a `User`), `created_at`, `expires_at`, `data` (the per-session mutable dict), and `roles` (a `frozenset[str]` of effective role names with `includes:` closure already applied). The `data` field is the same dict object as the session store's storage, so `session.data[key] = value` writes through with no commit step. All other fields are frozen.
 
 `require_role("admin")` is a dependency factory that 403s if the user's effective role set doesn't contain the named role. It returns a `Session`, so role-gated routes write `session: Session = Depends(require_role("admin"))` and access `session.user`/`session.data`/`session.roles` from the same value. See "Authorization (roles)" below for the schema and inheritance semantics.
 
-**One type, three deps.** Every auth-flavored route parameter has the same uniform shape: `session: SessionView = Depends(<dep>)`. The choice of dep determines the access-control policy:
+**One type, three deps.** Every auth-flavored route parameter has the same uniform shape: `session: Session = Depends(<dep>)`. The choice of dep determines the access-control policy:
 
 | Dep | When it admits | When it raises |
 |---|---|---|
@@ -230,21 +230,21 @@ Each mutator validates inputs (role names against `[a-zA-Z0-9_-]+`) and translat
 **Use in routes:**
 
 ```python
-from iris.auth import SessionView
+from iris.auth import Session
 from iris.auth.authz.deps import require_role
 
 @app.get("/docs")
-async def list_docs(session: SessionView = Depends(require_role("reader"))):
+async def list_docs(session: Session = Depends(require_role("reader"))):
     ...
 ```
 
 For routes that want bare auth and need to read roles:
 
 ```python
-from iris.auth import SessionView, require_session
+from iris.auth import Session, require_session
 
 @app.get("/me/roles")
-async def my_roles(session: SessionView = Depends(require_session)):
+async def my_roles(session: Session = Depends(require_session)):
     return {"roles": sorted(session.roles)}
 ```
 
@@ -325,7 +325,7 @@ Sessions also survive process restarts. `uv run iris` and a redeploy no longer l
 
 ```
 src/iris/auth/
-├── __init__.py        # public surface: SessionView, require_session, optional_session, require_role, User, install
+├── __init__.py        # public surface: Session, require_session, optional_session, require_role, User, install
 ├── session.py         # Session frozen dataclass (request-scoped view)
 ├── config.py          # AuthSettings.from_env() + per-method sub-settings
 ├── identity.py        # User (frozen+slots), UserSession (mutable for sliding TTL; internal)
