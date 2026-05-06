@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
@@ -55,6 +56,10 @@ def _make_app() -> tuple[FastAPI, MagicMock]:
     client = MagicMock()
     app.state.clickhouse_client = client
     app.state.clickhouse_settings = _settings()
+    app.state.clickhouse_http_client = httpx.AsyncClient(
+        base_url="http://h:1",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(200, content=b"{}\n")),
+    )
     return app, client
 
 

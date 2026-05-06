@@ -20,7 +20,21 @@ def test_install_populates_app_state(ch_settings) -> None:
 
     assert app.state.clickhouse_client is not None
     assert app.state.clickhouse_settings is not None
+    assert app.state.clickhouse_http_client is not None
+    assert callable(app.state.clickhouse_close_http)
     assert len(app.state.post_login_hooks) == 1
+
+
+def test_install_http_client_aclose_runs_clean(ch_settings) -> None:
+    """The clickhouse_close_http hook should close the httpx.AsyncClient cleanly."""
+    import asyncio
+
+    app = FastAPI()
+    app.state.post_login_hooks = []
+    install(app)
+
+    asyncio.run(app.state.clickhouse_close_http())
+    assert app.state.clickhouse_http_client.is_closed
 
 
 def test_install_appends_to_existing_hooks(ch_settings) -> None:

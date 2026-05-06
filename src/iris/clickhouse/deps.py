@@ -24,6 +24,7 @@ async def get_clickhouse_handle(
     """Return a user-handle bound to the session's username. Any logged-in user."""
     return ClickHouseHandle(
         client=request.app.state.clickhouse_client,
+        http_client=request.app.state.clickhouse_http_client,
         username=session.user.username,
     )
 
@@ -44,6 +45,7 @@ async def require_clickhouse_admin(
         )
     return ClickHouseAdminHandle(
         client=request.app.state.clickhouse_client,
+        http_client=request.app.state.clickhouse_http_client,
         username=session.user.username,
         settings=request.app.state.clickhouse_settings,
     )

@@ -1,15 +1,29 @@
 """Per-request ClickHouse handle classes used by FastAPI route handlers.
 
-The handle wraps the app-scoped Client and a username; it doesn't open or close
-connections. Each method wraps the sync clickhouse-connect call in
-``asyncio.to_thread`` so a slow query doesn't block the FastAPI event loop.
+Two handle types share the same per-request shape but expose different surfaces:
+
+- :class:`ClickHouseHandle` — for any logged-in user. Only ``query_as_user`` is
+  exposed. The query runs as the user via ClickHouse's per-query
+  ``EXECUTE AS`` prefix.
+- :class:`ClickHouseAdminHandle` — gated on the ``clickhouse_admin`` role.
+  Adds ``query_as_service`` (no impersonation) plus async wrappers around the
+  module-level admin/audit functions.
+
+Why two HTTP transports? ClickHouse's ``EXECUTE AS user <SELECT>`` body grammar
+rejects ``FORMAT`` clauses, but ``clickhouse-connect``'s ``query()`` always
+appends ``FORMAT Native``. So impersonated queries go through a raw
+``httpx.AsyncClient`` with ``?default_format=JSONEachRow`` as a URL parameter
+(which the server *does* honor). Non-impersonated queries keep using
+``clickhouse-connect`` for the polished ``QueryResult``.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping
 from typing import Any
 
+import httpx
 from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.query import QueryResult
 
@@ -35,12 +49,25 @@ class ClickHouseHandle:
     """Per-request handle for any logged-in user.
 
     Exposes only ``query_as_user``, which prepends ``EXECUTE AS <quoted_username>``
-    to the SQL so the query runs under the user's CH identity. Service-identity
-    queries and admin functions are not exposed here — see ``ClickHouseAdminHandle``.
+    to the SQL via raw HTTP so the query runs under the user's CH identity.
+    Service-identity queries and admin functions are not exposed here — see
+    :class:`ClickHouseAdminHandle`.
+
+    Returns ``list[dict[str, Any]]`` (parsed JSONEachRow). Numeric types are
+    preserved by ClickHouse's JSON encoder, but column-type metadata is lost
+    relative to ``QueryResult``; if you need types or column ordering, query
+    via the admin handle's ``query_as_service`` (which uses clickhouse-connect).
     """
 
-    def __init__(self, *, client: Client, username: str) -> None:
+    def __init__(
+        self,
+        *,
+        client: Client,
+        http_client: httpx.AsyncClient,
+        username: str,
+    ) -> None:
         self._client = client
+        self._http_client = http_client
         self._username_quoted = quote_identifier(username, kind="username")
         self._username = username
 
@@ -48,13 +75,19 @@ class ClickHouseHandle:
         self,
         sql: str,
         parameters: Mapping[str, Any] | None = None,
-    ) -> QueryResult:
-        impersonated = f"EXECUTE AS {self._username_quoted} {sql}"
-        return await asyncio.to_thread(
-            self._client.query,
-            impersonated,
-            parameters=dict(parameters) if parameters else None,
-        )
+    ) -> list[dict[str, Any]]:
+        body = f"EXECUTE AS {self._username_quoted} {sql}"
+        params: dict[str, str] = {"default_format": "JSONEachRow"}
+        if parameters:
+            for k, v in parameters.items():
+                params[f"param_{k}"] = str(v)
+
+        response = await self._http_client.post("/", params=params, content=body)
+        response.raise_for_status()
+        text = response.text.strip()
+        if not text:
+            return []
+        return [json.loads(line) for line in text.splitlines() if line]
 
 
 class ClickHouseAdminHandle(ClickHouseHandle):
@@ -69,10 +102,11 @@ class ClickHouseAdminHandle(ClickHouseHandle):
         self,
         *,
         client: Client,
+        http_client: httpx.AsyncClient,
         username: str,
         settings: ClickHouseSettings,
     ) -> None:
-        super().__init__(client=client, username=username)
+        super().__init__(client=client, http_client=http_client, username=username)
         self._settings = settings
 
     async def query_as_service(
