@@ -13,8 +13,10 @@ import asyncio
 import sqlite3
 
 from iris.auth.authz.mapping import (
+    _ROLE_NAME_RE,
     RoleDef,
     RoleMapping,
+    RoleMappingError,
     _compute_closure,
 )
 
@@ -120,3 +122,73 @@ class RoleMappingStore:
             return
         self._closed = True
         await asyncio.to_thread(self._conn.close)
+
+    def _validate_role_name(self, name: str) -> None:
+        if not _ROLE_NAME_RE.fullmatch(name):
+            raise RoleMappingError(f"invalid role name {name!r}")
+
+    async def add_role(self, name: str) -> None:
+        self._validate_role_name(name)
+        async with self._lock:
+            await asyncio.to_thread(
+                self._conn.execute,
+                "INSERT OR IGNORE INTO authz_roles(name) VALUES (?)",
+                (name,),
+            )
+
+    async def remove_role(self, name: str) -> None:
+        async with self._lock:
+            try:
+                await asyncio.to_thread(
+                    self._conn.execute,
+                    "DELETE FROM authz_roles WHERE name = ?",
+                    (name,),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise RoleMappingError(
+                    f"role {name!r} is included by other roles; remove the includes first"
+                ) from exc
+
+    async def add_group_to_role(self, role: str, group: str) -> None:
+        async with self._lock:
+            try:
+                await asyncio.to_thread(
+                    self._conn.execute,
+                    "INSERT OR IGNORE INTO authz_role_groups(role_name, group_name) VALUES (?, ?)",
+                    (role, group),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise RoleMappingError(
+                    f"role {role!r} not defined; create it before assigning groups"
+                ) from exc
+
+    async def remove_group_from_role(self, role: str, group: str) -> None:
+        async with self._lock:
+            await asyncio.to_thread(
+                self._conn.execute,
+                "DELETE FROM authz_role_groups WHERE role_name = ? AND group_name = ?",
+                (role, group),
+            )
+
+    async def add_user_to_role(self, role: str, username: str) -> None:
+        username_lower = username.lower()
+        async with self._lock:
+            try:
+                await asyncio.to_thread(
+                    self._conn.execute,
+                    "INSERT OR IGNORE INTO authz_role_users(role_name, username_lower) VALUES (?, ?)",
+                    (role, username_lower),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise RoleMappingError(
+                    f"role {role!r} not defined; create it before assigning users"
+                ) from exc
+
+    async def remove_user_from_role(self, role: str, username: str) -> None:
+        username_lower = username.lower()
+        async with self._lock:
+            await asyncio.to_thread(
+                self._conn.execute,
+                "DELETE FROM authz_role_users WHERE role_name = ? AND username_lower = ?",
+                (role, username_lower),
+            )

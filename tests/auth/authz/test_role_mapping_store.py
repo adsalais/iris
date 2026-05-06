@@ -100,3 +100,95 @@ def test_schema_enforces_fk_on_includes(store):
         c.execute(
             "INSERT INTO authz_role_includes(role_name, included_role) VALUES ('a', 'nope')"
         )
+
+
+def test_add_role_creates_row(store):
+    asyncio.run(store.add_role("reader"))
+    mapping = asyncio.run(store.get_mapping())
+    assert "reader" in mapping.roles
+
+
+def test_add_role_is_idempotent(store):
+    asyncio.run(store.add_role("reader"))
+    asyncio.run(store.add_role("reader"))  # must not raise
+    mapping = asyncio.run(store.get_mapping())
+    assert list(mapping.roles) == ["reader"]
+
+
+def test_add_role_rejects_invalid_name(store):
+    with pytest.raises(RoleMappingError):
+        asyncio.run(store.add_role("bad name with spaces"))
+    with pytest.raises(RoleMappingError):
+        asyncio.run(store.add_role(""))
+    with pytest.raises(RoleMappingError):
+        asyncio.run(store.add_role("role!"))
+
+
+def test_remove_role_deletes_row_and_cascades(store):
+    asyncio.run(store.add_role("admin"))
+    asyncio.run(store.add_group_to_role("admin", "platform"))
+    asyncio.run(store.add_user_to_role("admin", "alice"))
+    asyncio.run(store.remove_role("admin"))
+    mapping = asyncio.run(store.get_mapping())
+    assert mapping.roles == {}
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM authz_role_groups"
+    ).fetchone()[0] == 0
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM authz_role_users"
+    ).fetchone()[0] == 0
+
+
+def test_remove_role_unknown_id_is_noop(store):
+    asyncio.run(store.remove_role("not-a-role"))  # must not raise
+
+
+def test_add_group_to_role_round_trips(store):
+    asyncio.run(store.add_role("writer"))
+    asyncio.run(store.add_group_to_role("writer", "editors"))
+    mapping = asyncio.run(store.get_mapping())
+    assert mapping.roles["writer"].groups == frozenset({"editors"})
+
+
+def test_add_group_to_role_is_idempotent(store):
+    asyncio.run(store.add_role("writer"))
+    asyncio.run(store.add_group_to_role("writer", "editors"))
+    asyncio.run(store.add_group_to_role("writer", "editors"))  # no-op
+    mapping = asyncio.run(store.get_mapping())
+    assert mapping.roles["writer"].groups == frozenset({"editors"})
+
+
+def test_add_group_to_role_fails_if_role_missing(store):
+    with pytest.raises(RoleMappingError):
+        asyncio.run(store.add_group_to_role("nope", "editors"))
+
+
+def test_remove_group_from_role(store):
+    asyncio.run(store.add_role("writer"))
+    asyncio.run(store.add_group_to_role("writer", "editors"))
+    asyncio.run(store.remove_group_from_role("writer", "editors"))
+    mapping = asyncio.run(store.get_mapping())
+    assert mapping.roles["writer"].groups == frozenset()
+
+
+def test_add_user_to_role_lowercases(store):
+    asyncio.run(store.add_role("admin"))
+    asyncio.run(store.add_user_to_role("admin", "Alice"))
+    mapping = asyncio.run(store.get_mapping())
+    assert mapping.roles["admin"].users_lower == frozenset({"alice"})
+
+
+def test_add_user_to_role_idempotent_across_case(store):
+    asyncio.run(store.add_role("admin"))
+    asyncio.run(store.add_user_to_role("admin", "Alice"))
+    asyncio.run(store.add_user_to_role("admin", "ALICE"))
+    mapping = asyncio.run(store.get_mapping())
+    assert mapping.roles["admin"].users_lower == frozenset({"alice"})
+
+
+def test_remove_user_from_role_lowercases(store):
+    asyncio.run(store.add_role("admin"))
+    asyncio.run(store.add_user_to_role("admin", "alice"))
+    asyncio.run(store.remove_user_from_role("admin", "ALICE"))
+    mapping = asyncio.run(store.get_mapping())
+    assert mapping.roles["admin"].users_lower == frozenset()
