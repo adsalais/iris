@@ -121,10 +121,12 @@ class SessionStore:
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             self._conn.execute(
-                "INSERT INTO sessions ("
-                "  id, subject, username, display_name, groups_json,"
-                "  created_at_ts, expires_at_ts, absolute_expires_at_ts, data_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO sessions (
+                    id, subject, username, display_name, groups_json,
+                    created_at_ts, expires_at_ts, absolute_expires_at_ts, data_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
                     session.id,
                     session.user.subject,
@@ -138,8 +140,7 @@ class SessionStore:
                 ),
             )
             rows = self._conn.execute(
-                "SELECT id FROM sessions WHERE subject = ? "
-                "ORDER BY created_at_ts ASC",
+                "SELECT id FROM sessions WHERE subject = ? ORDER BY created_at_ts ASC",
                 (session.user.subject,),
             ).fetchall()
             excess = len(rows) - self._max_per_user
