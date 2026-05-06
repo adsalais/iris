@@ -337,18 +337,23 @@ These are accepted residual risks for the ≤20-user / `--workers 1` deploy prof
 
 ## ClickHouse
 
-The `iris.clickhouse` package provisions ClickHouse users, roles, grants, and row policies, and provides audit-query helpers. It is independent of `iris.auth` — operations take plain strings and lists, not `Session`/`User` objects.
+The `iris.clickhouse` package provisions ClickHouse users, roles, grants, and row policies, provides audit-query helpers, and (via the bridge submodule) hands FastAPI routes typed handles for impersonated/admin queries. The plain-data helpers (`audit.py`, `bootstrap.py`, `client.py`, `grants.py`, `policies.py`, `users.py`) are independent of `iris.auth`; only `deps.py` and `install.py` import from auth.
 
 ### Public surface
 
 ```python
 from iris.clickhouse import (
+    # plain-data helpers
     ClickHouseSettings, build_client, ensure_service_admin,
     init_user_rights,
     grant_select_to_database, grant_insert_update_to_table,
     add_row_policy, revoke_row_policy,
     user_grants, role_grants, user_role_memberships,
     user_row_policies, role_row_policies, table_row_policies,
+    # FastAPI bridge
+    ClickHouseHandle, ClickHouseAdminHandle,
+    get_clickhouse_handle, require_clickhouse_admin,
+    install, CLICKHOUSE_ADMIN_ROLE,
 )
 ```
 
@@ -394,6 +399,40 @@ CLICKHOUSE_SERVICE_ADMIN_ROLE=service_admin_role # wildcard-policy grantee; gran
 
 `ClickHouseSettings.from_env()` validates everything at app construction — missing required vars, typo'd booleans (`COOKIE_SECURE=ture` style), non-int ports, and bad identifier names all fail loudly.
 
+### Auth ↔ ClickHouse bridge
+
+Routes that need to query ClickHouse declare one of two FastAPI deps:
+
+```python
+from iris.clickhouse import (
+    ClickHouseHandle, ClickHouseAdminHandle,
+    get_clickhouse_handle, require_clickhouse_admin,
+)
+
+@app.get("/click-user")
+async def click_user(
+    handle: ClickHouseHandle = Depends(get_clickhouse_handle),
+):
+    rows = await handle.query_as_user("SELECT count() FROM orders.lines")
+    return rows  # list[dict[str, Any]] from JSONEachRow
+
+@app.get("/click-admin")
+async def click_admin(
+    handle: ClickHouseAdminHandle = Depends(require_clickhouse_admin),
+):
+    return await handle.user_grants(username="alice")
+```
+
+`get_clickhouse_handle` admits any logged-in user; the handle exposes only `query_as_user`. `require_clickhouse_admin` 403s users without the `clickhouse_admin` role (and 500s if the role isn't defined in the YAML); on success it returns a `ClickHouseAdminHandle` that adds `query_as_service` (no impersonation), the `grant_*`/`add_row_policy`/`revoke_row_policy` mutators, and the audit helpers (`user_grants`, `role_grants`, `user_row_policies`, …). Admin routes that want a user-impersonated query can still call `handle.query_as_user(...)` on the admin handle.
+
+**Why two HTTP transports.** `query_as_user` prepends `EXECUTE AS <quoted_username>` to the SQL. ClickHouse's `EXECUTE AS user <SELECT>` body grammar rejects `FORMAT` clauses, but `clickhouse-connect`'s `query()` always appends `FORMAT Native` — incompatible. The handle therefore uses a separate `httpx.AsyncClient` for impersonated queries, posting to ClickHouse's HTTP endpoint with `?default_format=JSONEachRow` as a URL parameter (which the server *does* honor). `query_as_service` and the admin/audit methods keep using `clickhouse-connect`. As a consequence, `query_as_user` returns `list[dict[str, Any]]` (parsed JSON Lines) rather than a `QueryResult` — types are preserved by JSON encoding (ints stay ints, strings stay strings) but column-type metadata is lost. Routes needing column types should use the admin handle's `query_as_service`. Named parameters work via `param_<name>=<value>` URL params translated from the `parameters=` kwarg.
+
+`init_user_rights` runs on every successful login (form submit or OAuth callback) via a generic post-login hook list at `app.state.post_login_hooks`, populated by `iris.clickhouse.install(app)`. Subsequent cookie-based session refreshes do NOT re-provision. Group changes between two logins are reconciled. If ClickHouse is unreachable at boot, `ensure_service_admin` raises and the app refuses to start; if it's unreachable mid-life, the post-login hook raises and the user gets a 500.
+
+The `clickhouse_admin` role is a regular role defined in `authz.yaml` (no schema change). Operators map it to whichever IdP groups they want; the role name itself is a `Final` constant `iris.clickhouse.deps.CLICKHOUSE_ADMIN_ROLE = "clickhouse_admin"` and not env-configurable.
+
+`build_app(install_clickhouse=False)` skips the bridge entirely — used by auth tests that don't need a CH testcontainer. Set `IRIS_NO_CLICKHOUSE=1` to disable the bridge in the module-level `app = build_app()` (used by `uv run iris` for local dev when CH isn't running).
+
 ### Tests
 
 The test suite uses `testcontainers-python` to spin up `clickhouse/clickhouse-server:26.3` in Docker. The container is session-scoped (one instance per pytest run); per-test isolation comes from a UUID-derived `prefix` fixture that namespaces every entity name. Docker is required to run `tests/clickhouse/`.
@@ -402,7 +441,5 @@ The `chdb` library was originally trialed for in-process testing; `chdb==4.1.6`'
 
 ### Deferred (v1.1+)
 
-- HTTP routes that call these functions on behalf of authenticated users.
-- Wiring between `iris.auth` and `iris.clickhouse` (the bridge that translates `Session.user`/`Session.roles` into `init_user_rights` calls).
-- A runtime `execute_as(username, sql)` helper for impersonating queries.
-- Connection pooling and multi-worker session sharing.
+- Connection pooling and multi-worker session sharing — `clickhouse-connect`'s `Client` is per-process today; multi-worker deploys would need a connection pool.
+- A streaming variant of `query_as_user` for routes that need to stream large result sets back through Datastar SSE without buffering the whole response in memory.
