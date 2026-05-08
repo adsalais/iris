@@ -138,5 +138,3 @@ Full descriptions, `.env` semantics, and operator runbooks live in `docs/operati
 - `docs/auth.md` — full auth surface (alias deps, Session hierarchy, providers, login flows, tests)
 - `docs/clickhouse.md` — full CH surface (tier roles, bootstrap, row policies, the bridge with auth)
 - `docs/operations.md` — deployment, env-var depth, security follow-ups, migration runbooks
-- `docs/superpowers/specs/` — dated design specs (the *why* behind the current shape)
-- `docs/superpowers/plans/` — implementation plans (paired with each spec)
