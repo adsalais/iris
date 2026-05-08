@@ -7,7 +7,7 @@ authorization to all routes.
 
 ```python
 from iris.auth import (
-    AuthSession,                       # the dataclass returned by every auth dep
+    AuthSession,                       # base session type
     Rights, EMPTY_RIGHTS,              # the rights view + a useful default
     Session, SessionOptional,          # auth-only aliases
     SessionAdmin,                      # global admin
@@ -15,6 +15,7 @@ from iris.auth import (
     SessionDatabaseAdmin,              # admin of the path's `database` parameter
     SessionWrite, SessionRead,         # tier-scoped checks against `database`
     User, install,
+    # subclass types also exported: AdminSession, DatabaseAdminSession, DatabaseCreatorSession, DatabaseSession
 )
 ```
 
@@ -43,11 +44,11 @@ The choice of alias determines the access-control policy.
 |---|---|---|---|
 | `Session` | any logged-in user | 401 with no session | `AuthSession` |
 | `SessionOptional` | any caller | never | `AuthSession \| None` |
-| `SessionAdmin` | `session.rights.is_admin` | 401 / 403 | `AuthSession` |
-| `SessionDatabaseCreator` | admin or `can_create_database` | 401 / 403 | `AuthSession` |
-| `SessionDatabaseAdmin` | admin or `db_admin[database]` | 401 / 403 | `AuthSession` |
-| `SessionWrite` | admin or `db_admin[database]` or `db_writer[database]` | 401 / 403 | `AuthSession` |
-| `SessionRead` | admin or any tier on `database` | 401 / 403 | `AuthSession` |
+| `SessionAdmin` | `session.rights.is_admin` | 401 / 403 | `AdminSession` |
+| `SessionDatabaseCreator` | admin or `can_create_database` | 401 / 403 | `DatabaseCreatorSession` |
+| `SessionDatabaseAdmin` | admin or `db_admin[database]` | 401 / 403 | `DatabaseAdminSession` |
+| `SessionWrite` | admin or `db_admin[database]` or `db_writer[database]` | 401 / 403 | `DatabaseSession` |
+| `SessionRead` | admin or any tier on `database` | 401 / 403 | `DatabaseSession` |
 
 The three database-scoped aliases (`SessionRead`/`SessionWrite`/`SessionDatabaseAdmin`)
 read `database: str` from the calling route's path or query parameters via FastAPI's
@@ -59,9 +60,11 @@ there are no role names at all — only tier membership sets.
 
 ## Session class hierarchy
 
-All auth deps return `AuthSession`. There is no subclass hierarchy visible at the
-route level — the seven aliases all resolve to `AuthSession`. The distinction is
-purely in what the dep injects after performing its admission check.
+All auth deps return a subclass of `AuthSession`. The subclass type is what pyright
+sees on the route signature, so admin-only methods like `query_as_service` are only
+callable on `AdminSession`, not on `AuthSession` or `DatabaseSession`. The
+capability-bounds claim is real: route signatures get exactly the methods their tier
+permits, enforced at type-check time.
 
 `AuthSession` fields:
 
@@ -73,7 +76,7 @@ purely in what the dep injects after performing its admission check.
 
 There is no `roles` field. Templates that want IdP groups read `session.user.groups`.
 
-The CH method implementations (`query_as_user`, `grant_tier_to_user`, etc.) live in
+The CH method implementations (`query_as_user`, `grant_reader_impl`, etc.) live in
 `iris.clickhouse.handle` as standalone async `*_impl` functions. `AuthSession`
 imports them at module top level in `iris.auth.identity` and delegates to them.
 
@@ -201,7 +204,7 @@ IdP identity maps to CH roles via two naming conventions:
   - Mock: `MOCK_USERNAME`.
 
 Both role types are created lazily by `init_user_rights` on each login. They serve as
-recipients of tier-role grants: `add_writer(bob)` runs
+recipients of tier-role grants: `session.grant_writer("bob")` runs
 `GRANT <X>_DBWRITER TO bob_USER`.
 
 ## Tests
@@ -214,8 +217,8 @@ Available fixtures:
 
 - `client` — unauthenticated `TestClient`. Use for tests that exercise the login
   flow, error pages, etc.
-- `authed_client` — pre-creates a session in the in-memory store and attaches the
-  cookie. Use for feature tests of routes that need "a logged-in user".
+- `authed_client` — pre-creates a session in the SQLite `:memory:` store and attaches
+  the cookie. Use for feature tests of routes that need "a logged-in user".
 
 Provider tests are offline:
 
