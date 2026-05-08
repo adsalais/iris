@@ -130,3 +130,54 @@ def test_revoke_select_from_database_idempotent(ch_client, ch_settings, prefix) 
     # No grant exists; revoke should not raise.
     revoke_select_from_database(ch_client, database=db, role=role)
     revoke_select_from_database(ch_client, database=db, role=role)
+
+
+def test_revoke_tier_from_user_does_not_create_role(ch_client, prefix):
+    """Revoke must not pre-create the user-role for an unknown username:
+    that would leak state for any value an attacker submits.
+    """
+    from iris.clickhouse.grants import (
+        TIER_DBREADER,
+        create_tier_roles,
+        revoke_tier_from_user,
+    )
+
+    db = f"{prefix}_revoke_no_leak"
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    create_tier_roles(ch_client, database=db)
+    nonexistent_user = f"{prefix}_ghost"
+
+    revoke_tier_from_user(
+        ch_client, database=db, tier=TIER_DBREADER, username=nonexistent_user
+    )
+
+    rows = ch_client.query(
+        "SELECT count() FROM system.roles WHERE name = {n:String}",
+        parameters={"n": f"{nonexistent_user}_USER"},
+    ).result_rows
+    assert rows[0][0] == 0, (
+        f"revoke must not have created role {nonexistent_user}_USER"
+    )
+
+
+def test_revoke_tier_from_group_does_not_create_role(ch_client, prefix):
+    from iris.clickhouse.grants import (
+        TIER_DBREADER,
+        create_tier_roles,
+        revoke_tier_from_group,
+    )
+
+    db = f"{prefix}_revoke_no_leak_grp"
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    create_tier_roles(ch_client, database=db)
+    nonexistent_group = f"{prefix}_ghost_grp"
+
+    revoke_tier_from_group(
+        ch_client, database=db, tier=TIER_DBREADER, group=nonexistent_group
+    )
+
+    rows = ch_client.query(
+        "SELECT count() FROM system.roles WHERE name = {n:String}",
+        parameters={"n": f"{nonexistent_group}_GRP"},
+    ).result_rows
+    assert rows[0][0] == 0

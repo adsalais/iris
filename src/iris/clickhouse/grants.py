@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Final
 
 from clickhouse_connect.driver.client import Client
+from clickhouse_connect.driver.exceptions import DatabaseError
 
-from iris.clickhouse.identifiers import quote_identifier
+from iris.clickhouse.identifiers import quote_identifier, validate_identifier
 from iris.clickhouse.users import GROUP_ROLE_SUFFIX, USER_ROLE_SUFFIX
 
 TIER_DBADMIN: Final = "DBADMIN"
@@ -92,23 +93,43 @@ def grant_tier_to_group(
 def revoke_tier_from_user(
     client: Client, *, database: str, tier: str, username: str
 ) -> None:
-    """``REVOKE <database>_<tier> FROM <username>_USER``."""
+    """``REVOKE <database>_<tier> FROM <username>_USER``.
+
+    Does NOT pre-create the user-role: revoke must not leak state for
+    arbitrary attacker-supplied usernames. CH may raise on a missing
+    role; we swallow the "not found" case and let any other error
+    propagate.
+    """
     user_role = f"{username}{USER_ROLE_SUFFIX}"
-    _ensure_role(client, user_role)
+    validate_identifier(user_role, kind="role")
     user_role_q = quote_identifier(user_role, kind="role")
     tier_q = quote_identifier(tier_role_name(database, tier), kind="role")
-    client.command(f"REVOKE {tier_q} FROM {user_role_q}")
+    try:
+        client.command(f"REVOKE {tier_q} FROM {user_role_q}")
+    except DatabaseError as err:
+        if "UNKNOWN_ROLE" in str(err):
+            return
+        raise
 
 
 def revoke_tier_from_group(
     client: Client, *, database: str, tier: str, group: str
 ) -> None:
-    """``REVOKE <database>_<tier> FROM <group>_GRP``."""
+    """``REVOKE <database>_<tier> FROM <group>_GRP``.
+
+    Does NOT pre-create the group-role; CH may raise on a missing role
+    (we swallow "not found").
+    """
     group_role = f"{group}{GROUP_ROLE_SUFFIX}"
-    _ensure_role(client, group_role)
+    validate_identifier(group_role, kind="role")
     group_role_q = quote_identifier(group_role, kind="role")
     tier_q = quote_identifier(tier_role_name(database, tier), kind="role")
-    client.command(f"REVOKE {tier_q} FROM {group_role_q}")
+    try:
+        client.command(f"REVOKE {tier_q} FROM {group_role_q}")
+    except DatabaseError as err:
+        if "UNKNOWN_ROLE" in str(err):
+            return
+        raise
 
 
 def grant_select_to_database(client: Client, *, database: str, role: str) -> None:
