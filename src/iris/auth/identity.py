@@ -1,43 +1,30 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, override
+from typing import Any, cast
+
+from clickhouse_connect.driver.query import QueryResult
 
 from iris.auth.session import EMPTY_RIGHTS, Rights
-from iris.clickhouse.handle import (
-    add_admin_group_impl,
-    add_admin_user_impl,
-    add_row_policy_impl,
-    create_database_impl,
-    delete_database_impl,
-    grant_insert_update_to_table_impl,
-    grant_reader_impl,
-    grant_reader_to_group_impl,
-    grant_select_to_database_impl,
-    grant_writer_impl,
-    grant_writer_to_group_impl,
-    list_admin_members_impl,
-    list_grants_impl,
-    list_row_policies_impl,
-    query_as_service_impl,
-    query_as_user_impl,
-    remove_admin_group_impl,
-    remove_admin_user_impl,
-    reprovision_user_impl,
-    revoke_reader_from_group_impl,
-    revoke_reader_impl,
-    revoke_row_policy_impl,
-    revoke_writer_from_group_impl,
-    revoke_writer_impl,
-    role_grants_impl,
-    role_row_policies_impl,
-    table_row_policies_impl,
-    user_grants_impl,
-    user_role_memberships_impl,
-    user_row_policies_impl,
+from iris.clickhouse import audit, grants, policies
+from iris.clickhouse.grants import (
+    TIER_DBADMIN,
+    TIER_DBREADER,
+    TIER_DBWRITER,
+    create_tier_roles,
+    drop_tier_roles,
+    grant_tier_to_group,
+    grant_tier_to_user,
+    revoke_tier_from_group,
+    revoke_tier_from_user,
+    tier_role_name,
 )
+from iris.clickhouse.identifiers import quote_identifier, validate_identifier
+from iris.clickhouse.queries import query_as_service, query_as_user
+from iris.clickhouse.users import init_user_rights
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,8 +54,7 @@ class UserSession:
 
 @dataclass(frozen=True, slots=True)
 class AuthSession:
-    """Request-scoped view of a logged-in session, with the ClickHouse
-    operations available to the session's tier.
+    """Request-scoped view of a logged-in session.
 
     Built once per request by the auth dep. Routes receive an ``AuthSession``
     (or one of its subclasses: :class:`DatabaseSession`,
@@ -86,6 +72,12 @@ class AuthSession:
     persistent identity (``compare=False``, ``repr=False``) so two sessions
     with identical ``id``/``user``/``rights``/etc. compare equal regardless
     of which connections happen to be wired in.
+
+    Note: ``AuthSession`` does not expose a ``query_as_user`` method. CH
+    impersonation requires a target database; the database-scoped
+    subclasses (``DatabaseSession`` and below) carry the per-database
+    ``query_as_user``. Admins query as the service identity via
+    ``AdminSession.query_as_service``.
     """
     id: str
     user: User
@@ -107,43 +99,22 @@ class AuthSession:
         """
         await self.store.update_data(self.id, self.data)
 
-    async def query_as_user(
-        self,
-        sql: str,
-        parameters: Mapping[str, Any] | None = None,
-        *,
-        database: str | None = None,
-    ) -> list[dict[str, Any]]:
-        return await query_as_user_impl(
-            self.http_client,
-            username=self.user.username,
-            sql=sql,
-            parameters=parameters,
-            database=database,
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class DatabaseSession(AuthSession):
     """Session bound to a specific database (the path/query parameter that
-    drove the alias dep). ``query_as_user`` is auto-scoped to ``self.database``;
-    no override is provided — to query a different database from a DB-scoped
-    route, use a fully-qualified table name and let CH enforce privileges.
+    drove the alias dep). ``query_as_user`` is auto-scoped to ``self.database``.
+    To query a different database, use a fully-qualified table name and let
+    CH enforce privileges.
     """
     database: str
 
-    @override
-    async def query_as_user(  # pyright: ignore[reportIncompatibleMethodOverride]
+    async def query_as_user(
         self,
         sql: str,
         parameters: Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        # Intentional Liskov violation: the parent's `database=` kwarg is
-        # dropped because the bound self.database is the source of truth.
-        # To query a different database from a DB-scoped route, use a
-        # fully-qualified table name (e.g. ``other_db.t``) and let CH
-        # enforce privileges.
-        return await query_as_user_impl(
+        return await query_as_user(
             self.http_client,
             username=self.user.username,
             sql=sql,
@@ -158,78 +129,126 @@ class DatabaseAdminSession(DatabaseSession):
     methods scoped to ``self.database``."""
 
     async def grant_reader(self, username: str) -> None:
-        await grant_reader_impl(
-            self.client, database=self.database, username=username
+        await asyncio.to_thread(
+            grant_tier_to_user, self.client,
+            database=self.database, tier=TIER_DBREADER, username=username,
         )
 
     async def grant_writer(self, username: str) -> None:
-        await grant_writer_impl(
-            self.client, database=self.database, username=username
+        await asyncio.to_thread(
+            grant_tier_to_user, self.client,
+            database=self.database, tier=TIER_DBWRITER, username=username,
         )
 
     async def add_admin_user(self, username: str) -> None:
-        await add_admin_user_impl(
-            self.client, database=self.database, username=username
+        await asyncio.to_thread(
+            grant_tier_to_user, self.client,
+            database=self.database, tier=TIER_DBADMIN, username=username,
         )
 
     async def revoke_reader(self, username: str) -> None:
-        await revoke_reader_impl(
-            self.client, database=self.database, username=username
+        await asyncio.to_thread(
+            revoke_tier_from_user, self.client,
+            database=self.database, tier=TIER_DBREADER, username=username,
         )
 
     async def revoke_writer(self, username: str) -> None:
-        await revoke_writer_impl(
-            self.client, database=self.database, username=username
+        await asyncio.to_thread(
+            revoke_tier_from_user, self.client,
+            database=self.database, tier=TIER_DBWRITER, username=username,
         )
 
     async def remove_admin_user(self, username: str) -> None:
-        await remove_admin_user_impl(
-            self.client, database=self.database, username=username
+        await asyncio.to_thread(
+            revoke_tier_from_user, self.client,
+            database=self.database, tier=TIER_DBADMIN, username=username,
         )
 
     async def grant_reader_to_group(self, group: str) -> None:
-        await grant_reader_to_group_impl(
-            self.client, database=self.database, group=group
+        await asyncio.to_thread(
+            grant_tier_to_group, self.client,
+            database=self.database, tier=TIER_DBREADER, group=group,
         )
 
     async def grant_writer_to_group(self, group: str) -> None:
-        await grant_writer_to_group_impl(
-            self.client, database=self.database, group=group
+        await asyncio.to_thread(
+            grant_tier_to_group, self.client,
+            database=self.database, tier=TIER_DBWRITER, group=group,
         )
 
     async def add_admin_group(self, group: str) -> None:
-        await add_admin_group_impl(
-            self.client, database=self.database, group=group
+        await asyncio.to_thread(
+            grant_tier_to_group, self.client,
+            database=self.database, tier=TIER_DBADMIN, group=group,
         )
 
     async def revoke_reader_from_group(self, group: str) -> None:
-        await revoke_reader_from_group_impl(
-            self.client, database=self.database, group=group
+        await asyncio.to_thread(
+            revoke_tier_from_group, self.client,
+            database=self.database, tier=TIER_DBREADER, group=group,
         )
 
     async def revoke_writer_from_group(self, group: str) -> None:
-        await revoke_writer_from_group_impl(
-            self.client, database=self.database, group=group
+        await asyncio.to_thread(
+            revoke_tier_from_group, self.client,
+            database=self.database, tier=TIER_DBWRITER, group=group,
         )
 
     async def remove_admin_group(self, group: str) -> None:
-        await remove_admin_group_impl(
-            self.client, database=self.database, group=group
+        await asyncio.to_thread(
+            revoke_tier_from_group, self.client,
+            database=self.database, tier=TIER_DBADMIN, group=group,
         )
 
     async def delete_database(self) -> None:
-        await delete_database_impl(self.client, database=self.database)
+        db_q = quote_identifier(self.database, kind="database")
+        database = self.database
+        client = self.client
+
+        def _sync() -> None:
+            client.command(f"DROP DATABASE IF EXISTS {db_q}")
+            drop_tier_roles(client, database=database)
+
+        await asyncio.to_thread(_sync)
 
     async def list_admin_members(self) -> list[str]:
-        return await list_admin_members_impl(
-            self.client, database=self.database
-        )
+        admin_role = tier_role_name(self.database, TIER_DBADMIN)
+        client = self.client
+
+        def _sync() -> list[str]:
+            rows = client.query(
+                "SELECT role_name FROM system.role_grants WHERE granted_role_name = {r:String}",
+                {"r": admin_role},
+            )
+            return [cast(str, row["role_name"]) for row in rows.named_results()]
+
+        return await asyncio.to_thread(_sync)
 
     async def list_grants(self) -> list[dict[str, Any]]:
-        return await list_grants_impl(self.client, database=self.database)
+        client = self.client
+        database = self.database
+
+        def _sync() -> list[dict[str, Any]]:
+            result = client.query(
+                "SELECT * FROM system.grants WHERE database = {d:String}",
+                parameters={"d": database},
+            )
+            return list(result.named_results())
+
+        return await asyncio.to_thread(_sync)
 
     async def list_row_policies(self) -> list[dict[str, Any]]:
-        return await list_row_policies_impl(self.client, database=self.database)
+        client = self.client
+        database = self.database
+
+        def _sync() -> list[dict[str, Any]]:
+            result = client.query(
+                "SELECT * FROM system.row_policies WHERE database = {d:String}",
+                parameters={"d": database},
+            )
+            return list(result.named_results())
+
+        return await asyncio.to_thread(_sync)
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,11 +258,19 @@ class DatabaseCreatorSession(AuthSession):
     ``rights.can_create_database``."""
 
     async def create_database(self, name: str) -> None:
-        await create_database_impl(
-            self.client,
-            name=name,
-            creator_username=self.user.username,
-        )
+        validate_identifier(name, kind="database")
+        quoted = quote_identifier(name, kind="database")
+        creator_username = self.user.username
+        client = self.client
+
+        def _sync() -> None:
+            client.command(f"CREATE DATABASE IF NOT EXISTS {quoted}")
+            create_tier_roles(client, database=name)
+            grant_tier_to_user(
+                client, database=name, tier=TIER_DBADMIN, username=creator_username,
+            )
+
+        await asyncio.to_thread(_sync)
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,67 +287,68 @@ class AdminSession(AuthSession):
         parameters: Mapping[str, Any] | None = None,
         *,
         database: str | None = None,
-    ) -> Any:  # QueryResult — typed Any to avoid clickhouse-connect import
-        return await query_as_service_impl(
-            self.client, sql=sql, parameters=parameters, database=database
+    ) -> QueryResult:
+        return await query_as_service(
+            self.client, sql=sql, parameters=parameters, database=database,
         )
 
     async def reprovision_user(self, *, username: str, groups: list[str]) -> None:
-        await reprovision_user_impl(
-            self.client, username=username, groups=groups, settings=self.settings
+        await asyncio.to_thread(
+            init_user_rights, self.client,
+            username=username, groups=groups, settings=self.settings,
         )
 
     async def grant_select_to_database(self, *, database: str, role: str) -> None:
-        await grant_select_to_database_impl(
-            self.client, database=database, role=role
+        await asyncio.to_thread(
+            grants.grant_select_to_database, self.client,
+            database=database, role=role,
         )
 
     async def grant_insert_update_to_table(
         self, *, database: str, table: str, role: str
     ) -> None:
-        await grant_insert_update_to_table_impl(
-            self.client, database=database, table=table, role=role
+        await asyncio.to_thread(
+            grants.grant_insert_update_to_table, self.client,
+            database=database, table=table, role=role,
         )
 
     async def add_row_policy(
         self, *, database: str, table: str, column: str, role: str, value: str
     ) -> None:
-        await add_row_policy_impl(
-            self.client,
-            database=database,
-            table=table,
-            column=column,
-            role=role,
-            value=value,
+        await asyncio.to_thread(
+            policies.add_row_policy, self.client,
+            database=database, table=table, column=column, role=role, value=value,
         )
 
     async def revoke_row_policy(
         self, *, database: str, table: str, role: str, value: str
     ) -> None:
-        await revoke_row_policy_impl(
-            self.client, database=database, table=table, role=role, value=value
+        await asyncio.to_thread(
+            policies.revoke_row_policy, self.client,
+            database=database, table=table, role=role, value=value,
         )
 
     async def user_grants(self, *, username: str) -> list[dict[str, Any]]:
-        return await user_grants_impl(self.client, username=username)
+        return await asyncio.to_thread(audit.user_grants, self.client, username=username)
 
     async def role_grants(self, *, role: str) -> list[dict[str, Any]]:
-        return await role_grants_impl(self.client, role=role)
+        return await asyncio.to_thread(audit.role_grants, self.client, role=role)
 
     async def user_role_memberships(
         self, *, username: str
     ) -> list[dict[str, Any]]:
-        return await user_role_memberships_impl(self.client, username=username)
+        return await asyncio.to_thread(audit.user_role_memberships, self.client, username=username)
 
     async def user_row_policies(self, *, username: str) -> list[dict[str, Any]]:
-        return await user_row_policies_impl(self.client, username=username)
+        return await asyncio.to_thread(audit.user_row_policies, self.client, username=username)
 
     async def role_row_policies(self, *, role: str) -> list[dict[str, Any]]:
-        return await role_row_policies_impl(self.client, role=role)
+        return await asyncio.to_thread(audit.role_row_policies, self.client, role=role)
 
     async def table_row_policies(
         self, *, database: str, table: str
     ) -> list[dict[str, Any]]:
-        return await table_row_policies_impl(
-            self.client, database=database, table=table
+        return await asyncio.to_thread(
+            audit.table_row_policies, self.client,
+            database=database, table=table,
         )

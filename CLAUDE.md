@@ -33,6 +33,7 @@ Pytest is the test runner. Config lives under `[tool.pytest.ini_options]` in `py
 - Filter by name: `uv run pytest -k <substring>`
 - Stop at first failure with verbose tracebacks: `uv run pytest -x -vv`
 
+
 Conventions for new tests:
 - Tests live under `tests/` at the repo root (sibling to `src/`), not inside the package.
 - **Do not add `__init__.py` under `tests/`** — `--import-mode=importlib` requires `tests/` to *not* be a package, but in exchange every test file must have a unique basename across the suite.
@@ -45,7 +46,7 @@ Patterns an agent must follow that aren't obvious from reading code:
 - **DDL safety**: external strings flow through `validate_identifier` + `quote_identifier` (`iris.clickhouse.identifiers`). Never f-string-concat raw user input into SQL. DML uses CH's `{name:Type}` placeholder syntax via `client.query(..., parameters=...)`.
 - **Pre-create-on-grant**: tier-grant helpers issue `CREATE ROLE IF NOT EXISTS <target>_USER` before granting. Required for username-enumeration defence; don't shortcut.
 - **Session `data` is a per-request snapshot**: mutations don't auto-persist. Routes that want to write through call `await request.app.state.auth_session_store.update_data(session.id, session.data)`.
-- **Session methods use top-level imports of `iris.clickhouse.handle.*_impl`**: lazy method-body imports were a workaround for a now-removed cycle. Don't regress.
+- **Session methods import directly from `iris.clickhouse.{audit,grants,policies,users,queries}` and call `asyncio.to_thread(<sync_fn>, ...)` inline**: the previous `iris.clickhouse.handle.*_impl` thunk layer was deleted; methods talk to the sync helpers (and `query_as_user` / `query_as_service` for the async-only paths) directly. Don't reintroduce the indirection.
 - **One parameter per route**: `session: SessionRead` / `SessionDatabaseAdmin` / etc. carry both admission and capability. Don't pair an alias with a separate handle dep — the handle classes are gone.
 - **Refactor pattern**: spec → plan → atomic commit. Big renames go through a deliberate breakage window with one big-bang commit at the end. Don't try to incrementally split refactors that need to be atomic.
 - **Tests don't mock the database**: `tests/clickhouse/` uses a real CH testcontainer (session-scoped). Per-test isolation is the `prefix` fixture (UUID-prefixed entity names).

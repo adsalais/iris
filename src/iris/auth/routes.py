@@ -65,7 +65,7 @@ def build_auth_router(
         for hook in app.state.post_login_hooks:
             await hook(user, session.id)
         logger.info(
-            "auth: login user=%s subject=%s method=%s groups=%s",
+            "auth: login display_name=%s subject=%s method=%s groups=%s",
             user.display_name,
             user.subject,
             method,
@@ -149,7 +149,7 @@ def build_auth_router(
         if sid:
             await store.delete(sid)
         logger.info(
-            "auth: logout user=%s subject=%s",
+            "auth: logout display_name=%s subject=%s",
             session.user.display_name,
             session.user.subject,
         )

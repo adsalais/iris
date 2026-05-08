@@ -35,13 +35,19 @@ def _oauth_provider(
 def _verifier_from_oauth_state(test_client: TestClient) -> str:
     """Decode the verifier out of the oauth_state cookie iris set during /login.
 
-    OAuthProvider signs the state cookie with the client_secret + a fixed salt;
-    re-construct the same signer with the realm's client_secret to extract the
-    verifier so we can hand it back to exchange_code.
+    OAuthProvider signs the state cookie with a SHA-256 derivation of the
+    client_secret (prefixed with the v1 derivation tag) plus a fixed salt;
+    re-construct the same signer here to extract the verifier so we can
+    hand it back to exchange_code. Mirrors OAuthProvider.__init__.
     """
+    import hashlib
+
     signed = test_client.cookies.get("oauth_state")
     assert signed is not None, "iris should have set oauth_state on GET /login"
-    signer = URLSafeTimedSerializer("iris-test-secret", salt="iris-oauth-state")
+    derived_key = hashlib.sha256(
+        b"iris-oauth-state-signing-v1:" + b"iris-test-secret"
+    ).digest()
+    signer = URLSafeTimedSerializer(derived_key, salt="iris-oauth-state")
     payload = signer.loads(signed)
     return payload["verifier"]
 

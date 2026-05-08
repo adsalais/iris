@@ -75,7 +75,7 @@ def install(app: FastAPI) -> None:
         await store.set_rights(session_id, rights)
         logger.info(
             (
-                "clickhouse: provisioned user=%s groups=%s "
+                "clickhouse: provisioned username=%s groups=%s "
                 "rights=admin:%s creator:%s reader:%d writer:%d db_admin:%d"
             ),
             user.username,
