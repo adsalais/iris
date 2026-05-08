@@ -16,7 +16,6 @@ import clickhouse_connect
 import pytest
 from testcontainers.clickhouse import ClickHouseContainer
 
-from iris.clickhouse.bootstrap import ensure_service_admin
 from iris.clickhouse.client import build_client
 from iris.clickhouse.config import ClickHouseSettings
 
@@ -150,8 +149,6 @@ def ch_settings(ch_container, monkeypatch):
     monkeypatch.setenv("CLICKHOUSE_PASSWORD", _SVC_PASSWORD)
     monkeypatch.setenv("CLICKHOUSE_SECURE", "false")
     monkeypatch.setenv("CLICKHOUSE_VERIFY", "false")
-    monkeypatch.setenv("CLICKHOUSE_SERVICE_ADMIN_USER", _SVC_USER)
-    monkeypatch.setenv("CLICKHOUSE_SERVICE_ADMIN_ROLE", "service_admin_role")
     monkeypatch.delenv("CLICKHOUSE_CA_CERT_PATH", raising=False)
 
     return ClickHouseSettings.from_env()
@@ -161,7 +158,6 @@ def ch_settings(ch_container, monkeypatch):
 def ch_client(ch_settings):
     client = build_client(ch_settings)
     try:
-        ensure_service_admin(client, ch_settings)
         yield client
     finally:
         client.close()

@@ -148,21 +148,20 @@ def test_init_user_rights_does_not_touch_user_role_during_reconcile(
     assert rows == [{"granted_role_name": user_role}]
 
 
-def test_init_user_rights_grants_impersonate_to_service_admin(
+def test_init_user_rights_grants_impersonate_to_connection_user(
     ch_client, ch_settings, prefix
 ):
     username = f"{prefix}_imp"
     init_user_rights(ch_client, username=username, groups=[], settings=ch_settings)
 
-    # Verify the service admin can impersonate the newly provisioned user.
-    # The check queries system.grants for IMPERSONATE rows held by the service
-    # admin; coverage is satisfied by either a specific grant (access_object ==
-    # username) or a wildcard grant (access_object == '', which covers all users
-    # and absorbs per-user grants when both exist).
+    # Verify iris's connection user (settings.user) can impersonate the newly
+    # provisioned user. Coverage is satisfied by either a specific grant
+    # (access_object == username) or a wildcard grant (access_object == '',
+    # which covers all users and absorbs per-user grants when both exist).
     rows = list(
         ch_client.query(
             "SELECT * FROM system.grants WHERE user_name = {sa:String} AND access_type = 'IMPERSONATE'",
-            parameters={"sa": ch_settings.service_admin_user},
+            parameters={"sa": ch_settings.user},
         ).named_results()
     )
     covered = any(r.get("access_object") in (username, "") for r in rows)

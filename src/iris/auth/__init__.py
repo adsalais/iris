@@ -1,4 +1,3 @@
-from iris.auth.bootstrap import bootstrap_admin
 from iris.auth.deps import (
     Session,
     SessionAdmin,
@@ -35,6 +34,5 @@ __all__ = [
     "SessionRead",
     "SessionWrite",
     "User",
-    "bootstrap_admin",
     "install",
 ]

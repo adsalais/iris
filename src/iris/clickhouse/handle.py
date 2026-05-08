@@ -147,7 +147,6 @@ async def add_row_policy_impl(
     column: str,
     role: str,
     value: str,
-    settings: ClickHouseSettings,
 ) -> None:
     await asyncio.to_thread(
         add_row_policy,
@@ -157,7 +156,6 @@ async def add_row_policy_impl(
         column=column,
         role=role,
         value=value,
-        settings=settings,
     )
 
 

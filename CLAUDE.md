@@ -101,7 +101,7 @@ from iris.auth import (
     SessionDatabaseCreator,            # admin OR can_create_database
     SessionDatabaseAdmin,              # admin of the path's `database` parameter
     SessionWrite, SessionRead,         # tier-scoped checks against `database`
-    User, install, bootstrap_admin,
+    User, install,
 )
 ```
 
@@ -208,9 +208,13 @@ Operator changes (new tier-role grants, revocations) take effect on the user's n
 
 The per-user (`<username>_USER`) and per-group (`<group>_GRP`) roles continue to be created lazily by `init_user_rights` on each login. They serve as the recipients of tier-role grants: `add_writer(bob)` runs `GRANT <X>_DBWRITER TO bob_USER`.
 
-**Bootstrap** (option β). On app boot, after `ensure_service_admin`, if `IRIS_BOOTSTRAP_USER` is set and no iris user role currently holds the admin marker (ROLE ADMIN+WGO at global scope, `_USER`-suffixed), iris seeds `<username>_USER` with `GRANT ALL ON *.* WITH GRANT OPTION`. Idempotent: re-runs with an existing admin are no-ops. Wiping the CH server re-triggers the seed.
+**Bootstrap** (two channels). At iris launch, `bootstrap_admin` (in `iris.clickhouse.bootstrap`) always creates the `iris_global_admin` sentinel role. If `CLICKHOUSE_ADMIN_USER=alice` is set and no `_USER`-suffixed role currently holds the admin marker (ROLE ADMIN+WGO at global scope), iris creates `alice_USER` with `GRANT ALL ON *.* WITH GRANT OPTION` plus `iris_global_admin` granted to it. If `CLICKHOUSE_ADMIN_GROUP=iris_admin` is set and no `_GRP`-suffixed role currently holds admin, iris creates `iris_admin_GRP` the same way. Both channels are independently idempotent.
 
-The detection is restricted to roles ending in `_USER` so iris's own service identity (which necessarily holds ROLE ADMIN+WGO to manage RBAC state) is never mistaken for a bootstrapped admin.
+When alice (whose IdP username matches `CLICKHOUSE_ADMIN_USER`) logs in for the first time, the existing `init_user_rights` post-login hook creates her CH user and grants `alice_USER` — already an admin from bootstrap — to it. Same for bob whose IdP groups include `CLICKHOUSE_ADMIN_GROUP=iris_admin`: his CH user gets `iris_admin_GRP`, already an admin.
+
+The `iris_global_admin` sentinel role holds no privileges of its own. Wildcard row policies attach to it (per table, on every `add_row_policy` call) so every global admin sees all rows on tables with restrictive policies. Granting `iris_global_admin` to a role does not make that role admin in any sense iris's authorization layer recognises — the admin marker is still ROLE ADMIN+WGO at global scope.
+
+The admin-detection check is restricted to roles ending in `_USER` (resp. `_GRP`) so iris's own connection identity (which necessarily holds ROLE ADMIN+WGO to manage RBAC state) is never mistaken for a bootstrapped admin.
 
 **Pre-create-on-grant** is preserved as a username-enumeration defense. Tier-grant helpers (`grant_tier_to_user`, `grant_tier_to_group`) issue `CREATE ROLE IF NOT EXISTS <target>_USER` before granting, so an admin granting access to a never-logged-in user gets the same CH response as for an existing user.
 
@@ -239,7 +243,10 @@ SESSION_ABSOLUTE_TTL_SECONDS=2592000 # 30d, hard cap on top of sliding TTL
 SESSION_MAX_PER_USER=10              # cap concurrent sessions per User.subject (oldest evicted)
 AUTH_DB_PATH=./iris-auth.db          # SQLite file backing the session store; :memory: for tests
 COOKIE_SECURE=true                   # set false for local dev over http
-IRIS_BOOTSTRAP_USER=                 # if set, seeded as the first CH admin on a fresh CH
+# Bootstrap admins (both optional, set in the deployment env). Read by
+# iris.clickhouse.install at launch; see "Bootstrap (two channels)" above.
+CLICKHOUSE_ADMIN_USER=               # IdP username of bootstrap admin (e.g. alice)
+CLICKHOUSE_ADMIN_GROUP=              # IdP group name of bootstrap admins (e.g. iris_admin)
 
 # OAuth (OIDC discovery)
 OIDC_ISSUER_URL=https://keycloak.example.com/realms/iris
@@ -278,19 +285,21 @@ Sessions also survive process restarts. `uv run iris` and a redeploy no longer l
 src/iris/auth/
 ├── __init__.py        # public surface: AuthSession, Rights, EMPTY_RIGHTS, Session, SessionOptional,
 │                      #                  SessionAdmin, SessionDatabaseCreator, SessionDatabaseAdmin,
-│                      #                  SessionWrite, SessionRead, User, install, bootstrap_admin
+│                      #                  SessionWrite, SessionRead, User, install
 ├── session.py         # Rights frozen dataclass + serialization helpers + EMPTY_RIGHTS constant
-├── identity.py        # User (frozen+slots), UserSession (mutable; internal), AuthSession (frozen view)
-├── config.py          # AuthSettings.from_env() — reads IRIS_BOOTSTRAP_USER, AUTH_METHOD, etc.
+├── identity.py        # User (frozen+slots), UserSession (mutable; internal), AuthSession + Session
+│                      # subclass hierarchy with top-level imports of iris.clickhouse.handle._impl
+├── config.py          # AuthSettings.from_env() — AUTH_METHOD, session TTLs, etc.
 ├── sessions.py        # SessionStore (SQLite): create / get_and_refresh / update_data / set_rights / delete / close
 ├── exceptions.py      # AuthRequired, AuthForbidden, AuthError + install_exception_handlers
 ├── deps.py            # the seven Annotated alias deps + set_session_store / set_settings
 ├── csrf.py            # double-submit CSRF
 ├── rate_limit.py      # TokenBucket (used on POST /login)
 ├── routes.py          # /login, /login/callback, /logout, /api/whoami; install(app)
-├── bootstrap.py       # bootstrap_admin: first-install CH admin seed (option β)
 └── providers/         # mock, ldap, oauth — unchanged
 ```
+
+The CH-side bootstrap (creating `iris_global_admin` + admin user/group roles from `CLICKHOUSE_ADMIN_USER` / `CLICKHOUSE_ADMIN_GROUP`) lives in `iris.clickhouse.bootstrap.bootstrap_admin`. It's called from `iris.clickhouse.install` at app launch, not from anything in `iris.auth`.
 
 `install(app)` reads env, builds the provider, and wires the auth router + exception handlers + session store into a FastAPI app. Called from `build_app()` in `src/iris/app.py`.
 
@@ -353,11 +362,12 @@ The `iris.clickhouse` package provisions ClickHouse users, roles, grants, and ro
 ```python
 from iris.clickhouse import (
     # plain-data helpers
-    ClickHouseSettings, build_client, ensure_service_admin,
+    ClickHouseSettings, build_client, bootstrap_admin,
     init_user_rights, derive_rights,
     grant_select_to_database, grant_insert_update_to_table,
     add_row_policy, revoke_row_policy,
     # tier-role helpers
+    GLOBAL_ADMIN_ROLE,
     TIER_DBADMIN, TIER_DBWRITER, TIER_DBREADER,
     create_tier_roles, drop_tier_roles, tier_role_name,
     grant_tier_to_user, grant_tier_to_group,
@@ -365,22 +375,20 @@ from iris.clickhouse import (
     # audit helpers
     user_grants, role_grants, user_role_memberships,
     user_row_policies, role_row_policies, table_row_policies,
-    # FastAPI lifecycle
-    install,
 )
 ```
 
-The per-tier method surface lives on the Session subclasses in `iris.auth.identity` (see "Auth ↔ ClickHouse bridge" below). `iris.clickhouse` itself no longer hosts FastAPI handle providers.
+The per-tier method surface lives on the Session subclasses in `iris.auth.identity` (see "Auth ↔ ClickHouse bridge" below). `iris.clickhouse` itself no longer hosts FastAPI handle providers. `install` is intentionally not re-exported from this package — callers do `from iris.clickhouse.install import install` (only `iris.app:build_app`).
 
 `build_client(settings)` returns a `clickhouse_connect.driver.client.Client`. Operations take that client as their first argument:
 
 ```python
 settings = ClickHouseSettings.from_env()
 client = build_client(settings)
-ensure_service_admin(client, settings)               # idempotent startup
+bootstrap_admin(client, admin_user="alice", admin_group="iris_admin")  # idempotent startup
 init_user_rights(client, username="alice", groups=["sales"], settings=settings)
 add_row_policy(client, database="orders", table="lines",
-               column="region", role="alice_USER", value="EU", settings=settings)
+               column="region", role="sales_GRP", value="EU")
 ```
 
 ### Conventions
@@ -388,7 +396,7 @@ add_row_policy(client, database="orders", table="lines",
 - Per-user role: `<username>_USER` (suffix is hardcoded at `users.USER_ROLE_SUFFIX`).
 - Per-group role: `<group>_GRP` (suffix is hardcoded at `users.GROUP_ROLE_SUFFIX`).
 - Row-policy name: `<database>_<table>_<role>_<slug>_<8charhash>` — slug strips non-`[a-zA-Z0-9_]`, hash disambiguates collisions like `EU/UK` vs `EU UK`.
-- Wildcard service-admin policy per table: `<database>_<table>_<service_admin_role>` — `USING 1` applied to the role configured in `CLICKHOUSE_SERVICE_ADMIN_ROLE`. Created by `add_row_policy` if missing; *not* dropped by `revoke_row_policy`.
+- Wildcard row policies per table: `add_row_policy(database, table, column, role, value)` always emits two `USING 1` policies alongside the restrictive one — one for `iris_global_admin` (every global admin sees all rows) and one for `<database>_DBADMIN` (every per-database admin of that DB sees all rows). Names are deterministic (`<database>_<table>_iris_global_admin` and `<database>_<table>_<database>_DBADMIN`); subsequent calls for the same table no-op via `IF NOT EXISTS`. *Not* dropped by `revoke_row_policy` — they may apply to other restrictive policies on the same table and persist intentionally.
 - All operations are idempotent: re-running is safe. `init_user_rights` reconciles group memberships (revokes `_GRP` roles no longer in the input, grants the new ones).
 
 ### DDL safety
@@ -402,15 +410,14 @@ Env vars (loaded at `import` time via `python-dotenv` from `.env`):
 ```
 CLICKHOUSE_HOST=localhost
 CLICKHOUSE_PORT=8443
-CLICKHOUSE_USER=iris_service          # CH login iris connects as
+CLICKHOUSE_USER=iris_service          # CH login iris connects as; also the IMPERSONATE grantee
 CLICKHOUSE_PASSWORD=replace-me
 CLICKHOUSE_SECURE=true                # https
 CLICKHOUSE_VERIFY=true                # TLS verification
 # CLICKHOUSE_CA_CERT_PATH=/etc/ssl/certs/ca-bundle.crt
-
-CLICKHOUSE_SERVICE_ADMIN_USER=iris_service       # IMPERSONATE grantee, normally = CLICKHOUSE_USER
-CLICKHOUSE_SERVICE_ADMIN_ROLE=service_admin_role # wildcard-policy grantee; granted to admin user at startup
 ```
+
+The bootstrap admin signals (`CLICKHOUSE_ADMIN_USER`, `CLICKHOUSE_ADMIN_GROUP`) are listed under the auth env section above, since they shape the iris-side admin tier rather than CH connectivity.
 
 `ClickHouseSettings.from_env()` validates everything at app construction — missing required vars, typo'd booleans (`COOKIE_SECURE=ture` style), non-int ports, and bad identifier names all fail loudly.
 

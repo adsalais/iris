@@ -6,6 +6,38 @@ from datetime import datetime
 from typing import Any, override
 
 from iris.auth.session import EMPTY_RIGHTS, Rights
+from iris.clickhouse.handle import (
+    add_admin_group_impl,
+    add_admin_user_impl,
+    add_row_policy_impl,
+    create_database_impl,
+    delete_database_impl,
+    grant_insert_update_to_table_impl,
+    grant_reader_impl,
+    grant_reader_to_group_impl,
+    grant_select_to_database_impl,
+    grant_writer_impl,
+    grant_writer_to_group_impl,
+    list_admin_members_impl,
+    list_grants_impl,
+    list_row_policies_impl,
+    query_as_service_impl,
+    query_as_user_impl,
+    remove_admin_group_impl,
+    remove_admin_user_impl,
+    reprovision_user_impl,
+    revoke_reader_from_group_impl,
+    revoke_reader_impl,
+    revoke_row_policy_impl,
+    revoke_writer_from_group_impl,
+    revoke_writer_impl,
+    role_grants_impl,
+    role_row_policies_impl,
+    table_row_policies_impl,
+    user_grants_impl,
+    user_role_memberships_impl,
+    user_row_policies_impl,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +104,6 @@ class AuthSession:
         *,
         database: str | None = None,
     ) -> list[dict[str, Any]]:
-        from iris.clickhouse.handle import query_as_user_impl
         return await query_as_user_impl(
             self.http_client,
             username=self.user.username,
@@ -102,7 +133,6 @@ class DatabaseSession(AuthSession):
         # To query a different database from a DB-scoped route, use a
         # fully-qualified table name (e.g. ``other_db.t``) and let CH
         # enforce privileges.
-        from iris.clickhouse.handle import query_as_user_impl
         return await query_as_user_impl(
             self.http_client,
             username=self.user.username,
@@ -118,93 +148,77 @@ class DatabaseAdminSession(DatabaseSession):
     methods scoped to ``self.database``."""
 
     async def grant_reader(self, username: str) -> None:
-        from iris.clickhouse.handle import grant_reader_impl
         await grant_reader_impl(
             self.client, database=self.database, username=username
         )
 
     async def grant_writer(self, username: str) -> None:
-        from iris.clickhouse.handle import grant_writer_impl
         await grant_writer_impl(
             self.client, database=self.database, username=username
         )
 
     async def add_admin_user(self, username: str) -> None:
-        from iris.clickhouse.handle import add_admin_user_impl
         await add_admin_user_impl(
             self.client, database=self.database, username=username
         )
 
     async def revoke_reader(self, username: str) -> None:
-        from iris.clickhouse.handle import revoke_reader_impl
         await revoke_reader_impl(
             self.client, database=self.database, username=username
         )
 
     async def revoke_writer(self, username: str) -> None:
-        from iris.clickhouse.handle import revoke_writer_impl
         await revoke_writer_impl(
             self.client, database=self.database, username=username
         )
 
     async def remove_admin_user(self, username: str) -> None:
-        from iris.clickhouse.handle import remove_admin_user_impl
         await remove_admin_user_impl(
             self.client, database=self.database, username=username
         )
 
     async def grant_reader_to_group(self, group: str) -> None:
-        from iris.clickhouse.handle import grant_reader_to_group_impl
         await grant_reader_to_group_impl(
             self.client, database=self.database, group=group
         )
 
     async def grant_writer_to_group(self, group: str) -> None:
-        from iris.clickhouse.handle import grant_writer_to_group_impl
         await grant_writer_to_group_impl(
             self.client, database=self.database, group=group
         )
 
     async def add_admin_group(self, group: str) -> None:
-        from iris.clickhouse.handle import add_admin_group_impl
         await add_admin_group_impl(
             self.client, database=self.database, group=group
         )
 
     async def revoke_reader_from_group(self, group: str) -> None:
-        from iris.clickhouse.handle import revoke_reader_from_group_impl
         await revoke_reader_from_group_impl(
             self.client, database=self.database, group=group
         )
 
     async def revoke_writer_from_group(self, group: str) -> None:
-        from iris.clickhouse.handle import revoke_writer_from_group_impl
         await revoke_writer_from_group_impl(
             self.client, database=self.database, group=group
         )
 
     async def remove_admin_group(self, group: str) -> None:
-        from iris.clickhouse.handle import remove_admin_group_impl
         await remove_admin_group_impl(
             self.client, database=self.database, group=group
         )
 
     async def delete_database(self) -> None:
-        from iris.clickhouse.handle import delete_database_impl
         await delete_database_impl(self.client, database=self.database)
 
     async def list_admin_members(self) -> list[str]:
-        from iris.clickhouse.handle import list_admin_members_impl
         return await list_admin_members_impl(
             self.client, database=self.database
         )
 
     async def list_grants(self) -> list[dict[str, Any]]:
-        from iris.clickhouse.handle import list_grants_impl
         return await list_grants_impl(self.client, database=self.database)
 
     async def list_row_policies(self) -> list[dict[str, Any]]:
-        from iris.clickhouse.handle import list_row_policies_impl
         return await list_row_policies_impl(self.client, database=self.database)
 
 
@@ -215,7 +229,6 @@ class DatabaseCreatorSession(AuthSession):
     ``rights.can_create_database``."""
 
     async def create_database(self, name: str) -> None:
-        from iris.clickhouse.handle import create_database_impl
         await create_database_impl(
             self.client,
             name=name,
@@ -238,19 +251,16 @@ class AdminSession(AuthSession):
         *,
         database: str | None = None,
     ) -> Any:  # QueryResult — typed Any to avoid clickhouse-connect import
-        from iris.clickhouse.handle import query_as_service_impl
         return await query_as_service_impl(
             self.client, sql=sql, parameters=parameters, database=database
         )
 
     async def reprovision_user(self, *, username: str, groups: list[str]) -> None:
-        from iris.clickhouse.handle import reprovision_user_impl
         await reprovision_user_impl(
             self.client, username=username, groups=groups, settings=self.settings
         )
 
     async def grant_select_to_database(self, *, database: str, role: str) -> None:
-        from iris.clickhouse.handle import grant_select_to_database_impl
         await grant_select_to_database_impl(
             self.client, database=database, role=role
         )
@@ -258,7 +268,6 @@ class AdminSession(AuthSession):
     async def grant_insert_update_to_table(
         self, *, database: str, table: str, role: str
     ) -> None:
-        from iris.clickhouse.handle import grant_insert_update_to_table_impl
         await grant_insert_update_to_table_impl(
             self.client, database=database, table=table, role=role
         )
@@ -266,7 +275,6 @@ class AdminSession(AuthSession):
     async def add_row_policy(
         self, *, database: str, table: str, column: str, role: str, value: str
     ) -> None:
-        from iris.clickhouse.handle import add_row_policy_impl
         await add_row_policy_impl(
             self.client,
             database=database,
@@ -274,43 +282,35 @@ class AdminSession(AuthSession):
             column=column,
             role=role,
             value=value,
-            settings=self.settings,
         )
 
     async def revoke_row_policy(
         self, *, database: str, table: str, role: str, value: str
     ) -> None:
-        from iris.clickhouse.handle import revoke_row_policy_impl
         await revoke_row_policy_impl(
             self.client, database=database, table=table, role=role, value=value
         )
 
     async def user_grants(self, *, username: str) -> list[dict[str, Any]]:
-        from iris.clickhouse.handle import user_grants_impl
         return await user_grants_impl(self.client, username=username)
 
     async def role_grants(self, *, role: str) -> list[dict[str, Any]]:
-        from iris.clickhouse.handle import role_grants_impl
         return await role_grants_impl(self.client, role=role)
 
     async def user_role_memberships(
         self, *, username: str
     ) -> list[dict[str, Any]]:
-        from iris.clickhouse.handle import user_role_memberships_impl
         return await user_role_memberships_impl(self.client, username=username)
 
     async def user_row_policies(self, *, username: str) -> list[dict[str, Any]]:
-        from iris.clickhouse.handle import user_row_policies_impl
         return await user_row_policies_impl(self.client, username=username)
 
     async def role_row_policies(self, *, role: str) -> list[dict[str, Any]]:
-        from iris.clickhouse.handle import role_row_policies_impl
         return await role_row_policies_impl(self.client, role=role)
 
     async def table_row_policies(
         self, *, database: str, table: str
     ) -> list[dict[str, Any]]:
-        from iris.clickhouse.handle import table_row_policies_impl
         return await table_row_policies_impl(
             self.client, database=database, table=table
         )
