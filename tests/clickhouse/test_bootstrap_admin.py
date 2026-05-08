@@ -16,11 +16,13 @@ def _drop_admin_user_roles(ch_client) -> None:
     """Drop every role ending in _USER that holds ROLE ADMIN+WGO at global
     scope. Lets a test simulate a fresh CH where no admin has been seeded."""
     rows = ch_client.query(
-        "SELECT DISTINCT role_name FROM system.grants "
-        "WHERE access_type = 'ROLE ADMIN' "
-        "  AND grant_option = 1 "
-        "  AND database IS NULL "
-        "  AND endsWith(role_name, '_USER')"
+        """
+        SELECT DISTINCT role_name FROM system.grants
+        WHERE access_type = 'ROLE ADMIN'
+          AND grant_option = 1
+          AND database IS NULL
+          AND endsWith(role_name, '_USER')
+        """
     ).result_rows
     for (name,) in rows:
         ch_client.command(f"DROP ROLE IF EXISTS `{name}`")

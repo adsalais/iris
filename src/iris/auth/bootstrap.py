@@ -1,20 +1,24 @@
 """Bootstrap option β: seed the first ClickHouse admin user at app boot.
 
-Runs at app boot after ``ensure_service_admin``. Idempotent: if any role already
-holds the admin marker (ROLE ADMIN at global scope with grant_option=1), the
-function is a no-op. Wiping the CH server and restarting iris re-triggers the
-seed.
+Runs at app boot after ``ensure_service_admin``. Idempotent: if any iris user
+role already holds the admin marker (ROLE ADMIN at global scope with
+grant_option=1), the function is a no-op. Wiping the CH server and restarting
+iris re-triggers the seed.
 
-The bootstrap user need not exist in the IdP yet. iris creates the corresponding
-``<username>_USER`` role in CH and grants it ``ALL ON *.* WITH GRANT OPTION``;
-when the operator logs in for the first time, ``init_user_rights`` reuses the
-existing role and ``derive_rights`` returns ``is_admin=True``.
+The bootstrap user need not exist in the IdP yet. iris creates the
+corresponding ``<username>_USER`` role in CH and grants it ``ALL ON *.* WITH
+GRANT OPTION``; when the operator logs in for the first time,
+``init_user_rights`` reuses the existing role and ``derive_rights`` returns
+``is_admin=True``.
 
 The grant fall-back to ``CURRENT GRANTS`` exists for the test container's
 restricted privilege envelope (the testcontainer's root user lacks
-NAMED COLLECTION ADMIN, which is part of CH's ``ALL`` superset). In a real
-deployment where the iris service identity has full ``ALL`` privileges, the
-first GRANT succeeds and the fall-back is unused.
+NAMED COLLECTION ADMIN). Real deployments take the explicit-ALL path.
+
+Lives in iris.auth.bootstrap (not iris.clickhouse) because the bootstrap
+username is auth configuration (``IRIS_BOOTSTRAP_USER``). The CH-specific
+imports are deferred to function body to avoid a circular import via
+``iris.clickhouse.install``, which itself imports this module.
 """
 from __future__ import annotations
 
@@ -24,13 +28,10 @@ from typing import cast
 from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.exceptions import DatabaseError
 
-from iris.clickhouse.identifiers import quote_identifier
-from iris.clickhouse.users import USER_ROLE_SUFFIX
-
 logger = logging.getLogger("iris.auth.bootstrap")
 
 
-def _admin_exists(client: Client) -> bool:
+def _admin_exists(client: Client, *, user_role_suffix: str) -> bool:
     """Detect whether some iris user role already holds the admin marker —
     ROLE ADMIN at global scope with ``grant_option=1``.
 
@@ -39,12 +40,14 @@ def _admin_exists(client: Client) -> bool:
     mistaken for a bootstrapped admin user.
     """
     rows = client.query(
-        "SELECT count() FROM system.grants "
-        "WHERE access_type = 'ROLE ADMIN' "
-        "  AND grant_option = 1 "
-        "  AND database IS NULL "
-        "  AND endsWith(role_name, {suffix:String})",
-        parameters={"suffix": USER_ROLE_SUFFIX},
+        """
+        SELECT count() FROM system.grants
+        WHERE access_type = 'ROLE ADMIN'
+          AND grant_option = 1
+          AND database IS NULL
+          AND endsWith(role_name, {suffix:String})
+        """,
+        parameters={"suffix": user_role_suffix},
     ).result_rows
     return cast(int, rows[0][0]) > 0
 
@@ -54,7 +57,12 @@ def bootstrap_admin(client: Client, *, username: str) -> None:
 
     No-op when an admin grant is already present. Idempotent across restarts.
     """
-    if _admin_exists(client):
+    # Deferred imports: top-level would create a cycle through
+    # iris.clickhouse.__init__ → iris.clickhouse.install → iris.auth.bootstrap.
+    from iris.clickhouse.identifiers import quote_identifier
+    from iris.clickhouse.users import USER_ROLE_SUFFIX
+
+    if _admin_exists(client, user_role_suffix=USER_ROLE_SUFFIX):
         logger.info("bootstrap: admin already present in CH; skipping seed")
         return
     role = f"{username}{USER_ROLE_SUFFIX}"

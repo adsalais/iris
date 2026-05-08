@@ -19,8 +19,10 @@ def test_create_tier_roles_creates_three_roles_and_grants(ch_client, prefix):
     ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
     create_tier_roles(ch_client, database=db)
     rows = ch_client.query(
-        "SELECT name FROM system.roles WHERE name IN "
-        "({a:String}, {w:String}, {r:String})",
+        """
+        SELECT name FROM system.roles
+        WHERE name IN ({a:String}, {w:String}, {r:String})
+        """,
         parameters={
             "a": f"{db}_DBADMIN",
             "w": f"{db}_DBWRITER",
@@ -31,8 +33,10 @@ def test_create_tier_roles_creates_three_roles_and_grants(ch_client, prefix):
 
     # admin role has at least one grant on db with grant_option=1
     admin_grants = ch_client.query(
-        "SELECT access_type, grant_option, database FROM system.grants "
-        "WHERE role_name = {r:String}",
+        """
+        SELECT access_type, grant_option, database FROM system.grants
+        WHERE role_name = {r:String}
+        """,
         parameters={"r": f"{db}_DBADMIN"},
     ).result_rows
     assert any(g[1] == 1 and g[2] == db for g in admin_grants)
@@ -69,8 +73,10 @@ def test_drop_tier_roles_removes_them(ch_client, prefix):
     create_tier_roles(ch_client, database=db)
     drop_tier_roles(ch_client, database=db)
     rows = ch_client.query(
-        "SELECT count() FROM system.roles WHERE name IN "
-        "({a:String}, {w:String}, {r:String})",
+        """
+        SELECT count() FROM system.roles
+        WHERE name IN ({a:String}, {w:String}, {r:String})
+        """,
         parameters={
             "a": f"{db}_DBADMIN",
             "w": f"{db}_DBWRITER",

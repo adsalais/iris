@@ -42,8 +42,10 @@ def _effective_role_set(
     while frontier:
         closed |= frontier
         rows = client.query(
-            "SELECT granted_role_name FROM system.role_grants "
-            "WHERE role_name IN ({names:Array(String)})",
+            """
+            SELECT granted_role_name FROM system.role_grants
+            WHERE role_name IN ({names:Array(String)})
+            """,
             parameters={"names": list(frontier)},
         ).result_rows
         next_frontier = {cast(str, r[0]) for r in rows} - closed
@@ -95,11 +97,13 @@ def derive_rights(
         # can_create_database marker: CREATE DATABASE at global scope. Per
         # spec this does not require WGO.
         rows = client.query(
-            "SELECT DISTINCT access_type, grant_option "
-            "FROM system.grants "
-            "WHERE role_name IN ({names:Array(String)}) "
-            "  AND database IS NULL "
-            "  AND access_type IN ('ROLE ADMIN', 'CREATE DATABASE')",
+            """
+            SELECT DISTINCT access_type, grant_option
+            FROM system.grants
+            WHERE role_name IN ({names:Array(String)})
+              AND database IS NULL
+              AND access_type IN ('ROLE ADMIN', 'CREATE DATABASE')
+            """,
             parameters={"names": list(effective)},
         ).result_rows
         for access_type, grant_option in rows:

@@ -12,14 +12,14 @@ os.environ.setdefault("MOCK_PASSWORD", "secret")
 os.environ.setdefault("MOCK_GROUPS", "admins,users")
 os.environ.setdefault("MOCK_DISPLAY_NAME", "Alice")
 os.environ.setdefault("COOKIE_SECURE", "false")
-# Sessions and authz both live in SQLite. One connection per process means
-# :memory: works for single-process tests; multi-process tests use a tempfile.
+# Sessions live in SQLite (the only thing left in AUTH_DB_PATH). One connection
+# per process means :memory: works for single-process tests; multi-process
+# tests use a tempfile.
 os.environ.setdefault("AUTH_DB_PATH", ":memory:")
-# The conftest seeds a single bootstrap admin user that matches MOCK_USERNAME.
-# Any test that wants additional roles or richer fixtures builds them via
-# RoleMappingStore mutators in its own fixture.
-os.environ.setdefault("AUTHZ_BOOTSTRAP_ROLE", "admin")
-os.environ.setdefault("AUTHZ_BOOTSTRAP_USER", "alice")
+# Bootstrap is a no-op when install_clickhouse=False (tests at this level don't
+# spin up a CH testcontainer). Setting the env var keeps any code path that
+# reads it from raising on absence.
+os.environ.setdefault("IRIS_BOOTSTRAP_USER", "alice")
 
 
 @pytest.fixture

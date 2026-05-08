@@ -19,7 +19,7 @@ def test_post_login_hook_fires_on_form_login() -> None:
     app = build_app(install_clickhouse=False)
     seen: list[User] = []
 
-    async def hook(user: User) -> None:
+    async def hook(user: User, _session_id: str) -> None:
         seen.append(user)
 
     app.state.post_login_hooks.append(hook)
@@ -47,7 +47,7 @@ def test_post_login_hook_fires_on_form_login() -> None:
 def test_post_login_hook_exception_is_fail_loud() -> None:
     app = build_app(install_clickhouse=False)
 
-    async def hook(_user: User) -> None:
+    async def hook(_user: User, _session_id: str) -> None:
         raise RuntimeError("boom")
 
     app.state.post_login_hooks.append(hook)

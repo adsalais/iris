@@ -1,34 +1,17 @@
 import asyncio
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from iris.auth import Session, optional_session, require_session
-from iris.auth.authz.store import RoleMappingStore
-from iris.auth.deps import set_session_store, set_settings
+from iris.auth.deps import Session, SessionOptional, set_session_store, set_settings
 from iris.auth.exceptions import install_exception_handlers
 from iris.auth.identity import User
+from iris.auth.session import Rights
 from iris.auth.sessions import SessionStore
 
 
-class _NoSeedSettings:
-    bootstrap_role = "admin"
-    bootstrap_user = None
-
-
-def _seed_authz_fixture(store: RoleMappingStore) -> None:
-    """reader -> writer -> admin closure; admin gated on the 'admins' group."""
-    store.bootstrap(_NoSeedSettings())  # create schema, no seeding
-    asyncio.run(store.add_role("reader"))
-    asyncio.run(store.add_role("writer"))
-    asyncio.run(store.add_role("admin"))
-    asyncio.run(store.add_include("writer", "reader"))
-    asyncio.run(store.add_include("admin", "writer"))
-    asyncio.run(store.add_group_to_role("admin", "admins"))
-
-
-def _build_app(tmp_path: Path) -> tuple[FastAPI, SessionStore, RoleMappingStore]:
+def _build_app(tmp_path: Path) -> tuple[FastAPI, SessionStore]:
     app = FastAPI()
     db_path = tmp_path / "auth.db"
     sess_store = SessionStore(
@@ -38,43 +21,45 @@ def _build_app(tmp_path: Path) -> tuple[FastAPI, SessionStore, RoleMappingStore]
     set_settings(app, cookie_name="iris_session")
     install_exception_handlers(app, cookie_name="iris_session")
 
-    authz_store = RoleMappingStore(path=str(db_path))
-    _seed_authz_fixture(authz_store)
-    app.state.authz_store = authz_store
-
     @app.get("/me")
-    async def me(session: Session = Depends(require_session)):
+    async def me(session: Session):
         return {"subject": session.user.subject}
 
     @app.get("/optional")
-    async def optional(session: Session | None = Depends(optional_session)):
+    async def optional(session: SessionOptional):
         return {"present": session is not None}
 
     @app.get("/whoami-full")
-    async def whoami_full(session: Session = Depends(require_session)):
+    async def whoami_full(session: Session):
         return {
             "id": session.id,
             "subject": session.user.subject,
             "data_keys": sorted(session.data.keys()),
-            "roles": sorted(session.roles),
+            "rights": {
+                "is_admin": session.rights.is_admin,
+                "can_create_database": session.rights.can_create_database,
+                "db_admin": sorted(session.rights.db_admin),
+                "db_writer": sorted(session.rights.db_writer),
+                "db_reader": sorted(session.rights.db_reader),
+            },
         }
 
     @app.get("/data")
-    async def read_data(session: Session = Depends(require_session)):
+    async def read_data(session: Session):
         return {"counter": session.data.get("counter", 0)}
 
     @app.post("/data")
-    async def bump_data(request: Request, session: Session = Depends(require_session)):
+    async def bump_data(request: Request, session: Session):
         session.data["counter"] = session.data.get("counter", 0) + 1
         await request.app.state.auth_session_store.update_data(
             session.id, session.data
         )
         return {"counter": session.data["counter"]}
 
-    return app, sess_store, authz_store
+    return app, sess_store
 
 
-def _seed(store: SessionStore, **overrides) -> str:
+def _seed(store: SessionStore, *, rights: Rights | None = None, **overrides) -> str:
     user = User(
         subject=overrides.get("subject", "alice"),
         username=overrides.get("username", overrides.get("subject", "alice")),
@@ -82,25 +67,26 @@ def _seed(store: SessionStore, **overrides) -> str:
         groups=overrides.get("groups", ("admins",)),
     )
     session = asyncio.run(store.create(user))
+    if rights is not None:
+        asyncio.run(store.set_rights(session.id, rights))
     return session.id
 
 
-def _close(sess_store: SessionStore, authz_store: RoleMappingStore) -> None:
+def _close(sess_store: SessionStore) -> None:
     asyncio.run(sess_store.close())
-    asyncio.run(authz_store.close())
 
 
 def test_no_credentials_returns_401(tmp_path):
-    app, sess_store, authz_store = _build_app(tmp_path)
+    app, sess_store = _build_app(tmp_path)
     try:
         r = TestClient(app).get("/me", headers={"accept": "application/json"})
         assert r.status_code == 401
     finally:
-        _close(sess_store, authz_store)
+        _close(sess_store)
 
 
 def test_cookie_credential_resolves_session(tmp_path):
-    app, sess_store, authz_store = _build_app(tmp_path)
+    app, sess_store = _build_app(tmp_path)
     try:
         sid = _seed(sess_store)
         c = TestClient(app)
@@ -109,13 +95,13 @@ def test_cookie_credential_resolves_session(tmp_path):
         assert r.status_code == 200
         assert r.json() == {"subject": "alice"}
     finally:
-        _close(sess_store, authz_store)
+        _close(sess_store)
 
 
 def test_bearer_token_no_longer_accepted(tmp_path):
     """Authorization: Bearer <sid> is no longer a valid credential mode.
     Sessions must come from the iris_session cookie."""
-    app, sess_store, authz_store = _build_app(tmp_path)
+    app, sess_store = _build_app(tmp_path)
     try:
         sid = _seed(sess_store)
         r = TestClient(app).get(
@@ -124,21 +110,21 @@ def test_bearer_token_no_longer_accepted(tmp_path):
         )
         assert r.status_code == 401
     finally:
-        _close(sess_store, authz_store)
+        _close(sess_store)
 
 
 def test_optional_session_returns_none_when_unauthenticated(tmp_path):
-    app, sess_store, authz_store = _build_app(tmp_path)
+    app, sess_store = _build_app(tmp_path)
     try:
         r = TestClient(app).get("/optional", headers={"accept": "application/json"})
         assert r.status_code == 200
         assert r.json() == {"present": False}
     finally:
-        _close(sess_store, authz_store)
+        _close(sess_store)
 
 
 def test_optional_session_returns_session_when_authenticated(tmp_path):
-    app, sess_store, authz_store = _build_app(tmp_path)
+    app, sess_store = _build_app(tmp_path)
     try:
         sid = _seed(sess_store)
         c = TestClient(app)
@@ -147,11 +133,11 @@ def test_optional_session_returns_session_when_authenticated(tmp_path):
         assert r.status_code == 200
         assert r.json() == {"present": True}
     finally:
-        _close(sess_store, authz_store)
+        _close(sess_store)
 
 
 def test_session_data_round_trip(tmp_path):
-    app, sess_store, authz_store = _build_app(tmp_path)
+    app, sess_store = _build_app(tmp_path)
     try:
         sid = _seed(sess_store)
         c = TestClient(app)
@@ -161,11 +147,11 @@ def test_session_data_round_trip(tmp_path):
         assert c.post("/data").json() == {"counter": 2}
         assert c.get("/data").json() == {"counter": 2}
     finally:
-        _close(sess_store, authz_store)
+        _close(sess_store)
 
 
 def test_session_data_isolated_between_sessions(tmp_path):
-    app, sess_store, authz_store = _build_app(tmp_path)
+    app, sess_store = _build_app(tmp_path)
     try:
         sid_a = _seed(sess_store, subject="alice")
         sid_b = _seed(sess_store, subject="bob")
@@ -179,20 +165,20 @@ def test_session_data_isolated_between_sessions(tmp_path):
         assert ca.get("/data").json() == {"counter": 2}
         assert cb.get("/data").json() == {"counter": 1}
     finally:
-        _close(sess_store, authz_store)
+        _close(sess_store)
 
 
 def test_session_data_requires_auth(tmp_path):
-    app, sess_store, authz_store = _build_app(tmp_path)
+    app, sess_store = _build_app(tmp_path)
     try:
         r = TestClient(app).get("/data", headers={"accept": "application/json"})
         assert r.status_code == 401
     finally:
-        _close(sess_store, authz_store)
+        _close(sess_store)
 
 
 def test_session_exposes_id_user_and_data(tmp_path):
-    app, sess_store, authz_store = _build_app(tmp_path)
+    app, sess_store = _build_app(tmp_path)
     try:
         sid = _seed(sess_store)
         c = TestClient(app)
@@ -205,30 +191,49 @@ def test_session_exposes_id_user_and_data(tmp_path):
         assert body["subject"] == "alice"
         assert body["data_keys"] == ["counter"]
     finally:
-        _close(sess_store, authz_store)
+        _close(sess_store)
 
 
-def test_session_roles_includes_closure(tmp_path):
-    app, sess_store, authz_store = _build_app(tmp_path)
+def test_rights_default_to_empty_when_not_set(tmp_path):
+    app, sess_store = _build_app(tmp_path)
     try:
-        sid = _seed(sess_store, subject="charlie", groups=("admins",))
+        sid = _seed(sess_store)  # no rights argument
         c = TestClient(app)
         c.cookies.set("iris_session", sid)
         r = c.get("/whoami-full", headers={"accept": "application/json"})
         assert r.status_code == 200
-        assert r.json()["roles"] == ["admin", "reader", "writer"]
+        assert r.json()["rights"] == {
+            "is_admin": False,
+            "can_create_database": False,
+            "db_admin": [],
+            "db_writer": [],
+            "db_reader": [],
+        }
     finally:
-        _close(sess_store, authz_store)
+        _close(sess_store)
 
 
-def test_session_roles_empty_for_user_without_match(tmp_path):
-    app, sess_store, authz_store = _build_app(tmp_path)
+def test_rights_round_trip_through_set_rights(tmp_path):
+    app, sess_store = _build_app(tmp_path)
     try:
-        sid = _seed(sess_store, subject="dave", groups=("strangers",))
+        rights = Rights(
+            is_admin=False,
+            can_create_database=True,
+            db_admin=frozenset({"finance"}),
+            db_writer=frozenset({"hr"}),
+            db_reader=frozenset({"clickstream"}),
+        )
+        sid = _seed(sess_store, subject="bob", rights=rights)
         c = TestClient(app)
         c.cookies.set("iris_session", sid)
         r = c.get("/whoami-full", headers={"accept": "application/json"})
         assert r.status_code == 200
-        assert r.json()["roles"] == []
+        assert r.json()["rights"] == {
+            "is_admin": False,
+            "can_create_database": True,
+            "db_admin": ["finance"],
+            "db_writer": ["hr"],
+            "db_reader": ["clickstream"],
+        }
     finally:
-        _close(sess_store, authz_store)
+        _close(sess_store)

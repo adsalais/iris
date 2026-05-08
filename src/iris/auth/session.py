@@ -1,26 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
-
-from iris.auth.identity import User
-
-
-@dataclass(frozen=True, slots=True)
-class Session:
-    """Request-scoped view of a logged-in session (legacy shape).
-
-    Replaced by :class:`AuthSession` once the CH-only authorization migration
-    completes. Until then both shapes coexist: ``Session`` is what current code
-    consumes; ``AuthSession`` is what the new alias deps will return.
-    """
-    id: str
-    user: User
-    created_at: datetime
-    expires_at: datetime
-    data: dict[str, Any]
-    roles: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,29 +28,6 @@ class Rights:
 
     def has_admin(self, database: str) -> bool:
         return self.is_admin or database in self.db_admin
-
-
-@dataclass(frozen=True, slots=True)
-class AuthSession:
-    """Request-scoped view of a logged-in session, with derived ``Rights``.
-
-    Built once per request by the auth dep. Routes receive an ``AuthSession``
-    via one of the ``Annotated`` alias deps in ``iris.auth.deps``: ``Session``
-    (require auth), ``SessionOptional`` (admit None), ``SessionRead`` /
-    ``SessionWrite`` / ``SessionDatabaseAdmin`` (database-scoped tier checks
-    via ``rights``), ``SessionDatabaseCreator`` / ``SessionAdmin``.
-
-    Frozen except for ``data``: the dict is a per-request snapshot deserialized
-    from the SQLite session store. Mutations to the dict do NOT auto-persist —
-    call ``await request.app.state.auth_session_store.update_data(session.id,
-    session.data)`` to write changes back.
-    """
-    id: str
-    user: User
-    created_at: datetime
-    expires_at: datetime
-    data: dict[str, Any]
-    rights: Rights
 
 
 def rights_to_dict(r: Rights) -> dict[str, Any]:

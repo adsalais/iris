@@ -8,9 +8,8 @@ from fastapi import APIRouter, Depends, FastAPI, Form, Request, Response
 from fastapi.responses import RedirectResponse
 
 from iris.auth.csrf import delete_csrf_cookie, verify_csrf_form
-from iris.auth.deps import require_session
+from iris.auth.deps import Session
 from iris.auth.exceptions import AuthError
-from iris.auth.session import Session
 from iris.auth.identity import User
 from iris.auth.providers.base import Provider
 from iris.auth.providers.ldap import LDAPProvider
@@ -40,10 +39,8 @@ def _safe_next(next_url: str) -> str:
     """Return next_url only if it's a same-origin relative path; else /."""
     if not next_url:
         return "/"
-    # Reject backslashes (some browsers normalize \ -> / before same-origin check)
     if "\\" in next_url:
         return "/"
-    # Reject anything that doesn't start with a single forward slash
     if not next_url.startswith("/") or next_url.startswith("//"):
         return "/"
     return next_url
@@ -66,7 +63,7 @@ def build_auth_router(
     ) -> RedirectResponse:
         session = await store.create(user)
         for hook in app.state.post_login_hooks:
-            await hook(user)
+            await hook(user, session.id)
         logger.info(
             "auth: login user=%s subject=%s method=%s groups=%s",
             user.display_name,
@@ -110,7 +107,7 @@ def build_auth_router(
                 headers={"Retry-After": str(int(wait) + 1)},
             )
         if not isinstance(provider, (LDAPProvider, MockProvider)):
-            return Response(status_code=405)  # OAuth doesn't go through POST /login
+            return Response(status_code=405)
         safe_next = _safe_next(next)
         try:
             user = await provider.authenticate(username, password)
@@ -143,7 +140,7 @@ def build_auth_router(
     @router.post("/logout")
     async def logout(
         request: Request,
-        session: Session = Depends(require_session),
+        session: Session,
         _: None = Depends(verify_csrf_form),
     ) -> Response:
         sid = request.cookies.get(cookie_name) or ""
@@ -159,11 +156,19 @@ def build_auth_router(
         return response
 
     @router.get("/api/whoami")
-    async def whoami(session: Session = Depends(require_session)) -> dict[str, Any]:
+    async def whoami(session: Session) -> dict[str, Any]:
+        r = session.rights
         return {
             "subject": session.user.subject,
             "display_name": session.user.display_name,
             "groups": list(session.user.groups),
+            "rights": {
+                "is_admin": r.is_admin,
+                "can_create_database": r.can_create_database,
+                "db_admin": sorted(r.db_admin),
+                "db_writer": sorted(r.db_writer),
+                "db_reader": sorted(r.db_reader),
+            },
         }
 
     return router
@@ -172,21 +177,13 @@ def build_auth_router(
 def install(app: FastAPI) -> None:
     """Wire the auth package into a FastAPI app: settings, store, exception handlers, router."""
     from iris.auth.config import AuthSettings
-    from iris.auth.authz.store import RoleMappingStore
     from iris.auth.deps import set_session_store, set_settings
     from iris.auth.exceptions import install_exception_handlers
     from iris.auth.providers import build_provider
 
     settings = AuthSettings.from_env()
     app.state.auth_db_path = settings.auth_db_path
-
-    authz_store = RoleMappingStore(path=settings.auth_db_path)
-    # Run bootstrap on the store's own connection. With :memory: each
-    # connection is a private DB, so seeding has to happen on the connection
-    # the store actually uses for queries.
-    authz_store.bootstrap(settings)
-    app.state.authz_store = authz_store
-    app.state.auth_close_authz_store = authz_store.close
+    app.state.auth_bootstrap_user = settings.bootstrap_user
 
     store = SessionStore(
         path=settings.auth_db_path,
@@ -219,5 +216,4 @@ def install(app: FastAPI) -> None:
     app.include_router(router)
 
     if isinstance(provider, OAuthProvider):
-        # Picked up by the lifespan handler in iris.app:_lifespan on shutdown.
         app.state.auth_close_provider = provider.close

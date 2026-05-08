@@ -1,5 +1,9 @@
 """install(app) wires the ClickHouse client into the FastAPI app and registers
-a provisioning hook on the auth post-login list."""
+a provisioning hook on the auth post-login list.
+
+The hook now does two things per login: init_user_rights (CH user/role
+provisioning) and derive_rights (cache the Rights view on the session row).
+"""
 from __future__ import annotations
 
 import asyncio
@@ -8,33 +12,38 @@ import pytest
 from fastapi import FastAPI
 
 from iris.auth.identity import User
+from iris.auth.sessions import SessionStore
 from iris.clickhouse.install import install
 from iris.clickhouse.users import GROUP_ROLE_SUFFIX, USER_ROLE_SUFFIX
 
 
-def test_install_populates_app_state(ch_settings) -> None:
+def _make_app() -> FastAPI:
+    """A fresh FastAPI with the bits install() expects from iris.auth.install:
+    a post-login hook list, the auth bootstrap username (None disables seed),
+    and a SessionStore so the post-login hook can persist rights."""
     app = FastAPI()
     app.state.post_login_hooks = []
     app.state.auth_db_path = ":memory:"
+    app.state.auth_bootstrap_user = None
+    app.state.auth_session_store = SessionStore(
+        path=":memory:", ttl_seconds=60, absolute_ttl_seconds=3600
+    )
+    return app
 
+
+def test_install_populates_app_state(ch_settings) -> None:
+    app = _make_app()
     install(app)
 
     assert app.state.clickhouse_client is not None
     assert app.state.clickhouse_settings is not None
     assert app.state.clickhouse_http_client is not None
     assert callable(app.state.clickhouse_close_http)
-    assert app.state.clickhouse_database_admins is not None
-    assert callable(app.state.clickhouse_close_database_admins)
     assert len(app.state.post_login_hooks) == 1
 
 
 def test_install_http_client_aclose_runs_clean(ch_settings) -> None:
-    """The clickhouse_close_http hook should close the httpx.AsyncClient cleanly."""
-    import asyncio
-
-    app = FastAPI()
-    app.state.post_login_hooks = []
-    app.state.auth_db_path = ":memory:"
+    app = _make_app()
     install(app)
 
     asyncio.run(app.state.clickhouse_close_http())
@@ -42,10 +51,9 @@ def test_install_http_client_aclose_runs_clean(ch_settings) -> None:
 
 
 def test_install_appends_to_existing_hooks(ch_settings) -> None:
-    app = FastAPI()
-    app.state.auth_db_path = ":memory:"
+    app = _make_app()
 
-    async def existing_hook(_user: User) -> None:
+    async def existing_hook(_user: User, _sid: str) -> None:
         pass
 
     app.state.post_login_hooks = [existing_hook]
@@ -56,21 +64,22 @@ def test_install_appends_to_existing_hooks(ch_settings) -> None:
 
 
 def test_install_creates_post_login_hooks_list_if_missing(ch_settings) -> None:
-    """install() doesn't require iris.auth.install to have run first; it creates
-    the hook list if absent. (Production wiring still calls auth first, but
-    install() is robust to call order.)"""
+    """install() is robust to call order — it creates the hook list if absent."""
     app = FastAPI()
     app.state.auth_db_path = ":memory:"
+    app.state.auth_bootstrap_user = None
+    app.state.auth_session_store = SessionStore(
+        path=":memory:", ttl_seconds=60, absolute_ttl_seconds=3600
+    )
     install(app)
     assert isinstance(app.state.post_login_hooks, list)
     assert len(app.state.post_login_hooks) == 1
 
 
-def test_install_hook_calls_init_user_rights(ch_settings, prefix) -> None:
-    """The provisioning hook actually creates the user/role/grants in CH."""
-    app = FastAPI()
-    app.state.post_login_hooks = []
-    app.state.auth_db_path = ":memory:"
+def test_install_hook_provisions_user_and_persists_rights(ch_settings, prefix) -> None:
+    """The provisioning hook creates the user/role/grants in CH and writes a
+    Rights row to the session store."""
+    app = _make_app()
     install(app)
 
     user = User(
@@ -80,8 +89,11 @@ def test_install_hook_calls_init_user_rights(ch_settings, prefix) -> None:
         groups=(f"{prefix}_admins",),
     )
 
+    # Pre-create a session row so the hook can update it.
+    sess = asyncio.run(app.state.auth_session_store.create(user))
+
     hook = app.state.post_login_hooks[0]
-    asyncio.run(hook(user))
+    asyncio.run(hook(user, sess.id))
 
     client = app.state.clickhouse_client
     rows = list(
@@ -102,11 +114,19 @@ def test_install_hook_calls_init_user_rights(ch_settings, prefix) -> None:
     assert f"{user.username}{USER_ROLE_SUFFIX}" in role_names
     assert f"{prefix}_admins{GROUP_ROLE_SUFFIX}" in role_names
 
+    refreshed = asyncio.run(app.state.auth_session_store.get_and_refresh(sess.id))
+    assert refreshed is not None
+    # No tier-role grants made for this user → empty tiers, but the rights
+    # field is now populated (not None).
+    assert refreshed.rights.db_admin == frozenset()
+    assert refreshed.rights.db_writer == frozenset()
+    assert refreshed.rights.db_reader == frozenset()
+
 
 def test_install_fails_loud_when_ensure_service_admin_fails(monkeypatch) -> None:
     """If CH is unreachable, install() raises and build_app refuses to boot."""
     monkeypatch.setenv("CLICKHOUSE_HOST", "127.0.0.1")
-    monkeypatch.setenv("CLICKHOUSE_PORT", "1")  # closed port
+    monkeypatch.setenv("CLICKHOUSE_PORT", "1")
     monkeypatch.setenv("CLICKHOUSE_USER", "iris_svc")
     monkeypatch.setenv("CLICKHOUSE_PASSWORD", "x")
     monkeypatch.setenv("CLICKHOUSE_SECURE", "false")
@@ -115,7 +135,6 @@ def test_install_fails_loud_when_ensure_service_admin_fails(monkeypatch) -> None
     monkeypatch.setenv("CLICKHOUSE_SERVICE_ADMIN_ROLE", "service_admin_role")
     monkeypatch.delenv("CLICKHOUSE_CA_CERT_PATH", raising=False)
 
-    app = FastAPI()
-    app.state.post_login_hooks = []
+    app = _make_app()
     with pytest.raises(Exception):
         install(app)
