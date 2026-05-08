@@ -375,3 +375,45 @@ def test_user_from_claims_falls_back_to_sub_when_preferred_username_absent(provi
     """When preferred_username is absent, User.username falls back to the sub value."""
     user = provider._user_from_claims({"sub": "abc-123", "groups": ["users"]})
     assert user.username == "abc-123"
+
+
+def test_callback_error_clears_state_cookie(provider):
+    """A failed callback (bad state cookie / mismatched state / missing code)
+    must delete OAUTH_STATE_COOKIE so a stale signed cookie can't replay."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from iris.auth.exceptions import install_exception_handlers
+    from iris.auth.providers.oauth import OAUTH_STATE_COOKIE
+    from iris.auth.routes import build_auth_router
+    from iris.auth.sessions import SessionStore
+    from iris.templates import TEMPLATES
+
+    app = FastAPI()
+    app.state.shutdown_hooks = []
+    app.state.auth_cookie_secure = False
+    app.state.auth_cookie_name = "iris_session"
+    app.state.post_login_hooks = []
+    app.state.templates = TEMPLATES
+    store = SessionStore(
+        path=":memory:", ttl_seconds=3600, absolute_ttl_seconds=86400, max_per_user=10
+    )
+    app.state.auth_session_store = store
+    router = build_auth_router(
+        app=app, provider=provider, store=store,
+        cookie_name="iris_session", cookie_secure=False, ttl_seconds=3600,
+    )
+    app.include_router(router)
+    install_exception_handlers(app, cookie_name="iris_session")
+
+    client = TestClient(app)
+    # No state cookie set -> AuthError("oauth_state") -> redirect to /login?error=...
+    r = client.get("/login/callback", follow_redirects=False)
+    assert r.status_code == 302
+    set_cookie = r.headers.get("set-cookie", "")
+    assert OAUTH_STATE_COOKIE in set_cookie, (
+        f"expected Set-Cookie clearing {OAUTH_STATE_COOKIE}; got: {set_cookie!r}"
+    )
+    # delete_cookie sets Max-Age=0 (or expires in the past); confirm it's a clear, not a set.
+    lower = set_cookie.lower()
+    assert ("max-age=0" in lower) or ("expires=" in lower)

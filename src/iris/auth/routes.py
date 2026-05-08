@@ -131,7 +131,9 @@ def build_auth_router(
         try:
             user, next_url = await provider.complete(request)
         except AuthError as err:
-            return RedirectResponse(f"/login?error={err.token}", status_code=302)
+            response = RedirectResponse(f"/login?error={err.token}", status_code=302)
+            response.delete_cookie(OAUTH_STATE_COOKIE)
+            return response
         safe_next = _safe_next(next_url)
         response = await _finalize_login_redirect(user=user, target=safe_next, method="oauth")
         response.delete_cookie(OAUTH_STATE_COOKIE)
