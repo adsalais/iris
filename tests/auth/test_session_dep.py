@@ -237,3 +237,165 @@ def test_rights_round_trip_through_set_rights(tmp_path):
         }
     finally:
         _close(sess_store)
+
+
+# ---- Session-subclass type assertions ----
+# Verify each alias dep returns the correct Session subclass. These tests
+# duplicate a small slice of the admission logic but their value is in the
+# isinstance check / class-name assertion: route authors rely on the type
+# system showing only methods available for the tier.
+
+from iris.auth.deps import (
+    SessionAdmin,
+    SessionDatabaseAdmin,
+    SessionDatabaseCreator,
+    SessionRead,
+    SessionWrite,
+)
+from iris.auth.identity import (
+    AdminSession,
+    DatabaseAdminSession,
+    DatabaseCreatorSession,
+    DatabaseSession,
+)
+
+
+def test_session_admin_alias_returns_admin_session(tmp_path):
+    app, sess_store = _build_app(tmp_path)
+    try:
+        sid = _seed(
+            sess_store,
+            rights=Rights(
+                is_admin=True,
+                can_create_database=False,
+                db_admin=frozenset(),
+                db_writer=frozenset(),
+                db_reader=frozenset(),
+            ),
+        )
+
+        @app.get("/_admin_type")
+        async def probe(session: SessionAdmin):
+            return {"type": type(session).__name__}
+
+        c = TestClient(app)
+        c.cookies.set("iris_session", sid)
+        r = c.get("/_admin_type", headers={"accept": "application/json"})
+        assert r.status_code == 200
+        assert r.json()["type"] == AdminSession.__name__
+    finally:
+        _close(sess_store)
+
+
+def test_session_database_admin_returns_database_admin_session(tmp_path):
+    app, sess_store = _build_app(tmp_path)
+    try:
+        sid = _seed(
+            sess_store,
+            rights=Rights(
+                is_admin=False,
+                can_create_database=False,
+                db_admin=frozenset({"finance"}),
+                db_writer=frozenset(),
+                db_reader=frozenset(),
+            ),
+        )
+
+        @app.get("/_db_admin/{database}")
+        async def probe(database: str, session: SessionDatabaseAdmin):
+            return {"type": type(session).__name__, "database": session.database}
+
+        c = TestClient(app)
+        c.cookies.set("iris_session", sid)
+        r = c.get("/_db_admin/finance", headers={"accept": "application/json"})
+        assert r.status_code == 200
+        assert r.json() == {
+            "type": DatabaseAdminSession.__name__,
+            "database": "finance",
+        }
+    finally:
+        _close(sess_store)
+
+
+def test_session_read_returns_database_session(tmp_path):
+    app, sess_store = _build_app(tmp_path)
+    try:
+        sid = _seed(
+            sess_store,
+            rights=Rights(
+                is_admin=False,
+                can_create_database=False,
+                db_admin=frozenset(),
+                db_writer=frozenset(),
+                db_reader=frozenset({"hr"}),
+            ),
+        )
+
+        @app.get("/_read/{database}")
+        async def probe(database: str, session: SessionRead):
+            return {"type": type(session).__name__, "database": session.database}
+
+        c = TestClient(app)
+        c.cookies.set("iris_session", sid)
+        r = c.get("/_read/hr", headers={"accept": "application/json"})
+        assert r.status_code == 200
+        assert r.json() == {
+            "type": DatabaseSession.__name__,
+            "database": "hr",
+        }
+    finally:
+        _close(sess_store)
+
+
+def test_session_write_returns_database_session(tmp_path):
+    app, sess_store = _build_app(tmp_path)
+    try:
+        sid = _seed(
+            sess_store,
+            rights=Rights(
+                is_admin=False,
+                can_create_database=False,
+                db_admin=frozenset(),
+                db_writer=frozenset({"orders"}),
+                db_reader=frozenset(),
+            ),
+        )
+
+        @app.get("/_write/{database}")
+        async def probe(database: str, session: SessionWrite):
+            return {"type": type(session).__name__, "database": session.database}
+
+        c = TestClient(app)
+        c.cookies.set("iris_session", sid)
+        r = c.get("/_write/orders", headers={"accept": "application/json"})
+        assert r.status_code == 200
+        assert r.json()["type"] == DatabaseSession.__name__
+    finally:
+        _close(sess_store)
+
+
+def test_session_database_creator_returns_creator_session(tmp_path):
+    app, sess_store = _build_app(tmp_path)
+    try:
+        sid = _seed(
+            sess_store,
+            rights=Rights(
+                is_admin=False,
+                can_create_database=True,
+                db_admin=frozenset(),
+                db_writer=frozenset(),
+                db_reader=frozenset(),
+            ),
+        )
+
+        @app.get("/_creator")
+        async def probe(session: SessionDatabaseCreator):
+            return {"type": type(session).__name__}
+
+        c = TestClient(app)
+        c.cookies.set("iris_session", sid)
+        r = c.get("/_creator", headers={"accept": "application/json"})
+        assert r.status_code == 200
+        assert r.json()["type"] == DatabaseCreatorSession.__name__
+    finally:
+        _close(sess_store)

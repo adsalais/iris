@@ -96,10 +96,6 @@ def test_public_surface_exports_named_symbols():
     import iris.clickhouse as ch
 
     expected = {
-        "ClickHouseAdminHandle",
-        "ClickHouseDatabaseAdminHandle",
-        "ClickHouseDatabaseCreatorHandle",
-        "ClickHouseHandle",
         "ClickHouseSettings",
         "TIER_DBADMIN",
         "TIER_DBREADER",
@@ -110,16 +106,12 @@ def test_public_surface_exports_named_symbols():
         "derive_rights",
         "drop_tier_roles",
         "ensure_service_admin",
-        "get_clickhouse_handle",
         "grant_insert_update_to_table",
         "grant_select_to_database",
         "grant_tier_to_group",
         "grant_tier_to_user",
         "init_user_rights",
         "install",
-        "require_clickhouse_admin",
-        "require_clickhouse_database_admin",
-        "require_clickhouse_database_creator",
         "revoke_row_policy",
         "revoke_tier_from_group",
         "revoke_tier_from_user",

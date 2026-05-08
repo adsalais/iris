@@ -1,31 +1,52 @@
-"""Tests for ClickHouseDatabaseAdminHandle: tier grants/revokes plus
-delete_database. Uses an httpx.AsyncClient transport-mocked since these
-tests don't exercise query_as_user — only the admin operations that go
-through clickhouse-connect."""
+"""Tests for DatabaseAdminSession: tier grants/revokes plus delete_database."""
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
-from iris.clickhouse.handle import (
-    ClickHouseDatabaseAdminHandle,
-    ClickHouseDatabaseCreatorHandle,
-)
+from iris.auth.identity import DatabaseAdminSession, DatabaseCreatorSession, User
+from iris.auth.session import EMPTY_RIGHTS
 from iris.clickhouse.rights import derive_rights
 
 
-def _admin_handle(ch_client, ch_settings, *, database: str, username: str):
-    """A real-CH handle. The httpx client is a stub since none of the methods
-    under test go through query_as_user."""
+def _admin_session(
+    ch_client, ch_settings, *, database: str, username: str
+) -> DatabaseAdminSession:
+    now = datetime.now(UTC)
+    u = User(subject=f"mock:{username}", username=username, display_name=username, groups=())
     http_client = httpx.AsyncClient(
         base_url="http://stub",
         transport=httpx.MockTransport(lambda _r: httpx.Response(200, content=b"")),
     )
-    return ClickHouseDatabaseAdminHandle(
+    return DatabaseAdminSession(
+        id="sid",
+        user=u,
+        created_at=now,
+        expires_at=now + timedelta(hours=1),
+        data={},
+        rights=EMPTY_RIGHTS,
         client=ch_client,
         http_client=http_client,
         settings=ch_settings,
         database=database,
-        username=username,
+    )
+
+
+def _creator_session(
+    ch_client, ch_settings, *, username: str
+) -> DatabaseCreatorSession:
+    now = datetime.now(UTC)
+    u = User(subject=f"mock:{username}", username=username, display_name=username, groups=())
+    return DatabaseCreatorSession(
+        id="sid",
+        user=u,
+        created_at=now,
+        expires_at=now + timedelta(hours=1),
+        data={},
+        rights=EMPTY_RIGHTS,
+        client=ch_client,
+        http_client=None,
+        settings=ch_settings,
     )
 
 
@@ -33,21 +54,20 @@ def test_grant_reader_writer_admin_propagate_to_rights(ch_client, ch_settings, p
     creator = f"{prefix}_creator"
     target = f"{prefix}_target"
     db = f"{prefix}_admin_grants"
-    creator_h = ClickHouseDatabaseCreatorHandle(
-        client=ch_client, settings=ch_settings, username=creator
+    asyncio.run(
+        _creator_session(ch_client, ch_settings, username=creator).create_database(db)
     )
-    asyncio.run(creator_h.create_database(db))
-    admin_h = _admin_handle(ch_client, ch_settings, database=db, username=creator)
+    admin = _admin_session(ch_client, ch_settings, database=db, username=creator)
 
-    asyncio.run(admin_h.grant_reader(target))
+    asyncio.run(admin.grant_reader(target))
     r = derive_rights(ch_client, username=target, groups=[])
     assert db in r.db_reader
 
-    asyncio.run(admin_h.grant_writer(target))
+    asyncio.run(admin.grant_writer(target))
     r = derive_rights(ch_client, username=target, groups=[])
     assert db in r.db_writer
 
-    asyncio.run(admin_h.add_admin_user(target))
+    asyncio.run(admin.add_admin_user(target))
     r = derive_rights(ch_client, username=target, groups=[])
     assert db in r.db_admin
 
@@ -56,13 +76,12 @@ def test_revoke_clears_label(ch_client, ch_settings, prefix):
     creator = f"{prefix}_c"
     target = f"{prefix}_t"
     db = f"{prefix}_revoke_admin"
-    creator_h = ClickHouseDatabaseCreatorHandle(
-        client=ch_client, settings=ch_settings, username=creator
+    asyncio.run(
+        _creator_session(ch_client, ch_settings, username=creator).create_database(db)
     )
-    asyncio.run(creator_h.create_database(db))
-    admin_h = _admin_handle(ch_client, ch_settings, database=db, username=creator)
-    asyncio.run(admin_h.grant_reader(target))
-    asyncio.run(admin_h.revoke_reader(target))
+    admin = _admin_session(ch_client, ch_settings, database=db, username=creator)
+    asyncio.run(admin.grant_reader(target))
+    asyncio.run(admin.revoke_reader(target))
     r = derive_rights(ch_client, username=target, groups=[])
     assert db not in r.db_reader
 
@@ -70,12 +89,11 @@ def test_revoke_clears_label(ch_client, ch_settings, prefix):
 def test_delete_database_drops_tier_roles_and_db(ch_client, ch_settings, prefix):
     creator = f"{prefix}_c"
     db = f"{prefix}_to_drop"
-    creator_h = ClickHouseDatabaseCreatorHandle(
-        client=ch_client, settings=ch_settings, username=creator
+    asyncio.run(
+        _creator_session(ch_client, ch_settings, username=creator).create_database(db)
     )
-    asyncio.run(creator_h.create_database(db))
-    admin_h = _admin_handle(ch_client, ch_settings, database=db, username=creator)
-    asyncio.run(admin_h.delete_database())
+    admin = _admin_session(ch_client, ch_settings, database=db, username=creator)
+    asyncio.run(admin.delete_database())
 
     db_rows = ch_client.query(
         "SELECT count() FROM system.databases WHERE name = {n:String}",
@@ -93,11 +111,9 @@ def test_delete_database_drops_tier_roles_and_db(ch_client, ch_settings, prefix)
 def test_list_admin_members_returns_creator(ch_client, ch_settings, prefix):
     creator = f"{prefix}_c"
     db = f"{prefix}_members"
-    creator_h = ClickHouseDatabaseCreatorHandle(
-        client=ch_client, settings=ch_settings, username=creator
+    asyncio.run(
+        _creator_session(ch_client, ch_settings, username=creator).create_database(db)
     )
-    asyncio.run(creator_h.create_database(db))
-    admin_h = _admin_handle(ch_client, ch_settings, database=db, username=creator)
-    members = asyncio.run(admin_h.list_admin_members())
-    # Creator's _USER role should appear as a DBADMIN member.
+    admin = _admin_session(ch_client, ch_settings, database=db, username=creator)
+    members = asyncio.run(admin.list_admin_members())
     assert f"{creator}_USER" in members
