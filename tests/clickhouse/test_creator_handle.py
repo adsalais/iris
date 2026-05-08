@@ -24,6 +24,7 @@ def _session_for(user: str, *, ch_client, ch_settings) -> DatabaseCreatorSession
         client=ch_client,
         http_client=None,
         settings=ch_settings,
+        store=None,
     )
 
 

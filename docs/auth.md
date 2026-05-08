@@ -86,15 +86,12 @@ Each session carries a mutable `data: dict[str, Any]` field for arbitrary
 route-managed state (drafts, wizard steps, recently-viewed lists, etc.).
 
 ```python
-from fastapi import Request
 from iris.auth import Session
 
 @app.post("/draft")
-async def save_draft(request: Request, session: Session, body: dict):
+async def save_draft(session: Session, body: dict):
     session.data["draft"] = body
-    await request.app.state.auth_session_store.update_data(
-        session.id, session.data
-    )
+    await session.persist_data()
     return {"ok": True}
 
 @app.get("/draft")
@@ -106,9 +103,9 @@ Key semantics:
 
 - `session.data` is a **per-request snapshot** — a fresh `dict` deserialized from
   the SQLite row on every request. Mutations do **not** auto-persist.
-- Routes that want the change to survive must call
-  `await request.app.state.auth_session_store.update_data(session.id, session.data)`
-  before returning.
+- Routes that want the change to survive call `await session.persist_data()`
+  before returning. The method is a thin wrapper that writes the current
+  `session.data` back to the session store.
 - Values must be JSON-encodable (`str`, `int`, `float`, `bool`, `None`, `list`,
   `dict`) — anything else raises `TypeError` at write time.
 - Read-modify-write across an `await` between two concurrent requests for the same

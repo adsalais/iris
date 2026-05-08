@@ -84,6 +84,7 @@ def _to_auth_session(stored: UserSession, request: Request) -> AuthSession:
         client=client,
         http_client=http_client,
         settings=settings,
+        store=_get_store(request),
     )
 
 
@@ -119,6 +120,7 @@ async def _require_admin(session: _RequiredAuth) -> AdminSession:
         client=session.client,
         http_client=session.http_client,
         settings=session.settings,
+        store=session.store,
     )
 
 
@@ -138,6 +140,7 @@ async def _require_database_creator(
         client=session.client,
         http_client=session.http_client,
         settings=session.settings,
+        store=session.store,
     )
 
 
@@ -156,6 +159,7 @@ async def _require_database_admin(
         client=session.client,
         http_client=session.http_client,
         settings=session.settings,
+        store=session.store,
         database=database,
     )
 
@@ -175,6 +179,7 @@ async def _require_write(
         client=session.client,
         http_client=session.http_client,
         settings=session.settings,
+        store=session.store,
         database=database,
     )
 
@@ -194,6 +199,7 @@ async def _require_read(
         client=session.client,
         http_client=session.http_client,
         settings=session.settings,
+        store=session.store,
         database=database,
     )
 

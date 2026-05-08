@@ -78,14 +78,14 @@ class AuthSession:
 
     Frozen except for ``data``: the dict is a per-request snapshot deserialized
     from the SQLite session store. Mutations to the dict do NOT auto-persist —
-    call ``await request.app.state.auth_session_store.update_data(session.id,
-    session.data)`` to write changes back.
+    call ``await session.persist_data()`` to write the current ``data`` dict
+    back to the store before returning.
 
-    The ``client`` / ``http_client`` / ``settings`` fields are CH references
-    injected by the dep resolver. They are not part of the persistent identity
-    (``compare=False``, ``repr=False``) so two sessions with identical
-    ``id``/``user``/``rights``/etc. compare equal regardless of which CH
-    connections happen to be wired in.
+    The ``client`` / ``http_client`` / ``settings`` / ``store`` fields are
+    references injected by the dep resolver. They are not part of the
+    persistent identity (``compare=False``, ``repr=False``) so two sessions
+    with identical ``id``/``user``/``rights``/etc. compare equal regardless
+    of which connections happen to be wired in.
     """
     id: str
     user: User
@@ -96,6 +96,16 @@ class AuthSession:
     client: Any = field(repr=False, compare=False)
     http_client: Any = field(repr=False, compare=False)
     settings: Any = field(repr=False, compare=False)
+    store: Any = field(repr=False, compare=False)
+
+    async def persist_data(self) -> None:
+        """Write the current ``data`` dict back to the session store.
+
+        Routes that mutate ``session.data`` and want the change to survive the
+        request call this before returning. Values must be JSON-encodable;
+        anything else raises ``TypeError`` at write time.
+        """
+        await self.store.update_data(self.id, self.data)
 
     async def query_as_user(
         self,

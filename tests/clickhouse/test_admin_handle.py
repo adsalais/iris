@@ -28,6 +28,7 @@ def _admin_session(
         client=ch_client,
         http_client=http_client,
         settings=ch_settings,
+        store=None,
         database=database,
     )
 
@@ -47,6 +48,7 @@ def _creator_session(
         client=ch_client,
         http_client=None,
         settings=ch_settings,
+        store=None,
     )
 
 

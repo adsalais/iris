@@ -31,7 +31,7 @@ def test_creator_grants_writer_promotes_target(ch_client, ch_settings, prefix):
     creator_s = DatabaseCreatorSession(
         id="sid", user=_user(creator), created_at=now,
         expires_at=now + timedelta(hours=1), data={}, rights=EMPTY_RIGHTS,
-        client=ch_client, http_client=None, settings=ch_settings,
+        client=ch_client, http_client=None, settings=ch_settings, store=None,
     )
     asyncio.run(creator_s.create_database(db))
 
@@ -43,7 +43,7 @@ def test_creator_grants_writer_promotes_target(ch_client, ch_settings, prefix):
         id="sid", user=_user(creator), created_at=now,
         expires_at=now + timedelta(hours=1), data={}, rights=EMPTY_RIGHTS,
         client=ch_client, http_client=_stub_http(), settings=ch_settings,
-        database=db,
+        store=None, database=db,
     )
     asyncio.run(admin_s.grant_writer(bob))
 
@@ -63,7 +63,7 @@ def test_creator_is_immediately_db_admin(ch_client, ch_settings, prefix):
     creator_s = DatabaseCreatorSession(
         id="sid", user=_user(creator), created_at=now,
         expires_at=now + timedelta(hours=1), data={}, rights=EMPTY_RIGHTS,
-        client=ch_client, http_client=None, settings=ch_settings,
+        client=ch_client, http_client=None, settings=ch_settings, store=None,
     )
     asyncio.run(creator_s.create_database(db))
     init_user_rights(ch_client, username=creator, groups=[], settings=ch_settings)

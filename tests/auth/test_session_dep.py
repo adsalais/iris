@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from iris.auth.deps import (
@@ -65,11 +65,9 @@ def _build_app(tmp_path: Path) -> tuple[FastAPI, SessionStore]:
         return {"counter": session.data.get("counter", 0)}
 
     @app.post("/data")
-    async def bump_data(request: Request, session: Session):
+    async def bump_data(session: Session):
         session.data["counter"] = session.data.get("counter", 0) + 1
-        await request.app.state.auth_session_store.update_data(
-            session.id, session.data
-        )
+        await session.persist_data()
         return {"counter": session.data["counter"]}
 
     return app, sess_store
@@ -399,5 +397,66 @@ def test_session_database_creator_returns_creator_session(tmp_path):
         r = c.get("/_creator", headers={"accept": "application/json"})
         assert r.status_code == 200
         assert r.json()["type"] == DatabaseCreatorSession.__name__
+    finally:
+        _close(sess_store)
+
+
+# ---- session.persist_data() ----
+
+
+def test_persist_data_writes_through_to_session_store(tmp_path):
+    """`session.persist_data()` writes the current `data` dict back so a
+    subsequent request sees the change."""
+    app, sess_store = _build_app(tmp_path)
+    try:
+        sid = _seed(sess_store)
+        c = TestClient(app)
+        c.cookies.set("iris_session", sid)
+        # First POST mutates data and calls persist_data() inside the route.
+        assert c.post("/data").json() == {"counter": 1}
+        # A separate request reads back the persisted value.
+        assert c.get("/data").json() == {"counter": 1}
+    finally:
+        _close(sess_store)
+
+
+def test_persist_data_rejects_non_json_encodable_values(tmp_path):
+    """`persist_data` is a thin wrapper around `SessionStore.update_data`,
+    which serializes via `json.dumps`. Non-encodable values raise."""
+    app, sess_store = _build_app(tmp_path)
+    try:
+        sid = _seed(sess_store)
+
+        @app.post("/_bad")
+        async def write_bad(session: Session):
+            session.data["bad"] = object()  # not JSON-encodable
+            await session.persist_data()
+            return {"ok": True}
+
+        c = TestClient(app, raise_server_exceptions=False)
+        c.cookies.set("iris_session", sid)
+        r = c.post("/_bad")
+        assert r.status_code == 500  # TypeError from json.dumps
+    finally:
+        _close(sess_store)
+
+
+def test_persist_data_idempotent_when_no_changes(tmp_path):
+    """Calling `persist_data()` without mutating `data` is harmless — writes
+    the same dict back."""
+    app, sess_store = _build_app(tmp_path)
+    try:
+        sid = _seed(sess_store)
+
+        @app.post("/_noop")
+        async def noop(session: Session):
+            await session.persist_data()
+            return {"ok": True}
+
+        c = TestClient(app)
+        c.cookies.set("iris_session", sid)
+        assert c.post("/_noop").status_code == 200
+        # Reading back finds no data (we never wrote anything).
+        assert c.get("/data").json() == {"counter": 0}
     finally:
         _close(sess_store)
