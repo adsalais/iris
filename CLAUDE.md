@@ -40,6 +40,7 @@ Conventions for new tests:
 - Import the package as `from iris.app import build_app` (or `from iris import …`). FastAPI's `TestClient(app)` is the standard fixture; use `from fastapi.testclient import TestClient`.
 
 ## Conventions
+ALWAYS use  2. *Inline Execution*  Execute tasks in this session using executing-plans, batch execution with checkpoints instead of  1. Subagent-Driven  dispatch a fresh subagent per task, review between tasks, fast iteration
 
 Patterns an agent must follow that aren't obvious from reading code:
 
