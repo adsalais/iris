@@ -184,3 +184,135 @@ def test_revoke_row_policy_is_idempotent(ch_client, ch_settings, prefix):
     )
     revoke_row_policy(ch_client, database=db, table=table, role=role, value="EU")
     revoke_row_policy(ch_client, database=db, table=table, role=role, value="EU")
+
+
+def _import_helpers():
+    from iris.clickhouse.policies import (
+        _build_policy_filter,
+        _column_type,
+    )
+
+    return _build_policy_filter, _column_type
+
+
+# ---- _build_policy_filter (pure Python; no CH) ---------------------------
+
+
+def test_build_policy_filter_scalar_string_uses_equals():
+    build, _ = _import_helpers()
+    assert build("`region`", "String", "EU") == "`region` = 'EU'"
+
+
+def test_build_policy_filter_array_of_string_uses_has():
+    build, _ = _import_helpers()
+    assert build("`tags`", "Array(String)", "EU") == "has(`tags`, 'EU')"
+
+
+def test_build_policy_filter_array_of_nullable_string_uses_has():
+    build, _ = _import_helpers()
+    assert (
+        build("`tags`", "Array(Nullable(String))", "EU") == "has(`tags`, 'EU')"
+    )
+
+
+def test_build_policy_filter_array_of_fixed_string_uses_has():
+    build, _ = _import_helpers()
+    assert (
+        build("`tags`", "Array(FixedString(8))", "eu      ")
+        == "has(`tags`, 'eu      ')"
+    )
+
+
+def test_build_policy_filter_array_of_nullable_fixed_string_uses_has():
+    build, _ = _import_helpers()
+    assert (
+        build("`tags`", "Array(Nullable(FixedString(8)))", "eu      ")
+        == "has(`tags`, 'eu      ')"
+    )
+
+
+def test_build_policy_filter_array_of_int_raises():
+    build, _ = _import_helpers()
+    with pytest.raises(TypeError, match=r"Array\(Int32\)"):
+        build("`nums`", "Array(Int32)", "5")
+
+
+def test_build_policy_filter_array_of_datetime_raises():
+    build, _ = _import_helpers()
+    with pytest.raises(TypeError, match=r"Array\(DateTime\)"):
+        build("`dts`", "Array(DateTime)", "2026-05-09 12:00:00")
+
+
+def test_build_policy_filter_quotes_value_with_apostrophe():
+    """quote_string uses SQL-standard double-single-quote escaping; verify
+    the propagation works through both = and has(...) branches."""
+    build, _ = _import_helpers()
+    assert build("`region`", "String", "O'Brien") == "`region` = 'O''Brien'"
+    assert (
+        build("`tags`", "Array(String)", "O'Brien")
+        == "has(`tags`, 'O''Brien')"
+    )
+
+
+# ---- _column_type (uses CH testcontainer) --------------------------------
+
+
+def test_column_type_returns_string_for_string_column(
+    ch_client, ch_settings, prefix
+):
+    _, column_type = _import_helpers()
+    db = f"{prefix}_ct1"
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    ch_client.command(
+        f"CREATE TABLE `{db}`.`t` (id UInt64, region String) ENGINE = MergeTree ORDER BY id"
+    )
+    assert column_type(ch_client, database=db, table="t", column="region") == "String"
+
+
+def test_column_type_returns_array_string_for_array_column(
+    ch_client, ch_settings, prefix
+):
+    _, column_type = _import_helpers()
+    db = f"{prefix}_ct2"
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    ch_client.command(
+        f"CREATE TABLE `{db}`.`t` (id UInt64, tags Array(String)) ENGINE = MergeTree ORDER BY id"
+    )
+    assert (
+        column_type(ch_client, database=db, table="t", column="tags")
+        == "Array(String)"
+    )
+
+
+def test_column_type_returns_nullable_array_for_nullable_array_column(
+    ch_client, ch_settings, prefix
+):
+    _, column_type = _import_helpers()
+    db = f"{prefix}_ct3"
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    ch_client.command(
+        f"CREATE TABLE `{db}`.`t` (id UInt64, tags Array(Nullable(String))) ENGINE = MergeTree ORDER BY id"
+    )
+    assert (
+        column_type(ch_client, database=db, table="t", column="tags")
+        == "Array(Nullable(String))"
+    )
+
+
+def test_column_type_raises_for_unknown_column(ch_client, ch_settings, prefix):
+    _, column_type = _import_helpers()
+    db = f"{prefix}_ct4"
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    ch_client.command(
+        f"CREATE TABLE `{db}`.`t` (id UInt64) ENGINE = MergeTree ORDER BY id"
+    )
+    with pytest.raises(ValueError, match="does not exist"):
+        column_type(ch_client, database=db, table="t", column="missing")
+
+
+def test_column_type_raises_for_unknown_table(ch_client, ch_settings, prefix):
+    _, column_type = _import_helpers()
+    db = f"{prefix}_ct5"
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    with pytest.raises(ValueError, match="does not exist"):
+        column_type(ch_client, database=db, table="ghost", column="anything")
