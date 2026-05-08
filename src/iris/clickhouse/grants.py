@@ -63,8 +63,11 @@ def _ensure_role(client: Client, role: str) -> None:
 def grant_tier_to_user(
     client: Client, *, database: str, tier: str, username: str
 ) -> None:
-    """``GRANT <database>_<tier> TO <username>_USER``. Pre-creates the user
-    role if it does not yet exist. Idempotent."""
+    """``GRANT <database>_<tier> TO <username>_USER``.
+
+    Pre-creates the user role if it does not yet exist (closes a username
+    enumeration channel via differential CH errors).
+    """
     user_role = f"{username}{USER_ROLE_SUFFIX}"
     _ensure_role(client, user_role)
     user_role_q = quote_identifier(user_role, kind="role")
@@ -75,8 +78,10 @@ def grant_tier_to_user(
 def grant_tier_to_group(
     client: Client, *, database: str, tier: str, group: str
 ) -> None:
-    """``GRANT <database>_<tier> TO <group>_GRP``. Pre-creates the group role
-    if it does not yet exist. Idempotent."""
+    """``GRANT <database>_<tier> TO <group>_GRP``.
+
+    Pre-creates the group role if it does not yet exist.
+    """
     group_role = f"{group}{GROUP_ROLE_SUFFIX}"
     _ensure_role(client, group_role)
     group_role_q = quote_identifier(group_role, kind="role")
@@ -87,8 +92,7 @@ def grant_tier_to_group(
 def revoke_tier_from_user(
     client: Client, *, database: str, tier: str, username: str
 ) -> None:
-    """``REVOKE <database>_<tier> FROM <username>_USER``. Idempotent — CH
-    no-ops when the grant does not exist."""
+    """``REVOKE <database>_<tier> FROM <username>_USER``."""
     user_role = f"{username}{USER_ROLE_SUFFIX}"
     _ensure_role(client, user_role)
     user_role_q = quote_identifier(user_role, kind="role")
@@ -99,7 +103,7 @@ def revoke_tier_from_user(
 def revoke_tier_from_group(
     client: Client, *, database: str, tier: str, group: str
 ) -> None:
-    """``REVOKE <database>_<tier> FROM <group>_GRP``. Idempotent."""
+    """``REVOKE <database>_<tier> FROM <group>_GRP``."""
     group_role = f"{group}{GROUP_ROLE_SUFFIX}"
     _ensure_role(client, group_role)
     group_role_q = quote_identifier(group_role, kind="role")
@@ -108,14 +112,14 @@ def revoke_tier_from_group(
 
 
 def grant_select_to_database(client: Client, *, database: str, role: str) -> None:
-    """``GRANT SELECT ON <database>.* TO <role>``. Idempotent (CH no-ops on re-grant)."""
+    """``GRANT SELECT ON <database>.* TO <role>``."""
     db_q = quote_identifier(database, kind="database")
     role_q = quote_identifier(role, kind="role")
     client.command(f"GRANT SELECT ON {db_q}.* TO {role_q}")
 
 
 def revoke_select_from_database(client: Client, *, database: str, role: str) -> None:
-    """``REVOKE SELECT ON <database>.* FROM <role>``. Idempotent (CH no-ops if no grant)."""
+    """``REVOKE SELECT ON <database>.* FROM <role>``."""
     db_q = quote_identifier(database, kind="database")
     role_q = quote_identifier(role, kind="role")
     client.command(f"REVOKE SELECT ON {db_q}.* FROM {role_q}")
@@ -124,8 +128,7 @@ def revoke_select_from_database(client: Client, *, database: str, role: str) -> 
 def grant_insert_update_to_table(
     client: Client, *, database: str, table: str, role: str
 ) -> None:
-    """``GRANT INSERT`` and ``GRANT ALTER UPDATE`` on ``<database>.<table>`` to ``<role>``.
-    Both grants are idempotent."""
+    """``GRANT INSERT`` and ``GRANT ALTER UPDATE`` on ``<database>.<table>`` to ``<role>``."""
     db_q = quote_identifier(database, kind="database")
     table_q = quote_identifier(table, kind="table")
     role_q = quote_identifier(role, kind="role")
