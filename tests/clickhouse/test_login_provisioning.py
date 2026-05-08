@@ -118,8 +118,6 @@ def test_build_app_fails_loud_when_clickhouse_unreachable(monkeypatch) -> None:
     monkeypatch.setenv("CLICKHOUSE_PASSWORD", "x")
     monkeypatch.setenv("CLICKHOUSE_SECURE", "false")
     monkeypatch.setenv("CLICKHOUSE_VERIFY", "false")
-    monkeypatch.setenv("CLICKHOUSE_SERVICE_ADMIN_USER", "iris_svc")
-    monkeypatch.setenv("CLICKHOUSE_SERVICE_ADMIN_ROLE", "service_admin_role")
     monkeypatch.delenv("CLICKHOUSE_CA_CERT_PATH", raising=False)
 
     with pytest.raises(Exception):
