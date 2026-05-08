@@ -1,10 +1,11 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+It is a navigator — deep details live in `docs/`.
 
 ## Project state
 
-Python web app scaffolded with `uv` / hatchling: **FastAPI + Jinja2** server, **Datastar** (https://data-star.dev/) on the frontend. `src/iris/__init__.py:main()` boots a uvicorn dev server. The home page demonstrates two end-to-end Datastar patterns (see "Examples" below). Pytest is wired up; no linter or formatter yet.
+Python web app scaffolded with `uv` / hatchling: **FastAPI + Jinja2** server, **Datastar** (https://data-star.dev/) on the frontend. `src/iris/__init__.py:main()` boots a uvicorn dev server. The home page demonstrates two end-to-end Datastar patterns (see "Examples" below). Pytest is wired up; ruff is configured for lint; basedpyright for typecheck (see Lint & type-check section below).
 
 `requires-python` is currently `>=3.13` — bumped down from 3.14 because the only 3.14 build `uv` could fetch was `3.14.0a6`, on which `pydantic-core` (a FastAPI dep) segfaults. Re-evaluate when a stable 3.14 build is reachable AND pydantic publishes 3.14 wheels.
 
@@ -12,15 +13,15 @@ Python web app scaffolded with `uv` / hatchling: **FastAPI + Jinja2** server, **
 
 The project uses a `src/`-layout with hatchling as the build backend and `.python-version` pinning 3.13.
 
-- Run the dev server: `uv run iris` (binds 127.0.0.1:8000) or `uv run uvicorn iris.app:app --reload` for hot-reload.
+- Run the dev server: `uv run iris` (binds 127.0.0.1:8000) or `uv run uvicorn iris.app:build_app --factory --reload` for hot-reload.
 - Install/sync after editing `pyproject.toml`: `uv sync`
 - Add a runtime dep: `uv add <pkg>` — and `uv add --dev <pkg>` for dev-only.
 
 ### Lint & type-check
 
-- `uv run ruff check` — currently produces one intentional `E402` in `src/iris/__init__.py` (the `from iris.app import app` must follow `load_dotenv()` so `.env` populates env first).
+- `uv run ruff check` — must produce zero warnings.
 - `uv run basedpyright --level error` — gate. Must stay at zero errors.
-- `uv run basedpyright --level warning` — also at zero. The `[tool.basedpyright]` config in `pyproject.toml` disables a handful of noisy categories that fire on intentional FastAPI/pytest patterns (`reportUnusedCallResult`, `reportUnusedFunction`, `reportCallInDefaultInitializer`, `reportAny`, `reportExplicitAny`, `reportUnannotatedClassAttribute`). The `tests/` execution environment additionally relaxes the unknown-type checks (pytest fixtures and `TestClient` response objects are dynamically typed). `mapping.py` and `providers/ldap.py` carry file-level pyright suppressions for the same reason — yaml and ldap3 are inherently dynamic. New checks failing means a real issue worth investigating, not config drift.
+- `uv run basedpyright --level warning` — also at zero. The `[tool.basedpyright]` config in `pyproject.toml` disables a handful of noisy categories that fire on intentional FastAPI/pytest patterns (`reportUnusedCallResult`, `reportUnusedFunction`, `reportCallInDefaultInitializer`, `reportAny`, `reportExplicitAny`, `reportUnannotatedClassAttribute`). The `tests/` execution environment additionally relaxes the unknown-type checks (pytest fixtures and `TestClient` response objects are dynamically typed). `providers/ldap.py` carries file-level pyright suppressions for the same reason — ldap3 is inherently dynamic. New checks failing means a real issue worth investigating, not config drift.
 
 ### Tests
 
@@ -35,16 +36,30 @@ Pytest is the test runner. Config lives under `[tool.pytest.ini_options]` in `py
 Conventions for new tests:
 - Tests live under `tests/` at the repo root (sibling to `src/`), not inside the package.
 - **Do not add `__init__.py` under `tests/`** — `--import-mode=importlib` requires `tests/` to *not* be a package, but in exchange every test file must have a unique basename across the suite.
-- Import the package as `from iris.app import app` (or `from iris import …`). FastAPI's `TestClient(app)` is the standard fixture; use `from fastapi.testclient import TestClient`.
+- Import the package as `from iris.app import build_app` (or `from iris import …`). FastAPI's `TestClient(app)` is the standard fixture; use `from fastapi.testclient import TestClient`.
+
+## Conventions
+
+Patterns an agent must follow that aren't obvious from reading code:
+
+- **DDL safety**: external strings flow through `validate_identifier` + `quote_identifier` (`iris.clickhouse.identifiers`). Never f-string-concat raw user input into SQL. DML uses CH's `{name:Type}` placeholder syntax via `client.query(..., parameters=...)`.
+- **Pre-create-on-grant**: tier-grant helpers issue `CREATE ROLE IF NOT EXISTS <target>_USER` before granting. Required for username-enumeration defence; don't shortcut.
+- **Session `data` is a per-request snapshot**: mutations don't auto-persist. Routes that want to write through call `await request.app.state.auth_session_store.update_data(session.id, session.data)`.
+- **Session methods use top-level imports of `iris.clickhouse.handle.*_impl`**: lazy method-body imports were a workaround for a now-removed cycle. Don't regress.
+- **One parameter per route**: `session: SessionRead` / `SessionDatabaseAdmin` / etc. carry both admission and capability. Don't pair an alias with a separate handle dep — the handle classes are gone.
+- **Refactor pattern**: spec → plan → atomic commit. Big renames go through a deliberate breakage window with one big-bang commit at the end. Don't try to incrementally split refactors that need to be atomic.
+- **Tests don't mock the database**: `tests/clickhouse/` uses a real CH testcontainer (session-scoped). Per-test isolation is the `prefix` fixture (UUID-prefixed entity names).
 
 ## Architecture & Datastar integration
 
 ### Layout
 
-- `src/iris/__init__.py` — re-exports `app` and defines `main()` (uvicorn launcher for the `iris` script).
-- `src/iris/app.py` — FastAPI app, routes, and `Jinja2Templates` initialization.
+- `src/iris/__init__.py` — calls `load_dotenv()` and defines `main()` (uvicorn factory-mode launcher for the `iris` script).
+- `src/iris/app.py` — `build_app()`, Datastar routes, `/`, `/api/greet`, `/api/clock`, and `Jinja2Templates` initialization.
+- `src/iris/middleware.py` — `SecurityHeadersMiddleware` (CSP).
 - `src/iris/templates/` — Jinja2 templates packaged with the wheel; `base.html` includes the Datastar CDN script and shared CSS, `index.html` extends it.
-- `tests/test_app.py` — route-level tests via FastAPI's `TestClient`.
+- `src/iris/auth/` — session-based auth + tier-based authz subsystem. Full surface in `docs/auth.md`.
+- `src/iris/clickhouse/` — ClickHouse provisioning + bridge. Full surface in `docs/clickhouse.md`.
 
 ### How Datastar talks to the backend
 
@@ -88,427 +103,40 @@ Routes then take `signals: Signals` and get a guaranteed dict — no None handli
 - `data-on:click="..."` (note the colon, not hyphen). Inside the expression, server actions are `@get('/url')`, `@post('/url')`, `@put`, `@delete`, `@patch`.
 - Server SSE events: `datastar-patch-elements` (HTML morph by id; `data: selector`, `data: mode`, `data: elements`) and `datastar-patch-signals` (`data: signals <JSON>`). The SDK's `SSE.patch_elements()` / `SSE.patch_signals()` formats these correctly.
 
-## Authentication
-
-The `iris.auth` package adds session-based authentication and tier-based authorization to all routes. Public surface:
-
-```python
-from iris.auth import (
-    AuthSession,                       # the dataclass returned by every auth dep
-    Rights, EMPTY_RIGHTS,              # the rights view + a useful default
-    Session, SessionOptional,          # auth-only aliases
-    SessionAdmin,                      # global admin
-    SessionDatabaseCreator,            # admin OR can_create_database
-    SessionDatabaseAdmin,              # admin of the path's `database` parameter
-    SessionWrite, SessionRead,         # tier-scoped checks against `database`
-    User, install,
-)
-```
-
-Routes consume the dep aliases as type annotations — no `= Depends(...)` is needed:
-
-```python
-@app.get("/me")
-async def me(session: Session) -> dict:
-    return {"username": session.user.username}
-
-@app.get("/db/{database}/read")
-async def read_db(database: str, session: SessionRead) -> ...:
-    ...
-
-@app.post("/db/{database}/grants/users/{username}")
-async def grant_read(database: str, username: str, session: SessionDatabaseAdmin) -> ...:
-    ...
-```
-
-`AuthSession` exposes `id`, `user` (a `User`), `created_at`, `expires_at`, `data` (the per-session mutable dict), and `rights` (a frozen `Rights` view). The `data` field is the same dict object as the session store's storage, so `session.data[key] = value` writes through with no commit step. All other fields are frozen. There is no `roles` field; templates that want the IdP groups read `session.user.groups`.
-
-**One type, seven deps.** Every auth-flavored route parameter has the same uniform shape: `session: <Alias>` where `<Alias>` is one of the seven aliases below. The choice of alias determines the access-control policy:
-
-| Alias | Admits when | Raises |
-|---|---|---|
-| `Session` | any logged-in user | 401 with no session |
-| `SessionOptional` | any caller (returns `None` if no session) | never |
-| `SessionAdmin` | `session.rights.is_admin` | 401 / 403 |
-| `SessionDatabaseCreator` | admin or `can_create_database` | 401 / 403 |
-| `SessionDatabaseAdmin` | admin or `db_admin[database]` | 401 / 403 |
-| `SessionWrite` | admin or `db_admin[database]` or `db_writer[database]` | 401 / 403 |
-| `SessionRead` | admin or any tier on `database` | 401 / 403 |
-
-The three database-scoped aliases (`SessionRead`/`SessionWrite`/`SessionDatabaseAdmin`) read `database: str` from the calling route's path or query parameters via FastAPI's normal binding. A typo'd or missing role configuration is no longer a 500 case — rights come from CH at login, and any check just compares against the cached `Rights` value.
-
-### Per-session server-side data
-
-Each `UserSession` carries a mutable `data: dict[str, Any]` field for arbitrary route-managed state (drafts, wizard steps, recently-viewed lists, etc.). Every alias dep exposes it via `session.data`:
-
-```python
-from fastapi import Request
-from iris.auth import Session
-
-@app.post("/draft")
-async def save_draft(request: Request, session: Session, body: dict):
-    session.data["draft"] = body
-    await request.app.state.auth_session_store.update_data(
-        session.id, session.data
-    )
-    return {"ok": True}
-
-@app.get("/draft")
-async def get_draft(session: Session):
-    return session.data.get("draft", {})
-
-@app.get("/me/full")
-async def me_full(session: Session):
-    return {
-        "id": session.id,
-        "logged_in_at": session.created_at,
-        "data_keys": list(session.data),
-        "is_admin": session.rights.is_admin,
-        "groups": list(session.user.groups),
-    }
-```
-
-- `session.data` is a per-request snapshot — a fresh `dict` deserialized from the SQLite row on every request. Mutations to the dict do **not** auto-persist; routes that want the change to survive call `await request.app.state.auth_session_store.update_data(session.id, session.data)` before returning.
-- `AuthSession` exposes `id`, `user`, `created_at`, `expires_at`, `data`, and `rights` on a single value. Routes that need only the user write `session.user`; routes that need the per-session bag write `session.data`; routes that need the authorization view write `session.rights`.
-
-Lifecycle: `data` is JSON-encoded into the SQLite row alongside the session. Mutations are persisted by `update_data` and survive process restarts. Values must be JSON-encodable (strings, ints, floats, bools, `None`, lists, dicts) — anything else raises `TypeError` at write time. Read-modify-write across an `await` between two requests for the same session has the standard interleaving race; acceptable at ≤20-user scale, document or use `asyncio.Lock` if a route needs atomic updates.
-
-### Authorization (CH-derived rights)
-
-ClickHouse is the only source of truth for authorization. There is no SQLite role mapping, no `authz_*` tables, no `RoleMappingStore`, no per-database admin store. Iris derives a frozen `Rights` view from CH grants once at login (in the post-login hook chain) and caches it on the session row; routes gate via the alias deps in `iris.auth.deps`, which inspect `session.rights`.
-
-**The `Rights` shape:**
-
-```python
-@dataclass(frozen=True, slots=True)
-class Rights:
-    is_admin: bool                          # global admin
-    can_create_database: bool               # CREATE DATABASE on *.*
-    db_admin: frozenset[str]                # databases with full delegation power
-    db_writer: frozenset[str]               # databases with SELECT+INSERT+ALTER UPDATE
-    db_reader: frozenset[str]               # databases with SELECT
-```
-
-`Rights` exposes three helpers — `has_read(database)`, `has_write(database)`, `has_admin(database)` — each using the implied tier ordering (`is_admin` ⊇ `db_admin[X]` ⊇ `db_writer[X]` ⊇ `db_reader[X]`).
-
-**How rights are derived.** At login, `iris.clickhouse.rights.derive_rights(client, username, groups)`:
-
-1. Walks `system.role_grants` transitively to collect the user's effective role set (starting from `<username>_USER` plus each `<group>_GRP`).
-2. Splits any role ending in `_DBADMIN`, `_DBWRITER`, `_DBREADER` to recover the database name and populates the corresponding `frozenset`.
-3. Queries `system.grants` filtered to the effective role set:
-   - `is_admin = True` if some role holds `ROLE ADMIN` at global scope (`database IS NULL`) with `grant_option=1`. CH always expands `GRANT ALL` into primitive privileges, so `access_type='ALL'` never appears — ROLE ADMIN+WGO is the stable single-row marker.
-   - `can_create_database = True` if some role holds `CREATE DATABASE` at global scope (no GRANT OPTION required).
-
-Operator changes (new tier-role grants, revocations) take effect on the user's next login. There is no mid-session re-derivation. To force a re-derive operationally: revoke the grant in CH (so any actual query fails) and delete the user's session rows from the auth DB.
-
-**The CH-side storage.** Per-database tier roles, created at database creation and dropped at deletion:
-- `<X>_DBADMIN` — `GRANT ALL ON X.* WITH GRANT OPTION`
-- `<X>_DBWRITER` — `GRANT SELECT, INSERT, ALTER UPDATE ON X.*`
-- `<X>_DBREADER` — `GRANT SELECT ON X.*`
-
-The per-user (`<username>_USER`) and per-group (`<group>_GRP`) roles continue to be created lazily by `init_user_rights` on each login. They serve as the recipients of tier-role grants: `add_writer(bob)` runs `GRANT <X>_DBWRITER TO bob_USER`.
-
-**Bootstrap** (two channels). At iris launch, `bootstrap_admin` (in `iris.clickhouse.bootstrap`) always creates the `iris_global_admin` sentinel role. If `CLICKHOUSE_ADMIN_USER=alice` is set and no `_USER`-suffixed role currently holds the admin marker (ROLE ADMIN+WGO at global scope), iris creates `alice_USER` with `GRANT ALL ON *.* WITH GRANT OPTION` plus `iris_global_admin` granted to it. If `CLICKHOUSE_ADMIN_GROUP=iris_admin` is set and no `_GRP`-suffixed role currently holds admin, iris creates `iris_admin_GRP` the same way. Both channels are independently idempotent.
-
-When alice (whose IdP username matches `CLICKHOUSE_ADMIN_USER`) logs in for the first time, the existing `init_user_rights` post-login hook creates her CH user and grants `alice_USER` — already an admin from bootstrap — to it. Same for bob whose IdP groups include `CLICKHOUSE_ADMIN_GROUP=iris_admin`: his CH user gets `iris_admin_GRP`, already an admin.
-
-The `iris_global_admin` sentinel role holds no privileges of its own. Wildcard row policies attach to it (per table, on every `add_row_policy` call) so every global admin sees all rows on tables with restrictive policies. Granting `iris_global_admin` to a role does not make that role admin in any sense iris's authorization layer recognises — the admin marker is still ROLE ADMIN+WGO at global scope.
-
-The admin-detection check is restricted to roles ending in `_USER` (resp. `_GRP`) so iris's own connection identity (which necessarily holds ROLE ADMIN+WGO to manage RBAC state) is never mistaken for a bootstrapped admin.
-
-**Pre-create-on-grant** is preserved as a username-enumeration defense. Tier-grant helpers (`grant_tier_to_user`, `grant_tier_to_group`) issue `CREATE ROLE IF NOT EXISTS <target>_USER` before granting, so an admin granting access to a never-logged-in user gets the same CH response as for an existing user.
-
-**Identity matching:**
-- `groups` — exact, case-sensitive match against `User.groups` (verbatim from the IdP). The `<group>_GRP` role in CH is named after the group string.
-- `users` — `<username>_USER` — case-sensitive match against `User.username` (the CH role name uses the literal username).
-  - OAuth provider sources `username` from the `preferred_username` claim, falling back to `sub` if absent.
-  - LDAP provider sources `username` from the `username` substituted into `LDAP_BIND_DN_TEMPLATE`.
-  - Mock provider sources `username` from `MOCK_USERNAME`.
-
-**Use in routes:** see the alias table in the section above. `require_role(name)` and `RoleMappingStore` are gone; `SessionAdmin` / `SessionRead` / etc. cover all the previous role-gating use cases. The `clickhouse_admin` role concept disappears — iris admin and CH admin are the same `is_admin` flag, derived from CH.
-
-For the full design and rationale, see `docs/superpowers/specs/2026-05-08-clickhouse-only-authz-design.md`.
-
-### Configuration
-
-Env vars are loaded at `import iris` time via `python-dotenv`. If a `.env` file exists at the project root (gitignored), its values populate `os.environ` for any keys not already set. If `.env` is absent it's a silent no-op. **Real shell env vars take precedence over `.env`** (`load_dotenv` is called with `override=False`), so a CI / production deploy can override individual values without editing `.env`. Tests inherit the same loader; `tests/conftest.py` sets `os.environ.setdefault(...)` defaults at module scope before iris is imported, so test runs always end up with `AUTH_METHOD=mock` regardless of what `.env` contains — this protects the test suite from a developer's OAuth/LDAP `.env`.
-
-Selected by env var. Per-deployment toggle: only one method is active at a time.
+## Module map
 
 ```
-AUTH_METHOD=oauth | ldap | mock
-SESSION_COOKIE_NAME=iris_session
-SESSION_TTL_SECONDS=43200            # 12h, sliding TTL refreshed on each request
-SESSION_ABSOLUTE_TTL_SECONDS=2592000 # 30d, hard cap on top of sliding TTL
-SESSION_MAX_PER_USER=10              # cap concurrent sessions per User.subject (oldest evicted)
-AUTH_DB_PATH=./iris-auth.db          # SQLite file backing the session store; :memory: for tests
-COOKIE_SECURE=true                   # set false for local dev over http
-# Bootstrap admins (both optional, set in the deployment env). Read by
-# iris.clickhouse.install at launch; see "Bootstrap (two channels)" above.
-CLICKHOUSE_ADMIN_USER=               # IdP username of bootstrap admin (e.g. alice)
-CLICKHOUSE_ADMIN_GROUP=              # IdP group name of bootstrap admins (e.g. iris_admin)
-
-# OAuth (OIDC discovery)
-OIDC_ISSUER_URL=https://keycloak.example.com/realms/iris
-OIDC_CLIENT_ID=iris
-OIDC_CLIENT_SECRET=...
-OIDC_SCOPES=openid profile email groups
-OIDC_CA_CERT_PATH=                     # optional: PEM bundle for IdP cert validation (private CA)
-
-# LDAP
-LDAP_URL=ldaps://ldap.example.com:636
-LDAP_BIND_DN_TEMPLATE=uid={username},ou=people,dc=corp,dc=local
-LDAP_GROUP_BASE_DN=ou=groups,dc=corp,dc=local
-LDAP_REQUIRE_TLS=true                # reject ldap:// at startup
-LDAP_CA_CERT_PATH=                   # optional: PEM bundle for cert validation
-
-# Mock (for tests; AUTH_METHOD=mock)
-MOCK_USERNAME=alice
-MOCK_PASSWORD=secret
-MOCK_GROUPS=admins,users
-MOCK_DISPLAY_NAME=Alice
+src/iris/
+├── __init__.py        # main() + load_dotenv
+├── app.py             # build_app(), Datastar routes, /, /api/greet, /api/clock
+├── middleware.py      # SecurityHeadersMiddleware (CSP)
+├── templates/         # Jinja2 — base.html + index.html
+├── auth/              # auth subsystem — full surface in docs/auth.md
+└── clickhouse/        # CH subsystem — full surface in docs/clickhouse.md
 ```
 
-`AuthSettings.from_env()` runs at app construction; missing required vars or unrecognized values fail loudly. `_get_bool` raises on typos (`COOKIE_SECURE=ture` is rejected, not silently false).
-
-**`.env` permissions:** the file may contain secrets (`OIDC_CLIENT_SECRET`, `MOCK_PASSWORD`, etc.). On a multi-user host, `chmod 600 .env` so it's only readable by the iris service user. The file is gitignored; check that your container/build pipeline doesn't bake it into images.
-
-### Multi-worker deployment
-
-Sessions live in a SQLite file; multiple uvicorn workers share state by pointing at the same `SESSION_DB_PATH`. The store opens its connection in WAL mode (`PRAGMA journal_mode=WAL`) so concurrent readers don't block on a writer, and `PRAGMA synchronous=NORMAL` keeps writes cheap. Workers can scale freely on a single host (e.g., `uvicorn --workers 4`) as long as the DB path is on local disk reachable by every worker. Cross-host deploys still need a shared filesystem — or swap the store backend.
-
-Sessions also survive process restarts. `uv run iris` and a redeploy no longer log every user out.
-
-### Module map
-
-```
-src/iris/auth/
-├── __init__.py        # public surface: AuthSession, Rights, EMPTY_RIGHTS, Session, SessionOptional,
-│                      #                  SessionAdmin, SessionDatabaseCreator, SessionDatabaseAdmin,
-│                      #                  SessionWrite, SessionRead, User, install
-├── session.py         # Rights frozen dataclass + serialization helpers + EMPTY_RIGHTS constant
-├── identity.py        # User (frozen+slots), UserSession (mutable; internal), AuthSession + Session
-│                      # subclass hierarchy with top-level imports of iris.clickhouse.handle._impl
-├── config.py          # AuthSettings.from_env() — AUTH_METHOD, session TTLs, etc.
-├── sessions.py        # SessionStore (SQLite): create / get_and_refresh / update_data / set_rights / delete / close
-├── exceptions.py      # AuthRequired, AuthForbidden, AuthError + install_exception_handlers
-├── deps.py            # the seven Annotated alias deps + set_session_store / set_settings
-├── csrf.py            # double-submit CSRF
-├── rate_limit.py      # TokenBucket (used on POST /login)
-├── routes.py          # /login, /login/callback, /logout, /api/whoami; install(app)
-└── providers/         # mock, ldap, oauth — unchanged
-```
-
-The CH-side bootstrap (creating `iris_global_admin` + admin user/group roles from `CLICKHOUSE_ADMIN_USER` / `CLICKHOUSE_ADMIN_GROUP`) lives in `iris.clickhouse.bootstrap.bootstrap_admin`. It's called from `iris.clickhouse.install` at app launch, not from anything in `iris.auth`.
-
-`install(app)` reads env, builds the provider, and wires the auth router + exception handlers + session store into a FastAPI app. Called from `build_app()` in `src/iris/app.py`.
-
-### Authorization model
-
-ClickHouse RBAC is the single source of truth. Iris does not maintain a separate role mapping. Routes guard themselves with the alias deps from `iris.auth.deps`; the seven aliases cover every previous gating use case (any-auth, optional, global admin, database creator, per-DB admin, per-DB writer, per-DB reader). See "Authorization (CH-derived rights)" above for derivation, the bootstrap, and CH-side storage.
-
-### Login flows
-
-- **OAuth (`AUTH_METHOD=oauth`)** — `/login` 302s to the IdP authorize URL with PKCE S256 + state in a signed cookie. The IdP redirects back to `/login/callback`, which exchanges the code, verifies the returned `id_token` (RS256/ES256 signature against the IdP's JWKS, plus `iss`/`aud`/`exp` claims), fetches userinfo, and creates a session. JWKS is fetched once at app construction; rotating IdP keys requires app restart. `next` is preserved across the round-trip via the same signed cookie.
-- **LDAP/Mock (`AUTH_METHOD=ldap`/`mock`)** — `/login` renders an HTML form (Jinja template `templates/auth/ldap_form.html`) with a CSRF token. POST `/login` validates CSRF, calls `provider.authenticate(username, password)`, and creates a session on success. Bad creds redirect back to `/login?error=invalid_credentials&next=...`.
-- **Logout** — `POST /logout` (CSRF-required) deletes the session and clears the cookie. Local-only — does not call the IdP's end-session endpoint.
-
-The CSRF cookie is rotated on successful login: the post-auth `/login` redirect (and OAuth callback) clear the `iris_csrf` cookie so any pre-auth token capture becomes useless. The next form render (e.g., `/` re-mints via `attach_csrf_cookie`) issues a fresh token, so the user flow is uninterrupted.
-
-`POST /login` is rate-limited per client IP via an in-process token bucket (capacity 10, refill 0.2/sec — i.e. 10-attempt burst then ~12 attempts/minute sustained). Exhausted clients receive a 429 with `Retry-After`. Per-process state, fits the `--workers 1` deploy constraint; multi-worker would need Redis.
-
-### Tests
-
-`tests/conftest.py` sets `AUTH_METHOD=mock` (and the mock creds) at MODULE scope (via `os.environ.setdefault`) so `iris.app:app` can be imported by the suite without arranging env in a fixture. Available fixtures:
-
-- `client` — unauthenticated `TestClient`. Use for tests that exercise the login flow itself, error pages, etc.
-- `authed_client` — pre-creates a session in the in-memory store and attaches the cookie. Use for feature tests of routes that just need "a logged-in user".
-
-Provider tests are offline:
-- LDAP: `ldap3.MOCK_SYNC` strategy with an in-memory directory (`tests/auth/test_provider_ldap.py`).
-- OAuth: `httpx.MockTransport` mocking discovery / token / userinfo (`tests/auth/test_provider_oauth.py`).
-
-### Integration tests (`tests/auth/integration/`)
-
-A second tier under `tests/auth/integration/` runs the OAuth provider end-to-end against a real `quay.io/keycloak/keycloak:26.0` container via `testcontainers-python`. Covers happy paths and natural failure paths exercisable against a real IdP (wrong client secret, code reuse, redirect_uri mismatch, wrong CA bundle) plus full TLS coverage. The existing offline tests stay as the fast unit tier. (LDAP integration tests were originally in scope but descoped — see `docs/superpowers/plans/2026-05-05-auth-testcontainers.md`.)
-
-- Run only the integration tier: `uv run pytest tests/auth/integration`
-- Skip the integration tier (no Docker required): `uv run pytest --ignore=tests/auth/integration`
-- Runtime: ~25s on a warm cache (Keycloak boot ~12s dominates). Session-scoped containers amortize across the full integration suite.
-
-The realm seed at `tests/auth/integration/seed/keycloak-realm.json` is committed and declarative — it defines an `iris-test` realm with two users (`alice`/`secret` in `admins`+`users`, `bob`/`hunter2` in `users`) and an `iris` client wired up with an explicit `oidc-group-membership-mapper`. Without that mapper Keycloak doesn't emit a `groups` claim, so users would land in iris with `groups=()`. TLS certs are generated at session start via `_tls.py` and not committed. The `_keycloak_helpers.simulate_login` helper drives Keycloak's authorize → login form → callback flow through `TestClient`; the form-action regex is the only place coupled to Keycloak's login HTML.
-
-`OIDC_SCOPES` for the integration tests is `openid profile email` (no `groups`). The realm doesn't ship a `groups` client scope by default, but the client-level mapper emits the claim regardless of requested scope — so production deployments can choose to add a `groups` scope or rely on the mapper directly.
-
-### Open redirect protection
-
-`_safe_next(url)` accepts only same-origin relative paths. Rejects empty, non-`/`-prefixed, `//`-prefixed (protocol-relative), absolute URLs, and backslash-containing strings (browsers normalize `\` → `/` before same-origin checks). Applied at `POST /login` and `GET /login/callback`. Failure-redirect URLs are constructed via `urllib.parse.urlencode` so error tokens or path components can't break query parsing.
-
-### Open security follow-ups (v1.1)
-
-- Rate limiting on `POST /login` keys on `request.client.host`. Behind a reverse proxy this is the proxy's IP — the bucket becomes effectively global. Mitigation: run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy>` so `request.client.host` reflects the `X-Forwarded-For` value. Not enforced; deployment-config concern.
-- `OAuthProvider` caches the IdP's JWKS once on first discovery. If the IdP rotates signing keys, all logins fail until iris is restarted. Acceptable at ≤20-user / multi-month rotation cadence; tighten by re-fetching on `kid`-not-in-set if rotation matters.
-- OIDC discovery is now lazy: the *first* login attempt after restart pays the discovery latency. Acceptable for v1, but means a slow IdP shifts startup latency to a request boundary instead of failing loud at boot.
-- `derive_rights` runs a small handful of CH queries at login (role-grants walk + a single grants enumeration). Sub-millisecond at ≤20-user scale; for higher request volumes, profile and consider caching the effective role set per user with a CH version-column invalidation.
-
-These are accepted residual risks for the ≤20-user deploy profile; revisit when scaling out or relocating behind a load balancer.
-
-## ClickHouse
-
-The `iris.clickhouse` package provisions ClickHouse users, roles, grants, and row policies, provides audit-query helpers, and (via the bridge submodule) hands FastAPI routes typed handles for impersonated/admin queries. The plain-data helpers (`audit.py`, `bootstrap.py`, `client.py`, `grants.py`, `policies.py`, `users.py`) are independent of `iris.auth`; only `deps.py` and `install.py` import from auth.
-
-### Public surface
-
-```python
-from iris.clickhouse import (
-    # plain-data helpers
-    ClickHouseSettings, build_client, bootstrap_admin,
-    init_user_rights, derive_rights,
-    grant_select_to_database, grant_insert_update_to_table,
-    add_row_policy, revoke_row_policy,
-    # tier-role helpers
-    GLOBAL_ADMIN_ROLE,
-    TIER_DBADMIN, TIER_DBWRITER, TIER_DBREADER,
-    create_tier_roles, drop_tier_roles, tier_role_name,
-    grant_tier_to_user, grant_tier_to_group,
-    revoke_tier_from_user, revoke_tier_from_group,
-    # audit helpers
-    user_grants, role_grants, user_role_memberships,
-    user_row_policies, role_row_policies, table_row_policies,
-)
-```
-
-The per-tier method surface lives on the Session subclasses in `iris.auth.identity` (see "Auth ↔ ClickHouse bridge" below). `iris.clickhouse` itself no longer hosts FastAPI handle providers. `install` is intentionally not re-exported from this package — callers do `from iris.clickhouse.install import install` (only `iris.app:build_app`).
-
-`build_client(settings)` returns a `clickhouse_connect.driver.client.Client`. Operations take that client as their first argument:
-
-```python
-settings = ClickHouseSettings.from_env()
-client = build_client(settings)
-bootstrap_admin(client, admin_user="alice", admin_group="iris_admin")  # idempotent startup
-init_user_rights(client, username="alice", groups=["sales"], settings=settings)
-add_row_policy(client, database="orders", table="lines",
-               column="region", role="sales_GRP", value="EU")
-```
-
-### Conventions
-
-- Per-user role: `<username>_USER` (suffix is hardcoded at `users.USER_ROLE_SUFFIX`).
-- Per-group role: `<group>_GRP` (suffix is hardcoded at `users.GROUP_ROLE_SUFFIX`).
-- Row-policy name: `<database>_<table>_<role>_<slug>_<8charhash>` — slug strips non-`[a-zA-Z0-9_]`, hash disambiguates collisions like `EU/UK` vs `EU UK`.
-- Wildcard row policies per table: `add_row_policy(database, table, column, role, value)` always emits two `USING 1` policies alongside the restrictive one — one for `iris_global_admin` (every global admin sees all rows) and one for `<database>_DBADMIN` (every per-database admin of that DB sees all rows). Names are deterministic (`<database>_<table>_iris_global_admin` and `<database>_<table>_<database>_DBADMIN`); subsequent calls for the same table no-op via `IF NOT EXISTS`. *Not* dropped by `revoke_row_policy` — they may apply to other restrictive policies on the same table and persist intentionally.
-- All operations are idempotent: re-running is safe. `init_user_rights` reconciles group memberships (revokes `_GRP` roles no longer in the input, grants the new ones).
-
-### DDL safety
-
-`identifiers.py` is the single safety contract. External-source strings (usernames from auth, db/table/column names from callers) flow through `validate_identifier` (rejects anything outside `[a-zA-Z0-9_]+`) and `quote_identifier` (validates + backticks). Row-policy values use `quote_string` for SQL literal escaping. DDL is built from these helpers; `client.command()` runs it without parameter binding. DML (audit `SELECT`s) uses ClickHouse's native `{name:Type}` placeholder syntax via `client.query(..., parameters=...)`.
-
-### Configuration
-
-Env vars (loaded at `import` time via `python-dotenv` from `.env`):
-
-```
-CLICKHOUSE_HOST=localhost
-CLICKHOUSE_PORT=8443
-CLICKHOUSE_USER=iris_service          # CH login iris connects as; also the IMPERSONATE grantee
-CLICKHOUSE_PASSWORD=replace-me
-CLICKHOUSE_SECURE=true                # https
-CLICKHOUSE_VERIFY=true                # TLS verification
-# CLICKHOUSE_CA_CERT_PATH=/etc/ssl/certs/ca-bundle.crt
-```
-
-The bootstrap admin signals (`CLICKHOUSE_ADMIN_USER`, `CLICKHOUSE_ADMIN_GROUP`) are listed under the auth env section above, since they shape the iris-side admin tier rather than CH connectivity.
-
-`ClickHouseSettings.from_env()` validates everything at app construction — missing required vars, typo'd booleans (`COOKIE_SECURE=ture` style), non-int ports, and bad identifier names all fail loudly.
-
-### Auth ↔ ClickHouse bridge
-
-Routes consume one alias dep per tier. The dep returns a Session subclass whose method surface matches the tier; there is no separate handle parameter. The Session value carries both admission (alias gates the request) and capability (the subclass exposes only its tier's methods).
-
-```python
-from iris.auth import Session, SessionAdmin, SessionRead, SessionDatabaseAdmin
-
-@app.get("/db/{database}/count")
-async def count(database: str, session: SessionRead):
-    return await session.query_as_user("SELECT count() FROM t")
-
-@app.post("/db/{database}/grants/users/{username}")
-async def grant_read(database: str, username: str, session: SessionDatabaseAdmin):
-    await session.grant_reader(username)
-    return {"granted": True}
-
-@app.get("/admin/users/{username}/grants")
-async def audit(username: str, session: SessionAdmin):
-    return await session.user_grants(username=username)
-```
-
-`SessionRead` returns a `DatabaseSession` bound to the path's `database`. `query_as_user("SELECT count() FROM t")` resolves `t` against `<database>` because the impersonated request includes `?database=<database>` in the URL. There's no separate handle parameter; the Session value carries both the admission decision and the CH-method surface.
-
-For routes that need to query a specific database from a non-DB-scoped session (`Session` or `SessionAdmin`), `query_as_user` accepts a `database=` kwarg. `SessionAdmin.query_as_service` likewise accepts `database=`.
-
-**Why two HTTP transports.** `query_as_user` prepends `EXECUTE AS <quoted_username>` to the SQL. ClickHouse's `EXECUTE AS user <SELECT>` body grammar rejects `FORMAT` clauses, but `clickhouse-connect`'s `query()` always appends `FORMAT Native` — incompatible. The Session methods therefore use a separate `httpx.AsyncClient` for impersonated queries, posting to ClickHouse's HTTP endpoint with `?default_format=JSONEachRow` as a URL parameter. Service-identity queries (`query_as_service`) and admin/audit methods keep using `clickhouse-connect`. As a consequence, `query_as_user` returns `list[dict[str, Any]]` (parsed JSON Lines) rather than a `QueryResult` — types are preserved by JSON encoding but column-type metadata is lost. Routes needing column types use `AdminSession.query_as_service`. Named parameters work via `param_<name>=<value>` URL params translated from the `parameters=` kwarg.
-
-**Post-login hook chain.** `iris.clickhouse.install(app)` registers a hook on `app.state.post_login_hooks` that fires on every successful login (form submit or OAuth callback). The hook does two things in order: `init_user_rights` (provisions the CH user/role/group memberships) and `derive_rights` (computes the `Rights` view), then `set_rights` persists the rights to the session row. Cookie-based session refreshes do NOT re-provision; the cached `Rights` is what every subsequent request sees. Group changes between two logins are reconciled.
-
-**iris's liveness is tied to ClickHouse's.** This is intentional: iris is a thin layer in front of ClickHouse, and a logged-in user with no ability to reach the data backend can't accomplish anything useful. Rather than hide that with best-effort provisioning, login fails loud when CH is down — operators see the exact failure mode in the access logs, monitoring catches it, and users get a real error rather than a half-broken session that errors on every subsequent query.
-
-`build_app(install_clickhouse=False)` skips the bridge entirely — used by auth tests that don't need a CH testcontainer. With CH disabled, the post-login hook chain is empty and sessions land with `EMPTY_RIGHTS` and `client=None`/`http_client=None`. Calling a CH method on such a session raises (the `httpx.AsyncClient.post` on `None` errors); tests that don't exercise CH simply don't call them. Production launches via uvicorn factory mode (`uvicorn.run("iris.app:build_app", factory=True, ...)`), so importing `build_app` is side-effect-free for tests.
-
-**Session implementation.** The Session classes (`AuthSession`, `DatabaseSession`, `DatabaseAdminSession`, `DatabaseCreatorSession`, `AdminSession`) live in `iris.auth.identity`. Each method lazy-imports the matching `*_impl` async function from `iris.clickhouse.handle` and calls it with `self.client` / `self.http_client` / `self.user.username` / (for DB-scoped subclasses) `self.database`. The lazy import avoids an `iris.auth → iris.clickhouse` cycle at module load.
-
-### Per-database admin tier
-
-Per-database admin is a CH role membership: a user is admin of database `X` iff their effective role set (transitively) includes `<X>_DBADMIN`. There is no separate SQLite admin store. The same applies to writer (`<X>_DBWRITER`) and reader (`<X>_DBREADER`). The Session aliases map to tier-typed Session subclasses returned by the dep:
-
-| Tier | Alias | Returns | Selected methods |
-|---|---|---|---|
-| Any logged-in user | `Session` | `AuthSession` | `query_as_user(sql, database=None)` |
-| Database creator | `SessionDatabaseCreator` | `DatabaseCreatorSession` | `create_database(name)` |
-| Per-database admin | `SessionDatabaseAdmin` | `DatabaseAdminSession` (bound to `database` from path) | `grant_reader/writer`, `add_admin_user`, `revoke_*`, `delete_database`, `list_admin_members`, `list_grants`, `list_row_policies` |
-| Global admin | `SessionAdmin` | `AdminSession` | `query_as_service`, `reprovision_user`, `add/revoke_row_policy`, audit (`user_grants`, `role_grants`, `user_role_memberships`, `user_row_policies`, `role_row_policies`, `table_row_policies`) |
-
-`create_database(name)` is the lifecycle entry point: it runs `CREATE DATABASE IF NOT EXISTS`, creates the three tier roles (`<name>_DBADMIN`, `<name>_DBWRITER`, `<name>_DBREADER`) with their privilege grants, and grants `<name>_DBADMIN` to the creator's `<creator>_USER` role. All steps idempotent. `delete_database()` reverses: `DROP DATABASE IF EXISTS` then drops the three tier roles.
-
-There is no separate `clickhouse_database_creator` CH role. The capability is the `can_create_database` flag on `Rights`, derived from `GRANT CREATE DATABASE ON *.*` on any role in the user's effective set. Global admins also satisfy `SessionDatabaseCreator` via the `is_admin` superset.
-
-A global admin who needs to do per-DB operations writes routes gated by `SessionDatabaseAdmin` (which admits admins via the `is_admin` superset and returns a `DatabaseAdminSession` bound to the path's database). Routes that need both global ops and per-DB ops compose two Session parameters; this is rare.
-
-Example routes:
-
-```python
-@app.post("/clickhouse/databases/{database}")
-async def create_database(database: str, session: SessionDatabaseCreator):
-    await session.create_database(database)
-    return {"created": database}
-
-
-@app.post("/clickhouse/databases/{database}/grants/users/{username}")
-async def grant_read(database: str, username: str, session: SessionDatabaseAdmin):
-    await session.grant_reader(username)
-    return {"granted": True}
-
-
-@app.post("/clickhouse/databases/{database}/admins/users/{username}")
-async def delegate_admin(database: str, username: str, session: SessionDatabaseAdmin):
-    await session.add_admin_user(username)
-    return {"ok": True}
-
-
-@app.delete("/clickhouse/databases/{database}")
-async def delete_database(database: str, session: SessionDatabaseAdmin):
-    await session.delete_database()
-    return {"deleted": database}
-```
-
-**Pre-create-on-grant for username enumeration.** Granting a tier role to a user who has never logged in is supported: tier-grant helpers issue `CREATE ROLE IF NOT EXISTS <target>_USER` before granting, so the CH response is the same whether the target has authenticated or not. Once the target eventually logs in, `init_user_rights` reuses the existing role and `derive_rights` picks up the tier membership.
-
-### Tests
-
-The test suite uses `testcontainers-python` to spin up `clickhouse/clickhouse-server:26.3` in Docker. The container is session-scoped (one instance per pytest run); per-test isolation comes from a UUID-derived `prefix` fixture that namespaces every entity name. Docker is required to run `tests/clickhouse/`.
-
-The `chdb` library was originally trialed for in-process testing; `chdb==4.1.6`'s embedded server hardcodes `system.user_directories` to a read-only `users_xml` entry, blocking all RBAC DDL at runtime. See the design spec at `docs/superpowers/specs/2026-05-05-clickhouse-authz-design.md` for the verification.
-
-### Deferred (v1.1+)
-
-- Connection pooling and multi-worker session sharing — `clickhouse-connect`'s `Client` is per-process today; multi-worker deploys would need a connection pool.
-- A streaming variant of `query_as_user` for routes that need to stream large result sets back through Datastar SSE without buffering the whole response in memory.
+## Env vars (quick reference)
+
+| Var | Purpose |
+|---|---|
+| `AUTH_METHOD` | `oauth` / `ldap` / `mock` |
+| `SESSION_*` | session TTLs, cookie name, max-per-user |
+| `AUTH_DB_PATH` | SQLite session store path; `:memory:` for tests |
+| `COOKIE_SECURE` | set `false` for local dev over http |
+| `OIDC_*` | OAuth/OIDC discovery (when `AUTH_METHOD=oauth`) |
+| `LDAP_*` | LDAP bind + group search (when `AUTH_METHOD=ldap`) |
+| `MOCK_*` | mock provider (when `AUTH_METHOD=mock`) |
+| `CLICKHOUSE_HOST` / `_PORT` / `_USER` / `_PASSWORD` | CH connection |
+| `CLICKHOUSE_SECURE` / `_VERIFY` / `_CA_CERT_PATH` | TLS settings |
+| `CLICKHOUSE_ADMIN_USER` | bootstrap admin's IdP username |
+| `CLICKHOUSE_ADMIN_GROUP` | bootstrap admin group's IdP name |
+
+Full descriptions, `.env` semantics, and operator runbooks live in `docs/operations.md`.
+
+## See also
+
+- `docs/auth.md` — full auth surface (alias deps, Session hierarchy, providers, login flows, tests)
+- `docs/clickhouse.md` — full CH surface (tier roles, bootstrap, row policies, the bridge with auth)
+- `docs/operations.md` — deployment, env-var depth, security follow-ups, migration runbooks
+- `docs/superpowers/specs/` — dated design specs (the *why* behind the current shape)
+- `docs/superpowers/plans/` — implementation plans (paired with each spec)

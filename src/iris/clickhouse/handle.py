@@ -2,9 +2,10 @@
 
 Each ``*_impl`` function takes primitive arguments (``client``, ``http_client``,
 ``username``, etc.) and runs one CH operation. The Session classes in
-``iris.auth.identity`` are the only callers; lazy-importing the functions
-inside method bodies avoids an import cycle (``iris.auth → iris.clickhouse``
-would cycle if these were imported at module load).
+``iris.auth.identity`` are the only callers; they import the ``*_impl``
+functions at module top level. The cycle is broken by ``iris.clickhouse``
+only importing from ``iris.auth.session`` (the ``Rights`` value type),
+never from ``iris.auth.identity``.
 
 Why two transport stories? ``query_as_user_impl`` posts to ClickHouse's HTTP
 endpoint via ``httpx`` so we can prepend ``EXECUTE AS <user>`` without
