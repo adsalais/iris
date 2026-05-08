@@ -7,16 +7,25 @@ from iris.auth.providers.mock import MockProvider
 
 def build_provider(settings: AuthSettings) -> Provider:
     if settings.method == "mock":
-        assert settings.mock is not None
+        if settings.mock is None:
+            raise RuntimeError(
+                "AUTH_METHOD=mock requires settings.mock to be configured"
+            )
         return MockProvider(settings.mock)
     if settings.method == "ldap":
-        from iris.auth.providers.ldap import LDAPProvider  # not implemented yet (Task 10)
+        from iris.auth.providers.ldap import LDAPProvider
 
-        assert settings.ldap is not None
+        if settings.ldap is None:
+            raise RuntimeError(
+                "AUTH_METHOD=ldap requires settings.ldap to be configured"
+            )
         return LDAPProvider(settings.ldap)
     if settings.method == "oauth":
-        from iris.auth.providers.oauth import OAuthProvider  # not implemented yet (Task 11)
+        from iris.auth.providers.oauth import OAuthProvider
 
-        assert settings.oidc is not None
+        if settings.oidc is None:
+            raise RuntimeError(
+                "AUTH_METHOD=oauth requires settings.oidc to be configured"
+            )
         return OAuthProvider(settings.oidc)
     raise ValueError(f"Unknown AUTH_METHOD: {settings.method}")

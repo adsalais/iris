@@ -1,6 +1,6 @@
 """Integration tests: EXECUTE AS prefix actually impersonates against a real CH server.
 
-These exercise the standalone *_impl functions against the testcontainer.
+These exercise the standalone async query helpers against the testcontainer.
 Verification uses ``currentUser()`` (post-impersonation identity) — ``user()`` is
 an alias for ``authenticatedUser()`` (the underlying login) and would always
 report ``iris_svc`` regardless of impersonation.
@@ -11,7 +11,7 @@ import asyncio
 
 import httpx
 
-from iris.clickhouse.handle import query_as_service_impl, query_as_user_impl
+from iris.clickhouse.queries import query_as_service, query_as_user
 from iris.clickhouse.users import init_user_rights
 
 
@@ -36,7 +36,7 @@ def test_query_as_user_impersonates(ch_client, ch_settings, prefix) -> None:
 
     async def run():
         async with _http_client(ch_settings) as http_client:
-            return await query_as_user_impl(
+            return await query_as_user(
                 http_client,
                 username=username,
                 sql="SELECT currentUser() AS cu, authenticatedUser() AS au FROM system.one",
@@ -48,7 +48,7 @@ def test_query_as_user_impersonates(ch_client, ch_settings, prefix) -> None:
 
 def test_query_as_service_does_not_impersonate(ch_client, ch_settings, prefix) -> None:
     async def run():
-        result = await query_as_service_impl(
+        result = await query_as_service(
             ch_client, sql="SELECT currentUser() AS cu FROM system.one"
         )
         return list(result.named_results())
@@ -63,7 +63,7 @@ def test_query_as_user_passes_parameters(ch_client, ch_settings, prefix) -> None
 
     async def run():
         async with _http_client(ch_settings) as http_client:
-            return await query_as_user_impl(
+            return await query_as_user(
                 http_client,
                 username=username,
                 sql="SELECT {x:Int32} AS v FROM system.one",
@@ -81,7 +81,7 @@ def test_query_as_user_multi_row(ch_client, ch_settings, prefix) -> None:
 
     async def run():
         async with _http_client(ch_settings) as http_client:
-            return await query_as_user_impl(
+            return await query_as_user(
                 http_client,
                 username=username,
                 sql="SELECT number AS n, number * 2 AS doubled FROM system.numbers LIMIT 3",
@@ -113,7 +113,7 @@ def test_query_as_user_database_kwarg_scopes_unqualified_names(
 
     async def run():
         async with _http_client(ch_settings) as http_client:
-            return await query_as_user_impl(
+            return await query_as_user(
                 http_client,
                 username=username,
                 sql="SELECT count() AS c FROM t",

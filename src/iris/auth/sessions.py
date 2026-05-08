@@ -89,6 +89,25 @@ class SessionStore:
         absolute_ttl_seconds: int,
         max_per_user: int = 10,
     ) -> None:
+        """Open a SQLite-backed session store.
+
+        Args:
+            path: SQLite file path; ``":memory:"`` is supported for tests.
+            ttl_seconds: sliding TTL refreshed on every ``get_and_refresh``.
+            absolute_ttl_seconds: hard upper bound from ``created_at``;
+                sessions past this expire even if recently refreshed.
+            max_per_user: oldest sessions are pruned on ``create()`` once a
+                subject exceeds this count.
+
+        Concurrency: one ``sqlite3.Connection`` per process, serialized by
+        ``self._lock`` (asyncio). Sync ``sqlite3`` calls run via
+        ``asyncio.to_thread`` so the event loop stays unblocked. WAL mode
+        plus ``synchronous=NORMAL`` make the file safe to share across
+        multiple uvicorn workers.
+
+        Lifecycle: ``close()`` is idempotent and required (registered into
+        ``app.state.shutdown_hooks`` by ``iris.auth.routes.install``).
+        """
         self._ttl = timedelta(seconds=ttl_seconds)
         self._absolute_ttl = timedelta(seconds=absolute_ttl_seconds)
         self._max_per_user = max_per_user

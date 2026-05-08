@@ -65,7 +65,7 @@ def build_auth_router(
         for hook in app.state.post_login_hooks:
             await hook(user, session.id)
         logger.info(
-            "auth: login user=%s subject=%s method=%s groups=%s",
+            "auth: login display_name=%s subject=%s method=%s groups=%s",
             user.display_name,
             user.subject,
             method,
@@ -131,7 +131,9 @@ def build_auth_router(
         try:
             user, next_url = await provider.complete(request)
         except AuthError as err:
-            return RedirectResponse(f"/login?error={err.token}", status_code=302)
+            response = RedirectResponse(f"/login?error={err.token}", status_code=302)
+            response.delete_cookie(OAUTH_STATE_COOKIE)
+            return response
         safe_next = _safe_next(next_url)
         response = await _finalize_login_redirect(user=user, target=safe_next, method="oauth")
         response.delete_cookie(OAUTH_STATE_COOKIE)
@@ -147,7 +149,7 @@ def build_auth_router(
         if sid:
             await store.delete(sid)
         logger.info(
-            "auth: logout user=%s subject=%s",
+            "auth: logout display_name=%s subject=%s",
             session.user.display_name,
             session.user.subject,
         )
@@ -190,7 +192,9 @@ def install(app: FastAPI) -> None:
         absolute_ttl_seconds=settings.absolute_ttl_seconds,
         max_per_user=settings.max_per_user,
     )
-    app.state.auth_close_session_store = store.close
+    if not hasattr(app.state, "shutdown_hooks"):
+        app.state.shutdown_hooks = []
+    app.state.shutdown_hooks.append(store.close)
     provider = build_provider(settings)
 
     from iris.templates import TEMPLATES
@@ -215,4 +219,4 @@ def install(app: FastAPI) -> None:
     app.include_router(router)
 
     if isinstance(provider, OAuthProvider):
-        app.state.auth_close_provider = provider.close
+        app.state.shutdown_hooks.append(provider.close)

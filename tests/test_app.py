@@ -57,3 +57,38 @@ def test_clock_stream_yields_signal_patch():
     event = asyncio.run(first_tick())
     assert event.startswith("event: datastar-patch-signals")
     assert '"now":' in event
+
+
+def test_shutdown_hooks_run_in_lifo_order():
+    """Hooks registered into app.state.shutdown_hooks fire in reverse-of-registration order."""
+    from iris.app import build_app
+    from fastapi.testclient import TestClient
+
+    app = build_app(install_clickhouse=False)
+    order: list[str] = []
+
+    async def first():
+        order.append("first")
+
+    async def second():
+        order.append("second")
+
+    app.state.shutdown_hooks.append(first)
+    app.state.shutdown_hooks.append(second)
+
+    with TestClient(app):
+        pass  # startup runs; exit triggers shutdown
+
+    # Of the hooks we appended, second fires before first (LIFO).
+    appended_order = [name for name in order if name in ("first", "second")]
+    assert appended_order == ["second", "first"]
+
+
+def test_build_app_initializes_shutdown_hooks_list():
+    """build_app() exposes app.state.shutdown_hooks as a populated list."""
+    from iris.app import build_app
+
+    app = build_app(install_clickhouse=False)
+    assert isinstance(app.state.shutdown_hooks, list)
+    # auth.install registers at least the session-store closer.
+    assert len(app.state.shutdown_hooks) >= 1

@@ -8,6 +8,7 @@ import ssl
 from typing import Any, cast
 from urllib.parse import urlencode
 
+
 import httpx
 import jwt
 from fastapi import Request, Response
@@ -25,6 +26,30 @@ STATE_COOKIE_TTL = 600  # 10 minutes
 
 
 class OAuthProvider:
+    """OIDC authorization-code-with-PKCE provider.
+
+    Construction is lazy: discovery (`/.well-known/openid-configuration`) and
+    JWKS fetch happen on the first property access (``authorize_endpoint``,
+    ``token_endpoint``, etc.). This keeps `build_app()` non-blocking even
+    if the IdP is briefly unreachable.
+
+    Two httpx clients are held: a sync ``Client`` used only by
+    ``_ensure_discovered`` (PyJWKClient bypasses httpx and uses urllib;
+    we do discovery + JWKS via the sync client so test transports compose
+    correctly), and an async ``AsyncClient`` for token exchange and
+    userinfo. Both honor ``OIDC_CA_CERT_PATH`` for private CAs.
+
+    State cookie signing: ``URLSafeTimedSerializer`` is keyed by a SHA-256
+    derivation of ``client_secret`` (prefixed with
+    ``iris-oauth-state-signing-v1:``) so a leak of the signing key is not
+    a leak of the OAuth client secret. The ``v1`` tag lets us rotate the
+    derivation in a future release without invalidating in-flight state
+    cookies mid-deploy.
+
+    Limitation: JWKS is cached on first discovery; IdP key rotation
+    requires an app restart. Acceptable for v1; revisit if rotation matters.
+    """
+
     def __init__(
         self,
         settings: OIDCSettings,
@@ -52,7 +77,15 @@ class OAuthProvider:
         else:
             self._client = httpx.Client(verify=verify_arg, timeout=10.0)
             self._async_client = httpx.AsyncClient(verify=verify_arg, timeout=10.0)
-        self._signer = URLSafeTimedSerializer(settings.client_secret, salt="iris-oauth-state")
+        # Derive the state-signing key from client_secret so a leak of one is
+        # not a leak of the other. The "v1" tag in the prefix lets us rotate
+        # the derivation later without invalidating in-flight cookies
+        # mid-deploy. SHA-256 is one-way; raw client_secret stays out of the
+        # signer.
+        derived_key = hashlib.sha256(
+            b"iris-oauth-state-signing-v1:" + settings.client_secret.encode()
+        ).digest()
+        self._signer = URLSafeTimedSerializer(derived_key, salt="iris-oauth-state")
         # Lazy: discovery + JWKS fetched on first property access so app
         # construction doesn't block on a slow IdP. The endpoints below are
         # read via @property and call _ensure_discovered() before returning.

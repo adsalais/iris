@@ -5,6 +5,13 @@ role and (optionally) bootstraps an admin user role + admin group role from
 ``CLICKHOUSE_ADMIN_USER`` / ``CLICKHOUSE_ADMIN_GROUP`` env vars. Each admin role
 is granted full admin privileges plus ``iris_global_admin`` (so wildcard row
 policies on ``iris_global_admin`` apply to every admin's effective role set).
+
+Detection is deterministic and per-configured-name: re-running with the
+same admin name is a no-op; re-running with a *different* admin name
+bootstraps the new value alongside any existing admins. The old heuristic
+("any role with the matching suffix already holds ROLE ADMIN WGO") was
+vulnerable to false-positives from manual operator grants on unrelated
+roles.
 """
 
 from __future__ import annotations
@@ -23,18 +30,23 @@ logger = logging.getLogger("iris.clickhouse.bootstrap")
 GLOBAL_ADMIN_ROLE = "iris_global_admin"
 
 
-def _has_admin_role_with_suffix(client: Client, suffix: str) -> bool:
-    """Detect whether some role with the given suffix already holds the admin
-    marker (ROLE ADMIN at global scope with grant_option=1)."""
+def _admin_already_bootstrapped(client: Client, *, expected_role: str) -> bool:
+    """Return True iff ``expected_role`` already has ``iris_global_admin`` granted.
+
+    This is the deterministic alternative to the previous heuristic
+    (which scanned for *any* role with the configured suffix that held
+    ROLE ADMIN — vulnerable to false-positives from manual operator
+    grants on unrelated roles). Re-runs with a different
+    ``CLICKHOUSE_ADMIN_USER`` value DO bootstrap the new value (per-name,
+    not per-channel).
+    """
     rows = client.query(
         """
-        SELECT count() FROM system.grants
-        WHERE access_type = 'ROLE ADMIN'
-          AND grant_option = 1
-          AND database IS NULL
-          AND endsWith(role_name, {suffix:String})
+        SELECT count() FROM system.role_grants
+        WHERE role_name = {role:String}
+          AND granted_role_name = {ga:String}
         """,
-        parameters={"suffix": suffix},
+        parameters={"role": expected_role, "ga": GLOBAL_ADMIN_ROLE},
     ).result_rows
     return cast(int, rows[0][0]) > 0
 
@@ -74,18 +86,20 @@ def bootstrap_admin(
     global_admin_q = quote_identifier(GLOBAL_ADMIN_ROLE, kind="role")
     client.command(f"CREATE ROLE IF NOT EXISTS {global_admin_q}")
 
-    if admin_user and not _has_admin_role_with_suffix(client, USER_ROLE_SUFFIX):
-        role = f"{admin_user}{USER_ROLE_SUFFIX}"
-        role_q = quote_identifier(role, kind="role")
-        client.command(f"CREATE ROLE IF NOT EXISTS {role_q}")
-        _grant_full_admin(client, role_q=role_q)
-        client.command(f"GRANT {global_admin_q} TO {role_q}")
-        logger.info("bootstrap: seeded admin role for user=%s", admin_user)
+    if admin_user:
+        expected = f"{admin_user}{USER_ROLE_SUFFIX}"
+        if not _admin_already_bootstrapped(client, expected_role=expected):
+            role_q = quote_identifier(expected, kind="role")
+            client.command(f"CREATE ROLE IF NOT EXISTS {role_q}")
+            _grant_full_admin(client, role_q=role_q)
+            client.command(f"GRANT {global_admin_q} TO {role_q}")
+            logger.info("bootstrap: seeded admin role for user=%s", admin_user)
 
-    if admin_group and not _has_admin_role_with_suffix(client, GROUP_ROLE_SUFFIX):
-        role = f"{admin_group}{GROUP_ROLE_SUFFIX}"
-        role_q = quote_identifier(role, kind="role")
-        client.command(f"CREATE ROLE IF NOT EXISTS {role_q}")
-        _grant_full_admin(client, role_q=role_q)
-        client.command(f"GRANT {global_admin_q} TO {role_q}")
-        logger.info("bootstrap: seeded admin role for group=%s", admin_group)
+    if admin_group:
+        expected = f"{admin_group}{GROUP_ROLE_SUFFIX}"
+        if not _admin_already_bootstrapped(client, expected_role=expected):
+            role_q = quote_identifier(expected, kind="role")
+            client.command(f"CREATE ROLE IF NOT EXISTS {role_q}")
+            _grant_full_admin(client, role_q=role_q)
+            client.command(f"GRANT {global_admin_q} TO {role_q}")
+            logger.info("bootstrap: seeded admin role for group=%s", admin_group)

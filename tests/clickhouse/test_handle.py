@@ -1,40 +1,20 @@
-"""Unit tests for the standalone CH operation functions in iris.clickhouse.handle.
+"""Unit tests for the standalone async query helpers in iris.clickhouse.queries.
 
-The query_as_user_impl path goes through httpx.AsyncClient (mocked here via
-httpx.MockTransport); the service-identity / DDL / audit functions go
-through a mocked clickhouse-connect Client.
+The query_as_user path goes through httpx.AsyncClient (mocked here via
+httpx.MockTransport); query_as_service goes through clickhouse-connect's
+Client (mocked via MagicMock).
 """
 from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
 from clickhouse_connect.driver.query import QueryResult
 
-from iris.clickhouse.config import ClickHouseSettings
-from iris.clickhouse.handle import (
-    add_row_policy_impl,
-    grant_select_to_database_impl,
-    query_as_service_impl,
-    query_as_user_impl,
-    reprovision_user_impl,
-    user_grants_impl,
-)
-
-
-def _settings() -> ClickHouseSettings:
-    return ClickHouseSettings(
-        host="h",
-        port=1,
-        user="u",
-        password="p",
-        secure=False,
-        verify=False,
-        ca_cert_path=None,
-    )
+from iris.clickhouse.queries import query_as_service, query_as_user
 
 
 def _http_client(handler: httpx.MockTransport | None = None) -> httpx.AsyncClient:
@@ -52,7 +32,7 @@ def test_query_as_user_prepends_execute_as_in_http_body() -> None:
         return httpx.Response(200, content=b'{"v":1}\n')
 
     rows = asyncio.run(
-        query_as_user_impl(
+        query_as_user(
             _http_client(httpx.MockTransport(handler)),
             username="alice",
             sql="SELECT 1 AS v",
@@ -74,7 +54,7 @@ def test_query_as_user_sets_default_format_jsoneachrow() -> None:
         return httpx.Response(200, content=b"{}\n")
 
     asyncio.run(
-        query_as_user_impl(
+        query_as_user(
             _http_client(httpx.MockTransport(handler)),
             username="alice",
             sql="SELECT 1",
@@ -92,7 +72,7 @@ def test_query_as_user_passes_parameters_as_param_prefixed_url_params() -> None:
         return httpx.Response(200, content=b"{}\n")
 
     asyncio.run(
-        query_as_user_impl(
+        query_as_user(
             _http_client(httpx.MockTransport(handler)),
             username="alice",
             sql="SELECT {x:Int32}",
@@ -111,7 +91,7 @@ def test_query_as_user_database_kwarg_sets_url_param() -> None:
         return httpx.Response(200, content=b"{}\n")
 
     asyncio.run(
-        query_as_user_impl(
+        query_as_user(
             _http_client(httpx.MockTransport(handler)),
             username="alice",
             sql="SELECT count() FROM t",
@@ -130,7 +110,7 @@ def test_query_as_user_no_database_kwarg_omits_url_param() -> None:
         return httpx.Response(200, content=b"{}\n")
 
     asyncio.run(
-        query_as_user_impl(
+        query_as_user(
             _http_client(httpx.MockTransport(handler)),
             username="alice",
             sql="SELECT 1",
@@ -152,7 +132,7 @@ def test_query_as_user_parses_multi_row_jsoneachrow() -> None:
         )
     )
     rows = asyncio.run(
-        query_as_user_impl(
+        query_as_user(
             _http_client(handler),
             username="alice",
             sql="SELECT number AS n FROM system.numbers LIMIT 3",
@@ -164,7 +144,7 @@ def test_query_as_user_parses_multi_row_jsoneachrow() -> None:
 def test_query_as_user_returns_empty_list_for_empty_response() -> None:
     handler = httpx.MockTransport(lambda _req: httpx.Response(200, content=b""))
     rows = asyncio.run(
-        query_as_user_impl(
+        query_as_user(
             _http_client(handler),
             username="alice",
             sql="INSERT INTO t VALUES (1)",
@@ -177,7 +157,7 @@ def test_query_as_user_raises_on_http_error() -> None:
     handler = httpx.MockTransport(lambda _req: httpx.Response(500, content=b"boom"))
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(
-            query_as_user_impl(
+            query_as_user(
                 _http_client(handler),
                 username="alice",
                 sql="SELECT 1",
@@ -188,7 +168,7 @@ def test_query_as_user_raises_on_http_error() -> None:
 def test_query_as_user_rejects_invalid_username() -> None:
     with pytest.raises(ValueError):
         asyncio.run(
-            query_as_user_impl(
+            query_as_user(
                 _http_client(),
                 username="alice; DROP USER bob",
                 sql="SELECT 1",
@@ -201,7 +181,7 @@ def test_query_as_service_does_not_prepend_execute_as() -> None:
     client = MagicMock()
     client.query.return_value = MagicMock(spec=QueryResult)
 
-    asyncio.run(query_as_service_impl(client, sql="SELECT 1"))
+    asyncio.run(query_as_service(client, sql="SELECT 1"))
     args, kwargs = client.query.call_args
     sql = args[0] if args else kwargs["query"]
     assert "EXECUTE AS" not in sql
@@ -212,63 +192,6 @@ def test_query_as_service_passes_database_kwarg() -> None:
     client = MagicMock()
     client.query.return_value = MagicMock(spec=QueryResult)
 
-    asyncio.run(query_as_service_impl(client, sql="SELECT 1", database="finance"))
+    asyncio.run(query_as_service(client, sql="SELECT 1", database="finance"))
     _, kwargs = client.query.call_args
     assert kwargs["database"] == "finance"
-
-
-def test_reprovision_user_delegates_to_init_user_rights() -> None:
-    client = MagicMock()
-    with patch("iris.clickhouse.handle.init_user_rights") as mock_init:
-        asyncio.run(
-            reprovision_user_impl(
-                client, username="bob", groups=["sales"], settings=_settings()
-            )
-        )
-
-    mock_init.assert_called_once()
-    _, kwargs = mock_init.call_args
-    assert kwargs["username"] == "bob"
-    assert kwargs["groups"] == ["sales"]
-
-
-def test_user_grants_impl_delegates() -> None:
-    client = MagicMock()
-    with patch("iris.clickhouse.handle.user_grants") as mock_ug:
-        mock_ug.return_value = [{"x": 1}]
-        result = asyncio.run(user_grants_impl(client, username="alice"))
-    assert result == [{"x": 1}]
-    mock_ug.assert_called_once()
-
-
-def test_grant_select_to_database_impl_delegates() -> None:
-    client = MagicMock()
-    with patch("iris.clickhouse.handle.grant_select_to_database") as mock_grant:
-        asyncio.run(
-            grant_select_to_database_impl(client, database="orders", role="reader")
-        )
-    mock_grant.assert_called_once()
-    _, kwargs = mock_grant.call_args
-    assert kwargs["database"] == "orders"
-    assert kwargs["role"] == "reader"
-
-
-def test_add_row_policy_impl_delegates() -> None:
-    client = MagicMock()
-    with patch("iris.clickhouse.handle.add_row_policy") as mock_add:
-        asyncio.run(
-            add_row_policy_impl(
-                client,
-                database="orders",
-                table="lines",
-                column="region",
-                role="reader",
-                value="EU",
-            )
-        )
-    mock_add.assert_called_once()
-    _, kwargs = mock_add.call_args
-    assert kwargs["database"] == "orders"
-    assert kwargs["table"] == "lines"
-    assert kwargs["column"] == "region"
-    assert kwargs["value"] == "EU"

@@ -205,3 +205,65 @@ def test_session_absolute_ttl_custom(monkeypatch):
     monkeypatch.setenv("SESSION_ABSOLUTE_TTL_SECONDS", "86400")
     s = AuthSettings.from_env()
     assert s.absolute_ttl_seconds == 86_400
+
+
+def test_build_provider_raises_runtime_error_when_method_mock_but_settings_missing():
+    """If AuthSettings.method='mock' but settings.mock is None, build_provider
+    must raise RuntimeError (not AssertionError, which `python -O` strips)."""
+    from iris.auth.config import AuthSettings
+    from iris.auth.providers import build_provider
+
+    settings = AuthSettings(
+        method="mock",
+        cookie_name="iris_session",
+        ttl_seconds=3600,
+        absolute_ttl_seconds=86400,
+        max_per_user=10,
+        cookie_secure=False,
+        auth_db_path=":memory:",
+        oidc=None,
+        ldap=None,
+        mock=None,  # invariant violation
+    )
+    with pytest.raises(RuntimeError, match="mock"):
+        build_provider(settings)
+
+
+def test_build_provider_raises_runtime_error_when_method_ldap_but_settings_missing():
+    from iris.auth.config import AuthSettings
+    from iris.auth.providers import build_provider
+
+    settings = AuthSettings(
+        method="ldap",
+        cookie_name="iris_session",
+        ttl_seconds=3600,
+        absolute_ttl_seconds=86400,
+        max_per_user=10,
+        cookie_secure=False,
+        auth_db_path=":memory:",
+        oidc=None,
+        ldap=None,  # invariant violation
+        mock=None,
+    )
+    with pytest.raises(RuntimeError, match="ldap"):
+        build_provider(settings)
+
+
+def test_build_provider_raises_runtime_error_when_method_oauth_but_settings_missing():
+    from iris.auth.config import AuthSettings
+    from iris.auth.providers import build_provider
+
+    settings = AuthSettings(
+        method="oauth",
+        cookie_name="iris_session",
+        ttl_seconds=3600,
+        absolute_ttl_seconds=86400,
+        max_per_user=10,
+        cookie_secure=False,
+        auth_db_path=":memory:",
+        oidc=None,  # invariant violation
+        ldap=None,
+        mock=None,
+    )
+    with pytest.raises(RuntimeError, match="oauth"):
+        build_provider(settings)

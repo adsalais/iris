@@ -30,6 +30,9 @@ class AuthError(Exception):
 
 
 def _wants_html(request: Request) -> bool:
+    # Treats `Accept: text/html` (browsers navigating) as HTML. Bare `Accept: */*`
+    # (default for `fetch()` and tools like curl without -H) falls through to
+    # the JSON branch — callers that want HTML must say so.
     accept = request.headers.get("accept", "")
     return "text/html" in accept
 

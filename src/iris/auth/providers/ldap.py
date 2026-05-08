@@ -27,6 +27,27 @@ logger = logging.getLogger("iris.auth.ldap")
 
 
 class LDAPProvider:
+    """LDAP simple-bind authentication with group-membership lookup.
+
+    Two-stage flow: (1) ``bind`` as the user's DN with their password —
+    success implies authenticated; (2) ``search`` the configured
+    ``group_base_dn`` for entries whose ``member`` attribute references
+    the bound DN. The bind attempt drives both authentication and
+    authorization (no separate service-account bind).
+
+    The ``_USERNAME_RE`` whitelist (``[A-Za-z0-9._-]{1,64}``) defends
+    ``bind_dn_template.format(username=...)``: characters outside the
+    whitelist (commas, equals, parentheses, NULs) cannot reach the
+    template substitution, so the resulting DN is structurally safe even
+    though we don't parse-and-recompose. Group-search input is escaped
+    via ``ldap3.utils.conv.escape_filter_chars``.
+
+    The class carries a file-level pyright suppression because ldap3's
+    ``Entry`` exposes attributes dynamically (``entry.cn.value`` et al)
+    based on the search's ``attributes=`` argument; static typing can't
+    track these.
+    """
+
     def __init__(
         self,
         settings: LDAPSettings,
