@@ -38,7 +38,9 @@ def test_install_populates_app_state(ch_settings) -> None:
     assert app.state.clickhouse_client is not None
     assert app.state.clickhouse_settings is not None
     assert app.state.clickhouse_http_client is not None
-    assert callable(app.state.clickhouse_close_http)
+    # CH install registers exactly one shutdown hook (the http client closer).
+    assert len(app.state.shutdown_hooks) == 1
+    assert callable(app.state.shutdown_hooks[-1])
     assert len(app.state.post_login_hooks) == 1
 
 
@@ -46,7 +48,7 @@ def test_install_http_client_aclose_runs_clean(ch_settings) -> None:
     app = _make_app()
     install(app)
 
-    asyncio.run(app.state.clickhouse_close_http())
+    asyncio.run(app.state.shutdown_hooks[-1]())
     assert app.state.clickhouse_http_client.is_closed
 
 

@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from html import escape
@@ -18,20 +18,12 @@ from iris.templates import TEMPLATES
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # Startup is no-op; install() runs eagerly during build_app(). On shutdown,
-    # close any teardown hooks registered by the auth or clickhouse layers
-    # (OAuthProvider's httpx client, the impersonation httpx client, the SQLite
-    # session store).
+    # Subsystems register teardown callables in app.state.shutdown_hooks during
+    # build_app(); this lifespan runs them in LIFO order on shutdown so a
+    # subsystem's teardown sees its dependencies still alive.
     yield
-    closer = getattr(app.state, "auth_close_provider", None)
-    if closer is not None:
-        await closer()
-    ch_closer = getattr(app.state, "clickhouse_close_http", None)
-    if ch_closer is not None:
-        await ch_closer()
-    sess_closer = getattr(app.state, "auth_close_session_store", None)
-    if sess_closer is not None:
-        await sess_closer()
+    for hook in reversed(app.state.shutdown_hooks):
+        await hook()
 
 
 async def _signals(request: Request) -> dict[str, Any]:
@@ -50,6 +42,8 @@ async def _clock_stream():
 
 def build_app(*, install_clickhouse: bool = True) -> FastAPI:
     app = FastAPI(title="Iris", lifespan=_lifespan)
+    shutdown_hooks: list[Callable[[], Awaitable[None]]] = []
+    app.state.shutdown_hooks = shutdown_hooks
 
     from iris.auth.routes import install as install_auth
 

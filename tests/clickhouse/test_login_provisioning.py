@@ -66,9 +66,10 @@ def test_form_login_provisions_user_in_clickhouse(
         assert f"{username}{USER_ROLE_SUFFIX}" in names
         assert f"{prefix}_admins{GROUP_ROLE_SUFFIX}" in names
     finally:
-        # Best-effort: close the httpx client to avoid leak warnings.
+        # Best-effort: run the registered shutdown hooks to avoid leak warnings.
         import asyncio
-        asyncio.run(app.state.clickhouse_close_http())
+        for hook in reversed(app.state.shutdown_hooks):
+            asyncio.run(hook())
 
 
 def test_second_login_reconciles_group_change(
@@ -85,7 +86,8 @@ def test_second_login_reconciles_group_change(
         _login(TestClient(app1), username=username, password="secret")
     finally:
         import asyncio
-        asyncio.run(app1.state.clickhouse_close_http())
+        for hook in reversed(app1.state.shutdown_hooks):
+            asyncio.run(hook())
 
     monkeypatch.setenv("MOCK_GROUPS", f"{prefix}_b")
     app2 = build_app(install_clickhouse=True)
@@ -104,7 +106,8 @@ def test_second_login_reconciles_group_change(
         assert f"{prefix}_a{GROUP_ROLE_SUFFIX}" not in names
     finally:
         import asyncio
-        asyncio.run(app2.state.clickhouse_close_http())
+        for hook in reversed(app2.state.shutdown_hooks):
+            asyncio.run(hook())
 
 
 def test_build_app_fails_loud_when_clickhouse_unreachable(monkeypatch) -> None:

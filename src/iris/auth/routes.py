@@ -190,7 +190,9 @@ def install(app: FastAPI) -> None:
         absolute_ttl_seconds=settings.absolute_ttl_seconds,
         max_per_user=settings.max_per_user,
     )
-    app.state.auth_close_session_store = store.close
+    if not hasattr(app.state, "shutdown_hooks"):
+        app.state.shutdown_hooks = []
+    app.state.shutdown_hooks.append(store.close)
     provider = build_provider(settings)
 
     from iris.templates import TEMPLATES
@@ -215,4 +217,4 @@ def install(app: FastAPI) -> None:
     app.include_router(router)
 
     if isinstance(provider, OAuthProvider):
-        app.state.auth_close_provider = provider.close
+        app.state.shutdown_hooks.append(provider.close)

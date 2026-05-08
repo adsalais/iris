@@ -53,7 +53,9 @@ def install(app: FastAPI) -> None:
     async def _close_http() -> None:
         await http_client.aclose()
 
-    app.state.clickhouse_close_http = _close_http
+    if not hasattr(app.state, "shutdown_hooks"):
+        app.state.shutdown_hooks = []
+    app.state.shutdown_hooks.append(_close_http)
 
     async def _provision_on_login(user: User, session_id: str) -> None:
         await asyncio.to_thread(
