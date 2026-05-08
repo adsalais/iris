@@ -1,11 +1,13 @@
 """Wire iris.clickhouse into a FastAPI app.
 
-Builds the shared clickhouse-connect Client and a shared httpx.AsyncClient for
-impersonated queries (see iris.clickhouse.handle for why both are needed),
-runs the CH-side bootstrap (creates iris_global_admin sentinel + optional
-admin user/group roles from CLICKHOUSE_ADMIN_USER / CLICKHOUSE_ADMIN_GROUP),
-stashes everything on app.state, and registers a post-login provisioning hook
-so init_user_rights + derive_rights run once per real authentication.
+Builds the shared clickhouse-connect Client and a shared httpx.AsyncClient
+for impersonated queries (``EXECUTE AS`` cannot use clickhouse-connect's
+binary protocol, so user-scoped queries go through the HTTP endpoint
+directly), runs the CH-side bootstrap (creates iris_global_admin sentinel
+plus optional admin user/group roles from CLICKHOUSE_ADMIN_USER /
+CLICKHOUSE_ADMIN_GROUP), stashes everything on app.state, and registers a
+post-login provisioning hook so init_user_rights + derive_rights run once
+per real authentication.
 """
 
 from __future__ import annotations

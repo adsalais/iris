@@ -58,7 +58,7 @@ def init_user_rights(
         client.command(f"CREATE ROLE IF NOT EXISTS {role_q}")
         client.command(f"GRANT {role_q} TO {user_q}")
 
-    # The IMPERSONATE grantee is the CH user iris connects as. After dropping
-    # CLICKHOUSE_SERVICE_ADMIN_USER, that's just settings.user.
+    # The IMPERSONATE grantee is the CH user iris connects as
+    # (settings.user). All HTTP queries-as-user route through this identity.
     impersonator_q = quote_identifier(settings.user, kind="user")
     client.command(f"GRANT IMPERSONATE ON {user_q} TO {impersonator_q}")
