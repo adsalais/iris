@@ -20,3 +20,4 @@ htmlcov/
 .env
 *.db
 iris-auth.db*
+brainstoming.tx
