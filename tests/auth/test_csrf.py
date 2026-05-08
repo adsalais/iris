@@ -1,4 +1,6 @@
-from fastapi import Depends, FastAPI
+import re
+
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.testclient import TestClient
 
@@ -6,6 +8,7 @@ from iris.auth.csrf import (
     CSRF_COOKIE_NAME,
     CSRF_FORM_FIELD,
     issue_csrf_token,
+    mint_csrf_token,
     verify_csrf_form,
 )
 from iris.auth.deps import set_settings
@@ -93,3 +96,34 @@ def test_secure_attribute_follows_settings():
     # Secure deployment (HTTPS): Secure flag present
     r_secure = TestClient(_build_app(cookie_secure=True)).get("/form")
     assert "secure" in r_secure.headers["set-cookie"].lower()
+
+
+def _echo_app() -> FastAPI:
+    app = FastAPI()
+
+    @app.get("/echo")
+    async def echo(request: Request) -> dict[str, str]:
+        return {"token": mint_csrf_token(request)}
+
+    return app
+
+
+def test_mint_csrf_token_replaces_malformed_cookie():
+    """An attacker-controlled or garbage cookie value must not be reused;
+    mint_csrf_token replaces it with a fresh secrets.token_urlsafe(32).
+    """
+    client = TestClient(_echo_app())
+    client.cookies.set(CSRF_COOKIE_NAME, "../../../etc/passwd")
+    response = client.get("/echo")
+    token = response.json()["token"]
+    assert token != "../../../etc/passwd"
+    assert re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token), token
+
+
+def test_mint_csrf_token_reuses_well_formed_cookie():
+    """A well-formed urlsafe-base64 token of acceptable length is reused."""
+    fixed = "A" * 32  # 32 chars, urlsafe-base64 charset
+    client = TestClient(_echo_app())
+    client.cookies.set(CSRF_COOKIE_NAME, fixed)
+    response = client.get("/echo")
+    assert response.json()["token"] == fixed

@@ -1,9 +1,7 @@
 """ClickHouse provisioning, audit helpers, and per-tier ops.
 
-Public surface — see ``CLAUDE.md`` for usage. ``iris.clickhouse`` no longer
-hosts FastAPI handle providers; the Session subclasses in
-``iris.auth.identity`` carry the per-tier method surface, calling into the
-``*_impl`` functions in ``iris.clickhouse.handle``.
+Public surface — see ``CLAUDE.md`` for usage. Session subclasses in
+``iris.auth.identity`` call into these helpers via ``asyncio.to_thread``.
 
 The ``install`` function lives in ``iris.clickhouse.install`` but is *not*
 re-exported from this package: callers (only ``iris.app:build_app``) do
@@ -11,6 +9,7 @@ re-exported from this package: callers (only ``iris.app:build_app``) do
 ``__init__`` breaks an old module-load cycle where importing the package
 triggered loading ``iris.auth.bootstrap`` via ``install``.
 """
+from __future__ import annotations
 
 from iris.clickhouse.audit import (
     role_grants,

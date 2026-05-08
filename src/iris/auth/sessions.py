@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, UTC
 from typing import Any
 
 from iris.auth.identity import User, UserSession
-from iris.auth.session import EMPTY_RIGHTS, Rights, rights_from_dict, rights_to_dict
+from iris.auth.session import Rights, rights_from_dict, rights_to_dict
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -67,8 +67,7 @@ def _row_to_session(row: sqlite3.Row) -> UserSession:
         display_name=row["display_name"],
         groups=tuple(json.loads(row["groups_json"])),
     )
-    rights_raw = json.loads(row["rights_json"]) if row["rights_json"] else {}
-    rights = rights_from_dict(rights_raw) if rights_raw else EMPTY_RIGHTS
+    rights = rights_from_dict(json.loads(row["rights_json"]))
     return UserSession(
         id=row["id"],
         user=user,
@@ -186,22 +185,35 @@ class SessionStore:
             return await asyncio.to_thread(self._get_and_refresh_sync, session_id)
 
     def _get_and_refresh_sync(self, session_id: str) -> UserSession | None:
-        row = self._conn.execute(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        now = datetime.now(UTC)
-        expires_at = _from_ts(row["expires_at_ts"])
-        absolute_expires_at = _from_ts(row["absolute_expires_at_ts"])
-        if expires_at <= now or absolute_expires_at <= now:
-            self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-            return None
-        new_expires = now + self._ttl
-        self._conn.execute(
-            "UPDATE sessions SET expires_at_ts = ? WHERE id = ?",
-            (_to_ts(new_expires), session_id),
-        )
+        # BEGIN IMMEDIATE acquires the write lock up front, so the
+        # SELECT/UPDATE/DELETE window is atomic across processes that share
+        # the WAL (multi-worker uvicorn). Mirrors _create_sync's pattern.
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                self._conn.execute("COMMIT")
+                return None
+            now = datetime.now(UTC)
+            expires_at = _from_ts(row["expires_at_ts"])
+            absolute_expires_at = _from_ts(row["absolute_expires_at_ts"])
+            if expires_at <= now or absolute_expires_at <= now:
+                self._conn.execute(
+                    "DELETE FROM sessions WHERE id = ?", (session_id,)
+                )
+                self._conn.execute("COMMIT")
+                return None
+            new_expires = now + self._ttl
+            self._conn.execute(
+                "UPDATE sessions SET expires_at_ts = ? WHERE id = ?",
+                (_to_ts(new_expires), session_id),
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
         session = _row_to_session(row)
         return UserSession(
             id=session.id,

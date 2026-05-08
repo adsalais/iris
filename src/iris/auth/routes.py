@@ -107,7 +107,7 @@ def build_auth_router(
                 headers={"Retry-After": str(int(wait) + 1)},
             )
         if not isinstance(provider, (LDAPProvider, MockProvider)):
-            return Response(status_code=405)
+            return Response(status_code=405, headers={"Allow": "GET"})
         safe_next = _safe_next(next)
         try:
             user = await provider.authenticate(username, password)

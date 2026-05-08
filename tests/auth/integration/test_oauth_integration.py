@@ -32,13 +32,14 @@ def _oauth_provider(
     )
 
 
-def _verifier_from_oauth_state(test_client: TestClient) -> str:
-    """Decode the verifier out of the oauth_state cookie iris set during /login.
+def _oauth_state_payload(test_client: TestClient) -> dict[str, str]:
+    """Decode the oauth_state cookie iris set during /login.
 
-    OAuthProvider signs the state cookie with a SHA-256 derivation of the
-    client_secret (prefixed with the v1 derivation tag) plus a fixed salt;
-    re-construct the same signer here to extract the verifier so we can
-    hand it back to exchange_code. Mirrors OAuthProvider.__init__.
+    Returns the full signed payload so callers can extract verifier AND
+    nonce. OAuthProvider signs the state cookie with a SHA-256 derivation
+    of the client_secret (prefixed with the v1 derivation tag) plus a
+    fixed salt; re-construct the same signer here. Mirrors
+    OAuthProvider.__init__.
     """
     import hashlib
 
@@ -49,7 +50,12 @@ def _verifier_from_oauth_state(test_client: TestClient) -> str:
     ).digest()
     signer = URLSafeTimedSerializer(derived_key, salt="iris-oauth-state")
     payload = signer.loads(signed)
-    return payload["verifier"]
+    return payload
+
+
+def _verifier_from_oauth_state(test_client: TestClient) -> str:
+    """Backwards-compat shim around _oauth_state_payload."""
+    return _oauth_state_payload(test_client)["verifier"]
 
 
 def test_collection_smoke():
@@ -90,39 +96,54 @@ def test_oauth_provider_discovers_against_real_keycloak(
         ca_cert_path=str(tls_paths.ca_pem),
     )
     provider = OAuthProvider(settings)
-    try:
-        # Property access triggers _ensure_discovered().
-        assert provider.authorize_endpoint.startswith(settings.issuer_url)
-        assert provider.token_endpoint.startswith(settings.issuer_url)
-        assert provider.userinfo_endpoint.startswith(settings.issuer_url)
-    finally:
-        asyncio.run(provider.close())
+
+    async def _discover_and_close() -> dict[str, str]:
+        try:
+            return await provider._ensure_discovered()
+        finally:
+            await provider.close()
+
+    doc = asyncio.run(_discover_and_close())
+    assert doc["authorization_endpoint"].startswith(settings.issuer_url)
+    assert doc["token_endpoint"].startswith(settings.issuer_url)
+    assert doc["userinfo_endpoint"].startswith(settings.issuer_url)
 
 
 def test_simulate_login_drives_authorize_to_callback(oauth_app, keycloak_http):
     """The helper drives the full OAuth code flow against real Keycloak and
     returns the iris-side response holding the iris_session cookie. Groups
-    from the realm's group-membership mapper land in the session user."""
-    test_client = TestClient(oauth_app)
-    response = simulate_login(
-        test_client=test_client, http=keycloak_http,
-        username="alice", password="secret",
-    )
-    assert response.status_code == 302
-    assert response.cookies.get("iris_session") is not None
+    from the realm's group-membership mapper land in the session user.
 
-    # The iris_session cookie should let /api/whoami succeed; groups come
-    # from the oidc-group-membership-mapper attached to the iris client in
-    # the realm seed (no `groups` scope is required because the mapper is
-    # client-level, not scope-gated).
-    me = test_client.get("/api/whoami")
-    assert me.status_code == 200
-    body = me.json()
-    assert set(body["groups"]) == {"admins", "users"}
+    TestClient runs inside a ``with`` block so the lifespan shutdown
+    closes the OAuthProvider's async httpx client; otherwise its pooled
+    TLS connections survive into the next test's portal loop and trip
+    "Event loop is closed" during gc.
+    """
+    with TestClient(oauth_app) as test_client:
+        response = simulate_login(
+            test_client=test_client, http=keycloak_http,
+            username="alice", password="secret",
+        )
+        assert response.status_code == 302
+        assert response.cookies.get("iris_session") is not None
+
+        # The iris_session cookie should let /api/whoami succeed; groups come
+        # from the oidc-group-membership-mapper attached to the iris client in
+        # the realm seed (no `groups` scope is required because the mapper is
+        # client-level, not scope-gated).
+        me = test_client.get("/api/whoami")
+        assert me.status_code == 200
+        body = me.json()
+        assert set(body["groups"]) == {"admins", "users"}
 
 
 async def _exchange_and_close(
-    provider: OAuthProvider, *, code: str, verifier: str, redirect_uri: str
+    provider: OAuthProvider,
+    *,
+    code: str,
+    verifier: str,
+    redirect_uri: str,
+    nonce: str,
 ):
     """Run exchange_code and provider.close() inside a single event loop.
 
@@ -133,7 +154,10 @@ async def _exchange_and_close(
     """
     try:
         return await provider.exchange_code(
-            code=code, code_verifier=verifier, redirect_uri=redirect_uri,
+            code=code,
+            code_verifier=verifier,
+            redirect_uri=redirect_uri,
+            expected_nonce=nonce,
         )
     finally:
         await provider.close()
@@ -149,13 +173,15 @@ def test_provider_exchange_code_returns_alice_with_groups(
         test_client=test_client, http=keycloak_http,
         username="alice", password="secret",
     )
-    verifier = _verifier_from_oauth_state(test_client)
+    payload = _oauth_state_payload(test_client)
 
     user = asyncio.run(
         _exchange_and_close(
             _oauth_provider(keycloak_container, tls_paths),
-            code=code, verifier=verifier,
+            code=code,
+            verifier=payload["verifier"],
             redirect_uri="http://testserver/login/callback",
+            nonce=payload["nonce"],
         )
     )
 
@@ -173,13 +199,15 @@ def test_provider_exchange_code_returns_bob_with_users_group(
         test_client=test_client, http=keycloak_http,
         username="bob", password="hunter2",
     )
-    verifier = _verifier_from_oauth_state(test_client)
+    payload = _oauth_state_payload(test_client)
 
     user = asyncio.run(
         _exchange_and_close(
             _oauth_provider(keycloak_container, tls_paths),
-            code=code, verifier=verifier,
+            code=code,
+            verifier=payload["verifier"],
             redirect_uri="http://testserver/login/callback",
+            nonce=payload["nonce"],
         )
     )
 
@@ -201,7 +229,7 @@ def test_provider_wrong_client_secret_raises_oauth_exchange(
         test_client=test_client, http=keycloak_http,
         username="alice", password="secret",
     )
-    verifier = _verifier_from_oauth_state(test_client)
+    payload = _oauth_state_payload(test_client)
 
     with pytest.raises(AuthError) as exc:
         asyncio.run(
@@ -209,8 +237,10 @@ def test_provider_wrong_client_secret_raises_oauth_exchange(
                 _oauth_provider(
                     keycloak_container, tls_paths, client_secret="WRONG-SECRET"
                 ),
-                code=code, verifier=verifier,
+                code=code,
+                verifier=payload["verifier"],
                 redirect_uri="http://testserver/login/callback",
+                nonce=payload["nonce"],
             )
         )
     assert exc.value.token == "oauth_exchange"
@@ -230,14 +260,16 @@ def test_provider_redirect_uri_mismatch_raises_oauth_exchange(
         test_client=test_client, http=keycloak_http,
         username="alice", password="secret",
     )
-    verifier = _verifier_from_oauth_state(test_client)
+    payload = _oauth_state_payload(test_client)
 
     with pytest.raises(AuthError) as exc:
         asyncio.run(
             _exchange_and_close(
                 _oauth_provider(keycloak_container, tls_paths),
-                code=code, verifier=verifier,
+                code=code,
+                verifier=payload["verifier"],
                 redirect_uri="http://testserver/some-other-path",
+                nonce=payload["nonce"],
             )
         )
     assert exc.value.token == "oauth_exchange"
@@ -257,19 +289,25 @@ def test_provider_code_reuse_raises_oauth_exchange_on_second_call(
         test_client=test_client, http=keycloak_http,
         username="alice", password="secret",
     )
-    verifier = _verifier_from_oauth_state(test_client)
+    payload = _oauth_state_payload(test_client)
     redirect_uri = "http://testserver/login/callback"
 
     async def _exchange_twice():
         provider = _oauth_provider(keycloak_container, tls_paths)
         try:
             user = await provider.exchange_code(
-                code=code, code_verifier=verifier, redirect_uri=redirect_uri,
+                code=code,
+                code_verifier=payload["verifier"],
+                redirect_uri=redirect_uri,
+                expected_nonce=payload["nonce"],
             )
             assert user.username == "alice"
             # Second call against the same code: Keycloak invalidates on use.
             await provider.exchange_code(
-                code=code, code_verifier=verifier, redirect_uri=redirect_uri,
+                code=code,
+                code_verifier=payload["verifier"],
+                redirect_uri=redirect_uri,
+                expected_nonce=payload["nonce"],
             )
         finally:
             await provider.close()
@@ -291,28 +329,28 @@ def test_route_oauth_alice_full_flow_creates_session(
     pipeline; rights derivation has its own dedicated tests under
     tests/clickhouse/.
     """
-    test_client = TestClient(oauth_app)
-    response = simulate_login(
-        test_client=test_client, http=keycloak_http,
-        username="alice", password="secret",
-    )
-    assert response.status_code == 302
-    sid = response.cookies.get("iris_session")
-    assert sid is not None
+    with TestClient(oauth_app) as test_client:
+        response = simulate_login(
+            test_client=test_client, http=keycloak_http,
+            username="alice", password="secret",
+        )
+        assert response.status_code == 302
+        sid = response.cookies.get("iris_session")
+        assert sid is not None
 
-    me = test_client.get("/api/whoami")
-    assert me.status_code == 200
-    body = me.json()
-    assert body["display_name"] == "Alice Example"
-    assert set(body["groups"]) == {"admins", "users"}
-    # Rights default to empty when CH isn't installed.
-    assert body["rights"] == {
-        "is_admin": False,
-        "can_create_database": False,
-        "db_admin": [],
-        "db_writer": [],
-        "db_reader": [],
-    }
+        me = test_client.get("/api/whoami")
+        assert me.status_code == 200
+        body = me.json()
+        assert body["display_name"] == "Alice Example"
+        assert set(body["groups"]) == {"admins", "users"}
+        # Rights default to empty when CH isn't installed.
+        assert body["rights"] == {
+            "is_admin": False,
+            "can_create_database": False,
+            "db_admin": [],
+            "db_writer": [],
+            "db_reader": [],
+        }
 
 
 def test_route_oauth_bob_full_flow_creates_session_with_empty_rights(
@@ -321,23 +359,23 @@ def test_route_oauth_bob_full_flow_creates_session_with_empty_rights(
     """Bob authenticates and gets a session with empty rights (CH not
     installed for these tests). Authentication succeeds independently of
     whether the user has any rights."""
-    test_client = TestClient(oauth_app)
-    response = simulate_login(
-        test_client=test_client, http=keycloak_http,
-        username="bob", password="hunter2",
-    )
-    assert response.status_code == 302
-    sid = response.cookies.get("iris_session")
-    assert sid is not None
+    with TestClient(oauth_app) as test_client:
+        response = simulate_login(
+            test_client=test_client, http=keycloak_http,
+            username="bob", password="hunter2",
+        )
+        assert response.status_code == 302
+        sid = response.cookies.get("iris_session")
+        assert sid is not None
 
-    me = test_client.get("/api/whoami")
-    assert me.status_code == 200
-    assert set(me.json()["groups"]) == {"users"}
+        me = test_client.get("/api/whoami")
+        assert me.status_code == 200
+        assert set(me.json()["groups"]) == {"users"}
 
-    store = oauth_app.state.auth_session_store
-    user_session = asyncio.run(store.get_and_refresh(sid))
-    assert user_session is not None
-    assert user_session.rights.is_admin is False
+        store = oauth_app.state.auth_session_store
+        user_session = asyncio.run(store.get_and_refresh(sid))
+        assert user_session is not None
+        assert user_session.rights.is_admin is False
 
 
 def test_provider_wrong_ca_bundle_raises_oauth_discovery(
@@ -362,8 +400,7 @@ def test_provider_wrong_ca_bundle_raises_oauth_discovery(
 
     async def _trigger_discovery_and_close():
         try:
-            # Property access triggers _ensure_discovered().
-            _ = provider.authorize_endpoint
+            await provider._ensure_discovered()
         finally:
             await provider.close()
 
