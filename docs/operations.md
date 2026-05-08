@@ -47,10 +47,10 @@ MOCK_DISPLAY_NAME=Alice
 ```
 CLICKHOUSE_HOST=localhost
 CLICKHOUSE_PORT=8443
-CLICKHOUSE_USER=iris_service          # CH login iris connects as; also the IMPERSONATE grantee
+CLICKHOUSE_USER=iris_service          # CH login iris connects as
 CLICKHOUSE_PASSWORD=replace-me
-CLICKHOUSE_SECURE=true                # https
-CLICKHOUSE_VERIFY=true                # TLS verification
+CLICKHOUSE_SECURE=true                # required: true = https, false = http
+CLICKHOUSE_VERIFY=true                # required: true = verify TLS cert, false = skip verification
 # CLICKHOUSE_CA_CERT_PATH=/etc/ssl/certs/ca-bundle.crt
 ```
 
@@ -64,6 +64,10 @@ CLICKHOUSE_ADMIN_GROUP=              # IdP group name of bootstrap admins (e.g. 
 ```
 
 At boot, `bootstrap_admin` (in `iris.clickhouse.bootstrap`) always creates the `iris_global_admin` sentinel role. If `CLICKHOUSE_ADMIN_USER=alice` is set and no `_USER`-suffixed role currently holds the admin marker (ROLE ADMIN+WGO at global scope), iris creates `alice_USER` with `GRANT ALL ON *.* WITH GRANT OPTION` plus `iris_global_admin` granted to it. If `CLICKHOUSE_ADMIN_GROUP=iris_admin` is set and no `_GRP`-suffixed role currently holds admin, iris creates `iris_admin_GRP` the same way. Both channels are independently idempotent. See `docs/clickhouse.md` for the full bootstrap behavior and the `derive_rights` detection logic.
+
+Set `CLICKHOUSE_ADMIN_USER` to whatever value iris derives as `username` from the configured auth provider — for OAuth that is the `preferred_username` claim (falling back to `sub`), for LDAP the value substituted into `LDAP_BIND_DN_TEMPLATE`, for mock `MOCK_USERNAME`. See `docs/auth.md` § Identity matching.
+
+If neither `CLICKHOUSE_ADMIN_USER` nor `CLICKHOUSE_ADMIN_GROUP` is set, `iris_global_admin` is created but no admin role is granted; add an admin manually via CH DDL or restart with one of the vars set.
 
 ### `.env` permissions
 
