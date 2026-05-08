@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import logging
@@ -28,16 +29,11 @@ STATE_COOKIE_TTL = 600  # 10 minutes
 class OAuthProvider:
     """OIDC authorization-code-with-PKCE provider.
 
-    Construction is lazy: discovery (`/.well-known/openid-configuration`) and
-    JWKS fetch happen on the first property access (``authorize_endpoint``,
-    ``token_endpoint``, etc.). This keeps `build_app()` non-blocking even
-    if the IdP is briefly unreachable.
-
-    Two httpx clients are held: a sync ``Client`` used only by
-    ``_ensure_discovered`` (PyJWKClient bypasses httpx and uses urllib;
-    we do discovery + JWKS via the sync client so test transports compose
-    correctly), and an async ``AsyncClient`` for token exchange and
-    userinfo. Both honor ``OIDC_CA_CERT_PATH`` for private CAs.
+    Construction does no I/O. Discovery (``/.well-known/openid-configuration``)
+    and JWKS fetch happen on first use, guarded by ``self._discovery_lock``
+    so concurrent first requests trigger exactly one network round-trip.
+    All discovery + token + userinfo I/O goes through a single
+    ``httpx.AsyncClient`` so the event loop never blocks.
 
     State cookie signing: ``URLSafeTimedSerializer`` is keyed by a SHA-256
     derivation of ``client_secret`` (prefixed with
@@ -59,13 +55,12 @@ class OAuthProvider:
         self._settings = settings
         # When _http_transport is set (offline tests), the transport replaces
         # httpx's network stack entirely and `verify` is irrelevant. When it's
-        # None (production + integration tests), honor settings.ca_cert_path
-        # so an internal/private CA can sign the IdP cert.
+        # None, honor settings.ca_cert_path so a private CA can sign the
+        # IdP cert.
         verify_arg: bool | ssl.SSLContext = True
         if settings.ca_cert_path:
             verify_arg = ssl.create_default_context(cafile=settings.ca_cert_path)
         if _http_transport is not None:
-            self._client = httpx.Client(transport=_http_transport, timeout=10.0)
             # httpx.MockTransport implements both sync and async dispatch but
             # only inherits from BaseTransport. Pyright sees BaseTransport and
             # AsyncBaseTransport as unrelated; the double cast through object
@@ -75,7 +70,6 @@ class OAuthProvider:
                 timeout=10.0,
             )
         else:
-            self._client = httpx.Client(verify=verify_arg, timeout=10.0)
             self._async_client = httpx.AsyncClient(verify=verify_arg, timeout=10.0)
         # Derive the state-signing key from client_secret so a leak of one is
         # not a leak of the other. The "v1" tag in the prefix lets us rotate
@@ -86,56 +80,49 @@ class OAuthProvider:
             b"iris-oauth-state-signing-v1:" + settings.client_secret.encode()
         ).digest()
         self._signer = URLSafeTimedSerializer(derived_key, salt="iris-oauth-state")
-        # Lazy: discovery + JWKS fetched on first property access so app
-        # construction doesn't block on a slow IdP. The endpoints below are
-        # read via @property and call _ensure_discovered() before returning.
+        # Lazy async-safe discovery: the first awaiter populates _discovered
+        # and _jwks under _discovery_lock; subsequent callers see the
+        # cached value. PyJWKClient bypasses httpx (uses urllib), so we
+        # pre-load JWKS into a PyJWKSet ourselves.
+        self._discovery_lock = asyncio.Lock()
         self._discovered: dict[str, Any] | None = None
-        # Fetch JWKS via our own httpx client so the test transport is honored.
-        # PyJWKClient bypasses httpx (uses urllib), so we pre-load and build a
-        # PyJWKSet manually. Cached on first discovery — IdP key rotation
-        # requires app restart (acceptable for v1; revisit if rotation matters).
         self._jwks: jwt.PyJWKSet | None = None
 
-    def _ensure_discovered(self) -> dict[str, Any]:
+    async def _ensure_discovered(self) -> dict[str, Any]:
         if self._discovered is not None:
             return self._discovered
-        discovery_url = (
-            self._settings.issuer_url.rstrip("/") + "/.well-known/openid-configuration"
-        )
-        try:
-            doc = self._client.get(discovery_url).raise_for_status().json()
-            jwks_doc = self._client.get(doc["jwks_uri"]).raise_for_status().json()
-        except Exception as exc:
-            logger.exception("auth: OIDC discovery failed")
-            raise AuthError("oauth_discovery") from exc
-        self._discovered = doc
-        self._jwks = jwt.PyJWKSet.from_dict(jwks_doc)
-        return doc
-
-    @property
-    def authorize_endpoint(self) -> str:
-        return self._ensure_discovered()["authorization_endpoint"]
-
-    @property
-    def token_endpoint(self) -> str:
-        return self._ensure_discovered()["token_endpoint"]
-
-    @property
-    def userinfo_endpoint(self) -> str:
-        return self._ensure_discovered()["userinfo_endpoint"]
-
-    @property
-    def jwks_uri(self) -> str:
-        return self._ensure_discovered()["jwks_uri"]
+        async with self._discovery_lock:
+            if self._discovered is not None:
+                return self._discovered
+            discovery_url = (
+                self._settings.issuer_url.rstrip("/")
+                + "/.well-known/openid-configuration"
+            )
+            try:
+                doc_resp = await self._async_client.get(discovery_url)
+                doc_resp.raise_for_status()
+                doc = doc_resp.json()
+                jwks_resp = await self._async_client.get(doc["jwks_uri"])
+                jwks_resp.raise_for_status()
+                jwks_doc = jwks_resp.json()
+            except Exception as exc:
+                logger.exception("auth: OIDC discovery failed")
+                raise AuthError("oauth_discovery") from exc
+            self._discovered = doc
+            self._jwks = jwt.PyJWKSet.from_dict(jwks_doc)
+            return doc
 
     async def close(self) -> None:
-        """Close both httpx clients. Safe to call multiple times."""
-        self._client.close()
+        """Close the async httpx client. Safe to call multiple times."""
         await self._async_client.aclose()
 
     async def begin(self, request: Request) -> Response:
+        doc = await self._ensure_discovered()
         redirect_uri = str(request.url_for("login_callback"))
-        url, state, verifier = self.build_authorize_url(redirect_uri=redirect_uri)
+        url, state, verifier = self.build_authorize_url(
+            redirect_uri=redirect_uri,
+            authorize_endpoint=doc["authorization_endpoint"],
+        )
         next_url = request.query_params.get("next", "/")
         signed = self._signer.dumps({"state": state, "verifier": verifier, "next": next_url})
         secure = getattr(request.app.state, "auth_cookie_secure", True)
@@ -171,7 +158,9 @@ class OAuthProvider:
         )
         return user, payload.get("next", "/")
 
-    def build_authorize_url(self, *, redirect_uri: str) -> tuple[str, str, str]:
+    def build_authorize_url(
+        self, *, redirect_uri: str, authorize_endpoint: str
+    ) -> tuple[str, str, str]:
         state = secrets.token_urlsafe(16)
         verifier = secrets.token_urlsafe(64)
         challenge = (
@@ -188,7 +177,7 @@ class OAuthProvider:
             "code_challenge": challenge,
             "code_challenge_method": "S256",
         }
-        return f"{self.authorize_endpoint}?{urlencode(params)}", state, verifier
+        return f"{authorize_endpoint}?{urlencode(params)}", state, verifier
 
     async def exchange_code(self, *, code: str, code_verifier: str, redirect_uri: str) -> User:
         token_response = await self._request_tokens(
@@ -210,9 +199,10 @@ class OAuthProvider:
     async def _request_tokens(
         self, *, code: str, code_verifier: str, redirect_uri: str
     ) -> dict[str, Any]:
+        doc = await self._ensure_discovered()
         try:
             r = await self._async_client.post(
-                self.token_endpoint,
+                doc["token_endpoint"],
                 data={
                     "grant_type": "authorization_code",
                     "client_id": self._settings.client_id,
@@ -250,15 +240,16 @@ class OAuthProvider:
             raise AuthError("oauth_exchange") from exc
 
     async def _fetch_userinfo(self, access_token: str) -> dict[str, Any]:
+        doc = await self._ensure_discovered()
         try:
             ui = await self._async_client.get(
-                self.userinfo_endpoint,
+                doc["userinfo_endpoint"],
                 headers={"Authorization": f"Bearer {access_token}"},
             )
             ui.raise_for_status()
             return ui.json()
         except Exception as exc:
-            logger.exception("auth: OAuth code exchange failed")
+            logger.exception("auth: userinfo fetch failed")
             raise AuthError("oauth_exchange") from exc
 
     def _user_from_claims(self, claims: dict[str, Any]) -> User:

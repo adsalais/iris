@@ -1,3 +1,5 @@
+from typing import cast
+
 import httpx
 import jwt as pyjwt
 import pytest
@@ -56,36 +58,72 @@ def test_provider_construction_does_not_fetch_discovery(settings):
     )
 
 
-def test_first_property_access_triggers_discovery(provider):
-    """The first access to authorize_endpoint, token_endpoint etc. triggers fetch."""
-    # provider already constructed; accessing the property triggers the lazy fetch
-    assert provider.authorize_endpoint == AUTHZ
-    assert provider.token_endpoint == TOKEN
-    assert provider.userinfo_endpoint == USERINFO
+def test_ensure_discovered_returns_endpoints(provider):
+    """The async _ensure_discovered populates the discovery doc."""
+    import asyncio
+
+    doc = asyncio.run(provider._ensure_discovered())
+    assert doc["authorization_endpoint"] == AUTHZ
+    assert doc["token_endpoint"] == TOKEN
+    assert doc["userinfo_endpoint"] == USERINFO
 
 
 def test_discovery_failure_surfaces_oauth_discovery_token(settings):
     """If discovery fails, the failure surfaces as AuthError('oauth_discovery')."""
+    import asyncio
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)
 
     provider = OAuthProvider(settings, _http_transport=httpx.MockTransport(handler))
-    # Access a property to trigger discovery
     with pytest.raises(AuthError) as exc:
-        _ = provider.authorize_endpoint
+        asyncio.run(provider._ensure_discovered())
     assert exc.value.token == "oauth_discovery"
 
 
 def test_build_authorize_url_includes_state_and_pkce(provider):
     url, state, verifier = provider.build_authorize_url(
-        redirect_uri="http://localhost/login/callback"
+        redirect_uri="http://localhost/login/callback",
+        authorize_endpoint=AUTHZ,
     )
     assert url.startswith(AUTHZ)
     assert "client_id=iris" in url
     assert f"state={state}" in url
     assert "code_challenge=" in url
     assert verifier  # non-empty
+
+
+def test_concurrent_ensure_discovered_runs_once(settings):
+    """Two coroutines awaiting _ensure_discovered concurrently must trigger
+    exactly one discovery network round-trip; subsequent awaits read the cache."""
+    import asyncio
+
+    fetched: list[str] = []
+    real_handler = _signing_mock_transport()  # an httpx.MockTransport
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        fetched.append(str(request.url))
+        # Delegate to the signing-mock body so JWKS still resolves.
+        # MockTransport.handler accepts a sync handler; cast through
+        # object because pyright sees the sync/async union return type.
+        result = real_handler.handler(request)  # type: ignore[attr-defined]
+        return cast(httpx.Response, result)
+
+    provider = OAuthProvider(
+        settings, _http_transport=httpx.MockTransport(handler)
+    )
+
+    async def _two_callers():
+        return await asyncio.gather(
+            provider._ensure_discovered(),
+            provider._ensure_discovered(),
+        )
+
+    asyncio.run(_two_callers())
+    discovery_calls = [u for u in fetched if "openid-configuration" in u]
+    assert len(discovery_calls) == 1, (
+        f"discovery should fire once even with concurrent callers; saw {discovery_calls}"
+    )
 
 
 def test_complete_callback_returns_user(provider):

@@ -90,35 +90,45 @@ def test_oauth_provider_discovers_against_real_keycloak(
         ca_cert_path=str(tls_paths.ca_pem),
     )
     provider = OAuthProvider(settings)
-    try:
-        # Property access triggers _ensure_discovered().
-        assert provider.authorize_endpoint.startswith(settings.issuer_url)
-        assert provider.token_endpoint.startswith(settings.issuer_url)
-        assert provider.userinfo_endpoint.startswith(settings.issuer_url)
-    finally:
-        asyncio.run(provider.close())
+
+    async def _discover_and_close() -> dict[str, str]:
+        try:
+            return await provider._ensure_discovered()
+        finally:
+            await provider.close()
+
+    doc = asyncio.run(_discover_and_close())
+    assert doc["authorization_endpoint"].startswith(settings.issuer_url)
+    assert doc["token_endpoint"].startswith(settings.issuer_url)
+    assert doc["userinfo_endpoint"].startswith(settings.issuer_url)
 
 
 def test_simulate_login_drives_authorize_to_callback(oauth_app, keycloak_http):
     """The helper drives the full OAuth code flow against real Keycloak and
     returns the iris-side response holding the iris_session cookie. Groups
-    from the realm's group-membership mapper land in the session user."""
-    test_client = TestClient(oauth_app)
-    response = simulate_login(
-        test_client=test_client, http=keycloak_http,
-        username="alice", password="secret",
-    )
-    assert response.status_code == 302
-    assert response.cookies.get("iris_session") is not None
+    from the realm's group-membership mapper land in the session user.
 
-    # The iris_session cookie should let /api/whoami succeed; groups come
-    # from the oidc-group-membership-mapper attached to the iris client in
-    # the realm seed (no `groups` scope is required because the mapper is
-    # client-level, not scope-gated).
-    me = test_client.get("/api/whoami")
-    assert me.status_code == 200
-    body = me.json()
-    assert set(body["groups"]) == {"admins", "users"}
+    TestClient runs inside a ``with`` block so the lifespan shutdown
+    closes the OAuthProvider's async httpx client; otherwise its pooled
+    TLS connections survive into the next test's portal loop and trip
+    "Event loop is closed" during gc.
+    """
+    with TestClient(oauth_app) as test_client:
+        response = simulate_login(
+            test_client=test_client, http=keycloak_http,
+            username="alice", password="secret",
+        )
+        assert response.status_code == 302
+        assert response.cookies.get("iris_session") is not None
+
+        # The iris_session cookie should let /api/whoami succeed; groups come
+        # from the oidc-group-membership-mapper attached to the iris client in
+        # the realm seed (no `groups` scope is required because the mapper is
+        # client-level, not scope-gated).
+        me = test_client.get("/api/whoami")
+        assert me.status_code == 200
+        body = me.json()
+        assert set(body["groups"]) == {"admins", "users"}
 
 
 async def _exchange_and_close(
@@ -291,28 +301,28 @@ def test_route_oauth_alice_full_flow_creates_session(
     pipeline; rights derivation has its own dedicated tests under
     tests/clickhouse/.
     """
-    test_client = TestClient(oauth_app)
-    response = simulate_login(
-        test_client=test_client, http=keycloak_http,
-        username="alice", password="secret",
-    )
-    assert response.status_code == 302
-    sid = response.cookies.get("iris_session")
-    assert sid is not None
+    with TestClient(oauth_app) as test_client:
+        response = simulate_login(
+            test_client=test_client, http=keycloak_http,
+            username="alice", password="secret",
+        )
+        assert response.status_code == 302
+        sid = response.cookies.get("iris_session")
+        assert sid is not None
 
-    me = test_client.get("/api/whoami")
-    assert me.status_code == 200
-    body = me.json()
-    assert body["display_name"] == "Alice Example"
-    assert set(body["groups"]) == {"admins", "users"}
-    # Rights default to empty when CH isn't installed.
-    assert body["rights"] == {
-        "is_admin": False,
-        "can_create_database": False,
-        "db_admin": [],
-        "db_writer": [],
-        "db_reader": [],
-    }
+        me = test_client.get("/api/whoami")
+        assert me.status_code == 200
+        body = me.json()
+        assert body["display_name"] == "Alice Example"
+        assert set(body["groups"]) == {"admins", "users"}
+        # Rights default to empty when CH isn't installed.
+        assert body["rights"] == {
+            "is_admin": False,
+            "can_create_database": False,
+            "db_admin": [],
+            "db_writer": [],
+            "db_reader": [],
+        }
 
 
 def test_route_oauth_bob_full_flow_creates_session_with_empty_rights(
@@ -321,23 +331,23 @@ def test_route_oauth_bob_full_flow_creates_session_with_empty_rights(
     """Bob authenticates and gets a session with empty rights (CH not
     installed for these tests). Authentication succeeds independently of
     whether the user has any rights."""
-    test_client = TestClient(oauth_app)
-    response = simulate_login(
-        test_client=test_client, http=keycloak_http,
-        username="bob", password="hunter2",
-    )
-    assert response.status_code == 302
-    sid = response.cookies.get("iris_session")
-    assert sid is not None
+    with TestClient(oauth_app) as test_client:
+        response = simulate_login(
+            test_client=test_client, http=keycloak_http,
+            username="bob", password="hunter2",
+        )
+        assert response.status_code == 302
+        sid = response.cookies.get("iris_session")
+        assert sid is not None
 
-    me = test_client.get("/api/whoami")
-    assert me.status_code == 200
-    assert set(me.json()["groups"]) == {"users"}
+        me = test_client.get("/api/whoami")
+        assert me.status_code == 200
+        assert set(me.json()["groups"]) == {"users"}
 
-    store = oauth_app.state.auth_session_store
-    user_session = asyncio.run(store.get_and_refresh(sid))
-    assert user_session is not None
-    assert user_session.rights.is_admin is False
+        store = oauth_app.state.auth_session_store
+        user_session = asyncio.run(store.get_and_refresh(sid))
+        assert user_session is not None
+        assert user_session.rights.is_admin is False
 
 
 def test_provider_wrong_ca_bundle_raises_oauth_discovery(
@@ -362,8 +372,7 @@ def test_provider_wrong_ca_bundle_raises_oauth_discovery(
 
     async def _trigger_discovery_and_close():
         try:
-            # Property access triggers _ensure_discovered().
-            _ = provider.authorize_endpoint
+            await provider._ensure_discovered()
         finally:
             await provider.close()
 
