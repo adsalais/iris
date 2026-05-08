@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dotenv import load_dotenv
 
 load_dotenv()  # populate os.environ from .env if present; existing vars win
