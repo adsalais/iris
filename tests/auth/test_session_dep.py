@@ -4,9 +4,25 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from iris.auth.deps import Session, SessionOptional, set_session_store, set_settings
+from iris.auth.deps import (
+    Session,
+    SessionAdmin,
+    SessionDatabaseAdmin,
+    SessionDatabaseCreator,
+    SessionOptional,
+    SessionRead,
+    SessionWrite,
+    set_session_store,
+    set_settings,
+)
 from iris.auth.exceptions import install_exception_handlers
-from iris.auth.identity import User
+from iris.auth.identity import (
+    AdminSession,
+    DatabaseAdminSession,
+    DatabaseCreatorSession,
+    DatabaseSession,
+    User,
+)
 from iris.auth.session import Rights
 from iris.auth.sessions import SessionStore
 
@@ -244,20 +260,6 @@ def test_rights_round_trip_through_set_rights(tmp_path):
 # duplicate a small slice of the admission logic but their value is in the
 # isinstance check / class-name assertion: route authors rely on the type
 # system showing only methods available for the tier.
-
-from iris.auth.deps import (
-    SessionAdmin,
-    SessionDatabaseAdmin,
-    SessionDatabaseCreator,
-    SessionRead,
-    SessionWrite,
-)
-from iris.auth.identity import (
-    AdminSession,
-    DatabaseAdminSession,
-    DatabaseCreatorSession,
-    DatabaseSession,
-)
 
 
 def test_session_admin_alias_returns_admin_session(tmp_path):
