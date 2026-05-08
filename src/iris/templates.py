@@ -1,3 +1,8 @@
+"""Shared `Jinja2Templates` instance for both root-level (`index.html`)
+and auth-flow (`auth/*.html`) templates. Imported by `iris.app:build_app`
+and re-exposed on `app.state.templates` so exception handlers and providers
+can render without re-creating the loader.
+"""
 from pathlib import Path
 
 from fastapi.templating import Jinja2Templates
