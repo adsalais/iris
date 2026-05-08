@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -23,6 +24,24 @@ from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.query import QueryResult
 
 from iris.clickhouse.identifiers import quote_identifier
+
+
+def _marshal_param(v: object) -> str:
+    """Marshal a Python value for CH's HTTP ``param_<name>`` query string.
+
+    CH's ``{name:Type}`` placeholders apply server-side type conversion, so
+    we hand it a string. ``bool`` must be checked before ``int`` (Python
+    ``bool`` subclasses ``int`` and would otherwise stringify to "True");
+    ``datetime`` is rendered without the ``+00:00`` UTC suffix so CH parses
+    it as ``DateTime``.
+    """
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, (int, float, str)):
+        return str(v)
+    if isinstance(v, datetime):
+        return v.isoformat(timespec="seconds").replace("+00:00", "")
+    raise TypeError(f"unsupported CH param type: {type(v).__name__}")
 
 
 async def query_as_user(
@@ -45,7 +64,7 @@ async def query_as_user(
         params["database"] = database
     if parameters:
         for k, v in parameters.items():
-            params[f"param_{k}"] = str(v)
+            params[f"param_{k}"] = _marshal_param(v)
     response = await http_client.post("/", params=params, content=body)
     response.raise_for_status()
     text = response.text.strip()
