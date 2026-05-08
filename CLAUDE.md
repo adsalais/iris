@@ -365,14 +365,12 @@ from iris.clickhouse import (
     # audit helpers
     user_grants, role_grants, user_role_memberships,
     user_row_policies, role_row_policies, table_row_policies,
-    # FastAPI bridge
-    ClickHouseHandle, ClickHouseAdminHandle,
-    ClickHouseDatabaseCreatorHandle, ClickHouseDatabaseAdminHandle,
-    get_clickhouse_handle, require_clickhouse_admin,
-    require_clickhouse_database_creator, require_clickhouse_database_admin,
+    # FastAPI lifecycle
     install,
 )
 ```
+
+The per-tier method surface lives on the Session subclasses in `iris.auth.identity` (see "Auth ↔ ClickHouse bridge" below). `iris.clickhouse` itself no longer hosts FastAPI handle providers.
 
 `build_client(settings)` returns a `clickhouse_connect.driver.client.Client`. Operations take that client as their first argument:
 
@@ -418,100 +416,80 @@ CLICKHOUSE_SERVICE_ADMIN_ROLE=service_admin_role # wildcard-policy grantee; gran
 
 ### Auth ↔ ClickHouse bridge
 
-Routes consume the alias deps from `iris.auth` for authorization, and call the matching CH handle provider from `iris.clickhouse.deps` for data-plane operations. The alias dep enforces the access tier; the handle provider just constructs a per-request handle.
+Routes consume one alias dep per tier. The dep returns a Session subclass whose method surface matches the tier; there is no separate handle parameter. The Session value carries both admission (alias gates the request) and capability (the subclass exposes only its tier's methods).
 
 ```python
-from fastapi import Depends
-from iris.auth import Session, SessionAdmin, SessionDatabaseAdmin
-from iris.clickhouse import (
-    ClickHouseHandle, ClickHouseAdminHandle, ClickHouseDatabaseAdminHandle,
-    get_clickhouse_handle, require_clickhouse_admin,
-    require_clickhouse_database_admin,
-)
+from iris.auth import Session, SessionAdmin, SessionRead, SessionDatabaseAdmin
 
-@app.get("/click-user")
-async def click_user(
-    session: Session,
-    handle: ClickHouseHandle = Depends(get_clickhouse_handle),
-):
-    rows = await handle.query_as_user("SELECT count() FROM orders.lines")
-    return rows  # list[dict[str, Any]] from JSONEachRow
+@app.get("/db/{database}/count")
+async def count(database: str, session: SessionRead):
+    return await session.query_as_user("SELECT count() FROM t")
 
-@app.get("/click-admin")
-async def click_admin(
-    session: SessionAdmin,
-    handle: ClickHouseAdminHandle = Depends(require_clickhouse_admin),
-):
-    return await handle.user_grants(username="alice")
+@app.post("/db/{database}/grants/users/{username}")
+async def grant_read(database: str, username: str, session: SessionDatabaseAdmin):
+    await session.grant_reader(username)
+    return {"granted": True}
+
+@app.get("/admin/users/{username}/grants")
+async def audit(username: str, session: SessionAdmin):
+    return await session.user_grants(username=username)
 ```
 
-`get_clickhouse_handle` admits any logged-in user; the handle exposes only `query_as_user`. `require_clickhouse_admin` returns a `ClickHouseAdminHandle` that adds `query_as_service` (no impersonation), the `grant_*`/`add_row_policy`/`revoke_row_policy` mutators, and the audit helpers. The 403 for non-admin sessions is enforced by the `SessionAdmin` alias on the route signature, not by the handle provider.
+`SessionRead` returns a `DatabaseSession` bound to the path's `database`. `query_as_user("SELECT count() FROM t")` resolves `t` against `<database>` because the impersonated request includes `?database=<database>` in the URL. There's no separate handle parameter; the Session value carries both the admission decision and the CH-method surface.
 
-**Why two HTTP transports.** `query_as_user` prepends `EXECUTE AS <quoted_username>` to the SQL. ClickHouse's `EXECUTE AS user <SELECT>` body grammar rejects `FORMAT` clauses, but `clickhouse-connect`'s `query()` always appends `FORMAT Native` — incompatible. The handle therefore uses a separate `httpx.AsyncClient` for impersonated queries, posting to ClickHouse's HTTP endpoint with `?default_format=JSONEachRow` as a URL parameter. `query_as_service` and the admin/audit methods keep using `clickhouse-connect`. As a consequence, `query_as_user` returns `list[dict[str, Any]]` (parsed JSON Lines) rather than a `QueryResult` — types are preserved by JSON encoding but column-type metadata is lost. Routes needing column types should use the admin handle's `query_as_service`. Named parameters work via `param_<name>=<value>` URL params translated from the `parameters=` kwarg.
+For routes that need to query a specific database from a non-DB-scoped session (`Session` or `SessionAdmin`), `query_as_user` accepts a `database=` kwarg. `SessionAdmin.query_as_service` likewise accepts `database=`.
+
+**Why two HTTP transports.** `query_as_user` prepends `EXECUTE AS <quoted_username>` to the SQL. ClickHouse's `EXECUTE AS user <SELECT>` body grammar rejects `FORMAT` clauses, but `clickhouse-connect`'s `query()` always appends `FORMAT Native` — incompatible. The Session methods therefore use a separate `httpx.AsyncClient` for impersonated queries, posting to ClickHouse's HTTP endpoint with `?default_format=JSONEachRow` as a URL parameter. Service-identity queries (`query_as_service`) and admin/audit methods keep using `clickhouse-connect`. As a consequence, `query_as_user` returns `list[dict[str, Any]]` (parsed JSON Lines) rather than a `QueryResult` — types are preserved by JSON encoding but column-type metadata is lost. Routes needing column types use `AdminSession.query_as_service`. Named parameters work via `param_<name>=<value>` URL params translated from the `parameters=` kwarg.
 
 **Post-login hook chain.** `iris.clickhouse.install(app)` registers a hook on `app.state.post_login_hooks` that fires on every successful login (form submit or OAuth callback). The hook does two things in order: `init_user_rights` (provisions the CH user/role/group memberships) and `derive_rights` (computes the `Rights` view), then `set_rights` persists the rights to the session row. Cookie-based session refreshes do NOT re-provision; the cached `Rights` is what every subsequent request sees. Group changes between two logins are reconciled.
 
 **iris's liveness is tied to ClickHouse's.** This is intentional: iris is a thin layer in front of ClickHouse, and a logged-in user with no ability to reach the data backend can't accomplish anything useful. Rather than hide that with best-effort provisioning, login fails loud when CH is down — operators see the exact failure mode in the access logs, monitoring catches it, and users get a real error rather than a half-broken session that errors on every subsequent query.
 
-`build_app(install_clickhouse=False)` skips the bridge entirely — used by auth tests that don't need a CH testcontainer. With CH disabled, the post-login hook chain is empty and sessions land with `EMPTY_RIGHTS`. Tests that want non-empty rights for a session call `await store.set_rights(sid, rights)` directly. Production launches via uvicorn factory mode (`uvicorn.run("iris.app:build_app", factory=True, ...)`), so importing `build_app` is side-effect-free for tests.
+`build_app(install_clickhouse=False)` skips the bridge entirely — used by auth tests that don't need a CH testcontainer. With CH disabled, the post-login hook chain is empty and sessions land with `EMPTY_RIGHTS` and `client=None`/`http_client=None`. Calling a CH method on such a session raises (the `httpx.AsyncClient.post` on `None` errors); tests that don't exercise CH simply don't call them. Production launches via uvicorn factory mode (`uvicorn.run("iris.app:build_app", factory=True, ...)`), so importing `build_app` is side-effect-free for tests.
+
+**Session implementation.** The Session classes (`AuthSession`, `DatabaseSession`, `DatabaseAdminSession`, `DatabaseCreatorSession`, `AdminSession`) live in `iris.auth.identity`. Each method lazy-imports the matching `*_impl` async function from `iris.clickhouse.handle` and calls it with `self.client` / `self.http_client` / `self.user.username` / (for DB-scoped subclasses) `self.database`. The lazy import avoids an `iris.auth → iris.clickhouse` cycle at module load.
 
 ### Per-database admin tier
 
-Per-database admin is a CH role membership: a user is admin of database `X` iff their effective role set (transitively) includes `<X>_DBADMIN`. There is no separate SQLite admin store. The same applies to writer (`<X>_DBWRITER`) and reader (`<X>_DBREADER`).
+Per-database admin is a CH role membership: a user is admin of database `X` iff their effective role set (transitively) includes `<X>_DBADMIN`. There is no separate SQLite admin store. The same applies to writer (`<X>_DBWRITER`) and reader (`<X>_DBREADER`). The Session aliases map to tier-typed Session subclasses returned by the dep:
 
-Four handle providers cover the operations:
+| Tier | Alias | Returns | Selected methods |
+|---|---|---|---|
+| Any logged-in user | `Session` | `AuthSession` | `query_as_user(sql, database=None)` |
+| Database creator | `SessionDatabaseCreator` | `DatabaseCreatorSession` | `create_database(name)` |
+| Per-database admin | `SessionDatabaseAdmin` | `DatabaseAdminSession` (bound to `database` from path) | `grant_reader/writer`, `add_admin_user`, `revoke_*`, `delete_database`, `list_admin_members`, `list_grants`, `list_row_policies` |
+| Global admin | `SessionAdmin` | `AdminSession` | `query_as_service`, `reprovision_user`, `add/revoke_row_policy`, audit (`user_grants`, `role_grants`, `user_role_memberships`, `user_row_policies`, `role_row_policies`, `table_row_policies`) |
 
-1. **Any logged-in user** — `get_clickhouse_handle` returns `ClickHouseHandle` (impersonated SELECTs only). Use `Session` to gate.
-2. **Database creator** — `require_clickhouse_database_creator` returns `ClickHouseDatabaseCreatorHandle` (just `create_database`). Use `SessionDatabaseCreator`.
-3. **Per-database admin** — `require_clickhouse_database_admin` returns `ClickHouseDatabaseAdminHandle` with tier-grant/revoke methods (`grant_reader/writer`, `add_admin_user`, group equivalents, revokes), `delete_database`, and audit/listing. The handle is scoped to one database, bound from the calling route's path/query parameter. Use `SessionDatabaseAdmin`.
-4. **Global admin** — `require_clickhouse_admin` returns `ClickHouseAdminHandle`. Use `SessionAdmin`.
-
-`create_database(name)` is the lifecycle entry point: it runs `CREATE DATABASE IF NOT EXISTS`, creates the three tier roles (`<name>_DBADMIN`, `<name>_DBWRITER`, `<name>_DBREADER`) with their privilege grants, and grants `<name>_DBADMIN` to the creator's `<creator>_USER` role. All steps idempotent. `delete_database()` (on the admin handle) reverses: `DROP DATABASE IF EXISTS` then drops the three tier roles.
+`create_database(name)` is the lifecycle entry point: it runs `CREATE DATABASE IF NOT EXISTS`, creates the three tier roles (`<name>_DBADMIN`, `<name>_DBWRITER`, `<name>_DBREADER`) with their privilege grants, and grants `<name>_DBADMIN` to the creator's `<creator>_USER` role. All steps idempotent. `delete_database()` reverses: `DROP DATABASE IF EXISTS` then drops the three tier roles.
 
 There is no separate `clickhouse_database_creator` CH role. The capability is the `can_create_database` flag on `Rights`, derived from `GRANT CREATE DATABASE ON *.*` on any role in the user's effective set. Global admins also satisfy `SessionDatabaseCreator` via the `is_admin` superset.
+
+A global admin who needs to do per-DB operations writes routes gated by `SessionDatabaseAdmin` (which admits admins via the `is_admin` superset and returns a `DatabaseAdminSession` bound to the path's database). Routes that need both global ops and per-DB ops compose two Session parameters; this is rare.
 
 Example routes:
 
 ```python
 @app.post("/clickhouse/databases/{database}")
-async def create_database(
-    database: str,
-    session: SessionDatabaseCreator,
-    handle: ClickHouseDatabaseCreatorHandle = Depends(require_clickhouse_database_creator),
-):
-    await handle.create_database(database)
+async def create_database(database: str, session: SessionDatabaseCreator):
+    await session.create_database(database)
     return {"created": database}
 
 
 @app.post("/clickhouse/databases/{database}/grants/users/{username}")
-async def grant_read(
-    database: str,
-    username: str,
-    session: SessionDatabaseAdmin,
-    handle: ClickHouseDatabaseAdminHandle = Depends(require_clickhouse_database_admin),
-):
-    await handle.grant_reader(username)
+async def grant_read(database: str, username: str, session: SessionDatabaseAdmin):
+    await session.grant_reader(username)
     return {"granted": True}
 
 
 @app.post("/clickhouse/databases/{database}/admins/users/{username}")
-async def delegate_admin(
-    database: str,
-    username: str,
-    session: SessionDatabaseAdmin,
-    handle: ClickHouseDatabaseAdminHandle = Depends(require_clickhouse_database_admin),
-):
-    await handle.add_admin_user(username)
+async def delegate_admin(database: str, username: str, session: SessionDatabaseAdmin):
+    await session.add_admin_user(username)
     return {"ok": True}
 
 
 @app.delete("/clickhouse/databases/{database}")
-async def delete_database(
-    database: str,
-    session: SessionDatabaseAdmin,
-    handle: ClickHouseDatabaseAdminHandle = Depends(require_clickhouse_database_admin),
-):
-    await handle.delete_database()
+async def delete_database(database: str, session: SessionDatabaseAdmin):
+    await session.delete_database()
     return {"deleted": database}
 ```
 
