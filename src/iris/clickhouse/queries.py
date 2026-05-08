@@ -97,6 +97,22 @@ def _format_array(v: object, inner_type: str) -> str:
         raise TypeError(
             f"Array({inner_type}) expects list or tuple, got {type(v).__name__}"
         )
+    # Reject array-of-date/datetime types: array literals require these to
+    # be quoted, but _marshal_array_element only quotes String/FixedString.
+    # Adding quoting for date/datetime is a future enhancement; until then,
+    # fail loudly so callers don't get an opaque CH-side rejection.
+    bare = inner_type.strip()
+    if bare.startswith("Nullable(") and bare.endswith(")"):
+        bare = bare[len("Nullable("):-1].strip()
+    if (
+        bare in ("Date", "Date32")
+        or _DATETIME64_RE.match(bare)
+        or _DATETIME_TZ_RE.match(bare)
+    ):
+        raise TypeError(
+            f"Array({inner_type}) is not supported: array-element quoting"
+            + " for date/datetime types is not implemented"
+        )
     parts = [_marshal_array_element(e, inner_type) for e in v]
     return "[" + ",".join(parts) + "]"
 

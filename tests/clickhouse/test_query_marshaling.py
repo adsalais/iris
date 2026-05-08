@@ -276,6 +276,36 @@ def test_marshal_array_empty():
     assert m([], "Array(Int32)") == "[]"
 
 
+def test_marshal_array_of_date_raises():
+    """Date inside Array would emit unquoted in CH array literal — invalid syntax.
+    Until quoting for Date/DateTime in arrays is implemented, fail loudly."""
+    m = _import_marshal()
+    with pytest.raises(TypeError, match="Array\\(Date\\) is not supported"):
+        m([date(2026, 5, 9)], "Array(Date)")
+
+
+def test_marshal_array_of_datetime_raises():
+    m = _import_marshal()
+    with pytest.raises(TypeError, match="Array\\(DateTime\\) is not supported"):
+        m([datetime(2026, 5, 9, 12, 0, 0, tzinfo=UTC)], "Array(DateTime)")
+
+
+def test_marshal_array_of_datetime64_raises():
+    m = _import_marshal()
+    with pytest.raises(TypeError, match=r"Array\(DateTime64\(3\)\) is not supported"):
+        m(
+            [datetime(2026, 5, 9, 12, 34, 56, 789000, tzinfo=UTC)],
+            "Array(DateTime64(3))",
+        )
+
+
+def test_marshal_array_of_nullable_date_raises():
+    """Even Nullable(Date) inside Array hits the same restriction."""
+    m = _import_marshal()
+    with pytest.raises(TypeError, match=r"Array\(Nullable\(Date\)\) is not supported"):
+        m([date(2026, 5, 9), None], "Array(Nullable(Date))")
+
+
 # ---- Nullable(T) ----------------------------------------------------------
 
 
