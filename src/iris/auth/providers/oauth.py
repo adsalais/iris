@@ -229,9 +229,12 @@ class OAuthProvider:
             raise AuthError("oauth_exchange") from exc
 
     def _verify_id_token(self, id_token: str) -> None:
-        # _verify_id_token is only reached after _request_tokens, which calls
-        # self.token_endpoint -> _ensure_discovered() and populates _jwks.
-        assert self._jwks is not None, "_jwks must be set before id_token verification"
+        # _verify_id_token is only reached after _request_tokens, which
+        # awaits self._ensure_discovered() and populates _jwks. Guard
+        # explicitly: a stripped ``assert`` (python -O) would skip the
+        # signature-verification setup below.
+        if self._jwks is None:
+            raise AuthError("oauth_exchange")
         try:
             unverified_header = jwt.get_unverified_header(id_token)
             signing_key = self._jwks[unverified_header["kid"]].key
