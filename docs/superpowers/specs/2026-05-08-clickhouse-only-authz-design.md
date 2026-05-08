@@ -79,9 +79,9 @@ Procedure:
 
 1. Resolve effective role names. The user's directly-granted roles are `<username>_USER` plus each `<group>_GRP`. Walk `system.role_grants` transitively to collect all roles reachable from this set; this gives the effective role set.
 2. Match tier roles by suffix. For each role in the effective set whose name ends in `_DBADMIN`, `_DBWRITER`, or `_DBREADER`, split off the suffix to recover the database name and add to the appropriate `frozenset`.
-3. Compute the global flags by querying `system.grants` filtered to the effective role set:
-   - `is_admin = True` if some role holds the equivalent of `GRANT ALL ON *.* WITH GRANT OPTION` (CH represents this as either a single `access_type='ALL'` row with `grant_option=1` and global scope, or as a fully-populated set of primitive privileges with `grant_option=1` — the implementation picks whichever query is reliable on the supported CH version, and the spec commits only to the behavior).
-   - `can_create_database = True` if some role holds `GRANT CREATE DATABASE ON *.*` (or has it through admin).
+3. Compute the global flags by querying `system.grants` filtered to the effective role set. CH always expands `GRANT ALL` into the underlying primitive privileges in `system.grants` — there is never a row with `access_type='ALL'`. Global-scope grants store `database`/`table`/`column` as `NULL`, not `''`. The implementation uses two markers:
+   - `is_admin = True` if some role holds `ROLE ADMIN` at global scope (`database IS NULL`) with `grant_option=1`. ROLE ADMIN is part of the primitive expansion of `ALL` and is only granted to genuine admins (operators don't grant ROLE ADMIN selectively), so it's a reliable single-row marker.
+   - `can_create_database = True` if some role holds `CREATE DATABASE` at global scope. Per spec this does not require GRANT OPTION.
 
 Stored shape:
 
