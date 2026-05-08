@@ -211,16 +211,34 @@ class DatabaseAdminSession(DatabaseSession):
 
         await asyncio.to_thread(_sync)
 
-    async def list_admin_members(self) -> list[str]:
+    async def list_admin_members(self) -> list[dict[str, str]]:
+        """Return everything granted the per-database admin role.
+
+        Each entry is ``{"kind": "user" | "role", "name": <str>}``. Includes
+        direct user grantees AND role grantees (e.g. group-roles or
+        per-user roles holding the admin tier). Previously this only
+        returned ``role_name`` and emitted ``None`` for direct user grants.
+        """
         admin_role = tier_role_name(self.database, TIER_DBADMIN)
         client = self.client
 
-        def _sync() -> list[str]:
+        def _sync() -> list[dict[str, str]]:
             rows = client.query(
-                "SELECT role_name FROM system.role_grants WHERE granted_role_name = {r:String}",
+                """
+                SELECT user_name, role_name FROM system.role_grants
+                WHERE granted_role_name = {r:String}
+                """,
                 {"r": admin_role},
             )
-            return [cast(str, row["role_name"]) for row in rows.named_results()]
+            out: list[dict[str, str]] = []
+            for row in rows.named_results():
+                u = row.get("user_name")
+                r = row.get("role_name")
+                if u:
+                    out.append({"kind": "user", "name": cast(str, u)})
+                elif r:
+                    out.append({"kind": "role", "name": cast(str, r)})
+            return out
 
         return await asyncio.to_thread(_sync)
 

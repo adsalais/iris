@@ -118,4 +118,29 @@ def test_list_admin_members_returns_creator(ch_client, ch_settings, prefix):
     )
     admin = _admin_session(ch_client, ch_settings, database=db, username=creator)
     members = asyncio.run(admin.list_admin_members())
-    assert f"{creator}_USER" in members
+    # Creator is granted DBADMIN to its <username>_USER role (not directly
+    # to the user account), so the entry is kind="role" with the per-user
+    # role name.
+    assert {"kind": "role", "name": f"{creator}_USER"} in members
+
+
+def test_list_admin_members_includes_direct_user_grant(
+    ch_client, ch_settings, prefix
+):
+    """A user account granted the admin role directly (not via _USER role)
+    appears with kind='user'."""
+    creator = f"{prefix}_c2"
+    db = f"{prefix}_members2"
+    direct_user = f"{prefix}_direct"
+
+    asyncio.run(
+        _creator_session(ch_client, ch_settings, username=creator).create_database(db)
+    )
+    ch_client.command(
+        f"CREATE USER IF NOT EXISTS `{direct_user}` IDENTIFIED WITH no_password"
+    )
+    ch_client.command(f"GRANT `{db}_DBADMIN` TO `{direct_user}`")
+
+    admin = _admin_session(ch_client, ch_settings, database=db, username=creator)
+    members = asyncio.run(admin.list_admin_members())
+    assert {"kind": "user", "name": direct_user} in members
