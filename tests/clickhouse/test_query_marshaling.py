@@ -1,6 +1,7 @@
 """Unit tests for the CH HTTP-param marshaller and SQL placeholder parser."""
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime, timezone
 
 import pytest
@@ -350,3 +351,37 @@ def test_marshal_unsupported_python_value_raises():
     m = _import_marshal()
     with pytest.raises(TypeError):
         m(42, "String")
+
+
+# ---- query_as_user strictness --------------------------------------------
+
+
+def test_query_as_user_rejects_unbound_parameter():
+    """A parameter key that has no matching {name:Type} in the SQL is a
+    caller bug — likely a typo. The error names the offending key."""
+    import httpx
+
+    from iris.clickhouse.queries import query_as_user
+
+    # An async transport that records nothing — we expect the call to fail
+    # before any HTTP request is sent.
+    transport = httpx.MockTransport(
+        lambda _r: httpx.Response(500, content=b"should not be reached")
+    )
+    http_client = httpx.AsyncClient(
+        base_url="http://stub", transport=transport
+    )
+
+    async def _run():
+        try:
+            await query_as_user(
+                http_client,
+                username="alice",
+                sql="SELECT * FROM t WHERE u = {u:String}",
+                parameters={"u": "alice", "typo": 1},
+            )
+        finally:
+            await http_client.aclose()
+
+    with pytest.raises(ValueError, match="'typo'"):
+        asyncio.run(_run())

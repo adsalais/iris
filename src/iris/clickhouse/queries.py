@@ -226,6 +226,10 @@ async def query_as_user(
     Sends ``EXECUTE AS <username> <sql>`` to the CH HTTP endpoint with
     ``default_format=JSONEachRow`` (and ``database=<database>`` when
     supplied, so unqualified table names resolve against that schema).
+
+    Each parameter is marshaled according to the CH type declared in the
+    SQL via ``{name:Type}``. A parameter passed without a matching
+    placeholder raises ``ValueError`` — likely a caller-side typo.
     """
     body = f"EXECUTE AS {quote_identifier(username, kind='username')} {sql}"
     params: dict[str, str] = {"default_format": "JSONEachRow"}
@@ -234,6 +238,10 @@ async def query_as_user(
     if parameters:
         type_map = _parse_placeholder_types(sql)
         for k, v in parameters.items():
+            if k not in type_map:
+                raise ValueError(
+                    f"parameter {k!r} has no {{{k}:Type}} placeholder in the SQL"
+                )
             params[f"param_{k}"] = _marshal_param(v, type_map[k])
     response = await http_client.post("/", params=params, content=body)
     response.raise_for_status()
