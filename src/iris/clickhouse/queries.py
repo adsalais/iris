@@ -196,8 +196,8 @@ def _marshal_param(v: object, ch_type: str) -> str:
             return v.isoformat()
         raise TypeError(f"{ch_type} expects date or datetime, got {type(v).__name__}")
 
-    # DateTime64(p) — must come BEFORE DateTime since the latter regex
-    # matches "DateTime" with optional "(...)".
+    # DateTime64(p) and DateTime are matched by mutually-exclusive
+    # anchored regexes — order here is by declaration, not correctness.
     m64 = _DATETIME64_RE.match(ch_type)
     if m64:
         if not isinstance(v, datetime):
