@@ -5,7 +5,7 @@ It is a navigator — deep details live in `docs/`.
 
 ## Project state
 
-Python web app scaffolded with `uv` / hatchling: **FastAPI + Jinja2** server, **Datastar** (https://data-star.dev/) on the frontend. `src/iris/__init__.py:main()` boots a uvicorn dev server. The home page demonstrates two end-to-end Datastar patterns (see "Examples" below). Pytest is wired up; no linter or formatter yet.
+Python web app scaffolded with `uv` / hatchling: **FastAPI + Jinja2** server, **Datastar** (https://data-star.dev/) on the frontend. `src/iris/__init__.py:main()` boots a uvicorn dev server. The home page demonstrates two end-to-end Datastar patterns (see "Examples" below). Pytest is wired up; ruff is configured for lint; basedpyright for typecheck (see Lint & type-check section below).
 
 `requires-python` is currently `>=3.13` — bumped down from 3.14 because the only 3.14 build `uv` could fetch was `3.14.0a6`, on which `pydantic-core` (a FastAPI dep) segfaults. Re-evaluate when a stable 3.14 build is reachable AND pydantic publishes 3.14 wheels.
 
@@ -21,7 +21,7 @@ The project uses a `src/`-layout with hatchling as the build backend and `.pytho
 
 - `uv run ruff check` — must produce zero warnings.
 - `uv run basedpyright --level error` — gate. Must stay at zero errors.
-- `uv run basedpyright --level warning` — also at zero. The `[tool.basedpyright]` config in `pyproject.toml` disables a handful of noisy categories that fire on intentional FastAPI/pytest patterns (`reportUnusedCallResult`, `reportUnusedFunction`, `reportCallInDefaultInitializer`, `reportAny`, `reportExplicitAny`, `reportUnannotatedClassAttribute`). The `tests/` execution environment additionally relaxes the unknown-type checks (pytest fixtures and `TestClient` response objects are dynamically typed). `mapping.py` and `providers/ldap.py` carry file-level pyright suppressions for the same reason — yaml and ldap3 are inherently dynamic. New checks failing means a real issue worth investigating, not config drift.
+- `uv run basedpyright --level warning` — also at zero. The `[tool.basedpyright]` config in `pyproject.toml` disables a handful of noisy categories that fire on intentional FastAPI/pytest patterns (`reportUnusedCallResult`, `reportUnusedFunction`, `reportCallInDefaultInitializer`, `reportAny`, `reportExplicitAny`, `reportUnannotatedClassAttribute`). The `tests/` execution environment additionally relaxes the unknown-type checks (pytest fixtures and `TestClient` response objects are dynamically typed). `providers/ldap.py` carries file-level pyright suppressions for the same reason — ldap3 is inherently dynamic. New checks failing means a real issue worth investigating, not config drift.
 
 ### Tests
 
@@ -107,7 +107,7 @@ Routes then take `signals: Signals` and get a guaranteed dict — no None handli
 
 ```
 src/iris/
-├── __init__.py        # main() + load_dotenv, re-exports app
+├── __init__.py        # main() + load_dotenv
 ├── app.py             # build_app(), Datastar routes, /, /api/greet, /api/clock
 ├── middleware.py      # SecurityHeadersMiddleware (CSP)
 ├── templates/         # Jinja2 — base.html + index.html
