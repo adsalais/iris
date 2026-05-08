@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import re
 import secrets
 
 from fastapi import Form, HTTPException, Request, Response
@@ -8,10 +9,25 @@ from fastapi import Form, HTTPException, Request, Response
 CSRF_COOKIE_NAME = "iris_csrf"
 CSRF_FORM_FIELD = "_csrf_token"
 
+# Well-formed CSRF tokens are urlsafe-base64 (the alphabet
+# secrets.token_urlsafe emits) of at least 32 characters — enough entropy
+# for a CSRF defense and matching what mint_csrf_token issues.
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+
 
 def mint_csrf_token(request: Request) -> str:
-    """Return the CSRF token: reuse the cookie value if present, else generate a new one."""
-    return request.cookies.get(CSRF_COOKIE_NAME) or secrets.token_urlsafe(32)
+    """Return the CSRF token: reuse the cookie value if well-formed, else mint fresh.
+
+    A well-formed token matches ``[A-Za-z0-9_-]{32,128}`` (urlsafe-base64,
+    minimum entropy of ``secrets.token_urlsafe(24)``). Anything else —
+    including attacker-supplied cookie values — is replaced with a fresh
+    ``secrets.token_urlsafe(32)`` so a chosen value can't persist into
+    later forms.
+    """
+    existing = request.cookies.get(CSRF_COOKIE_NAME, "")
+    if existing and _TOKEN_RE.fullmatch(existing):
+        return existing
+    return secrets.token_urlsafe(32)
 
 
 def attach_csrf_cookie(request: Request, response: Response, token: str) -> None:
