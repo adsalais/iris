@@ -111,6 +111,20 @@ def ch_container():
             admin.command(
                 f"GRANT CREATE ROW POLICY, DROP ROW POLICY ON *.* TO {_SVC_USER}"
             )
+            # Allow iris_svc to drop roles (needed for tier-role lifecycle helpers
+            # and delete_database). ROLE ADMIN by itself does not include DROP ROLE.
+            admin.command(
+                f"GRANT DROP ROLE ON *.* TO {_SVC_USER}"
+            )
+            # Allow iris_svc to grant database-scoped privileges with GRANT
+            # OPTION on per-database tier roles. The `test` user (XML-defined,
+            # privileged but not the absolute root) lacks server-scope rarities
+            # like NAMED COLLECTION ADMIN, so `GRANT ALL ON *.*` would fail.
+            # CURRENT GRANTS delegates exactly what `test` holds, which is
+            # enough for the database-scope ALL we issue at tier-role creation.
+            admin.command(
+                f"GRANT CURRENT GRANTS ON *.* TO {_SVC_USER} WITH GRANT OPTION"
+            )
         finally:
             admin.close()
         yield ch
