@@ -64,7 +64,7 @@ Global admins also satisfy `SessionDatabaseAdmin` (via the `is_admin` superset),
 Example routes:
 
 ```python
-from iris.auth.deps import Session, SessionRead, SessionDatabaseAdmin, SessionAdmin
+from iris.auth import Session, SessionRead, SessionDatabaseAdmin, SessionAdmin
 
 @app.get("/db/{database}/count")
 async def count(database: str, session: SessionRead):

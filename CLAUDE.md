@@ -54,7 +54,7 @@ Patterns an agent must follow that aren't obvious from reading code:
 
 ### Layout
 
-- `src/iris/__init__.py` — re-exports `app` and defines `main()` (uvicorn launcher for the `iris` script).
+- `src/iris/__init__.py` — calls `load_dotenv()` and defines `main()` (uvicorn factory-mode launcher for the `iris` script).
 - `src/iris/app.py` — `build_app()`, Datastar routes, `/`, `/api/greet`, `/api/clock`, and `Jinja2Templates` initialization.
 - `src/iris/middleware.py` — `SecurityHeadersMiddleware` (CSP).
 - `src/iris/templates/` — Jinja2 templates packaged with the wheel; `base.html` includes the Datastar CDN script and shared CSS, `index.html` extends it.
