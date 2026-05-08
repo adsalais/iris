@@ -59,11 +59,19 @@ def test_quote_string_handles_combined_escapes():
 
 def test_policy_name_basic_shape():
     name = policy_name("orders", "lines", "writer", "EU")
-    # <db>_<table>_<role>_<slug>_<8charhash>
+    # <db>_<table>_<role>_<slug>_<16charhash>
     assert name.startswith("orders_lines_writer_EU_")
     suffix = name.split("_")[-1]
-    assert len(suffix) == 8
+    assert len(suffix) == 16
     assert all(c in "0123456789abcdef" for c in suffix)
+
+
+def test_policy_name_uses_64_bit_digest():
+    """Digest is 16 hex chars (64 bits). 32-bit collisions silently dropped
+    the second policy via CREATE ROW POLICY IF NOT EXISTS."""
+    name = policy_name("db", "t", "r", "any-value")
+    digest = name.rsplit("_", 1)[-1]
+    assert len(digest) == 16
 
 
 def test_policy_name_distinct_for_distinct_values_with_same_slug():
