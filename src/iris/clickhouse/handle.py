@@ -1,27 +1,30 @@
 """Per-request ClickHouse handle classes used by FastAPI route handlers.
 
-Two handle types share the same per-request shape but expose different surfaces:
+Four handle types share the same per-request shape but expose different surfaces:
 
 - :class:`ClickHouseHandle` — for any logged-in user. Only ``query_as_user`` is
   exposed. The query runs as the user via ClickHouse's per-query
   ``EXECUTE AS`` prefix.
-- :class:`ClickHouseAdminHandle` — gated on the ``clickhouse_admin`` role.
-  Adds ``query_as_service`` (no impersonation) plus async wrappers around the
-  module-level admin/audit functions.
+- :class:`ClickHouseAdminHandle` — for sessions whose ``rights.is_admin`` is
+  True. Adds ``query_as_service`` (no impersonation) plus async wrappers around
+  the module-level admin/audit functions.
+- :class:`ClickHouseDatabaseCreatorHandle` — admits ``rights.is_admin`` or
+  ``rights.can_create_database``. Exposes ``create_database`` which creates the
+  database, the three tier roles, and grants DBADMIN to the creator.
+- :class:`ClickHouseDatabaseAdminHandle` — for ``rights.has_admin(database)``.
+  Tier-role grant/revoke per user/group, ``delete_database``, audit listing.
 
 Why two HTTP transports? ClickHouse's ``EXECUTE AS user <SELECT>`` body grammar
 rejects ``FORMAT`` clauses, but ``clickhouse-connect``'s ``query()`` always
 appends ``FORMAT Native``. So impersonated queries go through a raw
-``httpx.AsyncClient`` with ``?default_format=JSONEachRow`` as a URL parameter
-(which the server *does* honor). Non-impersonated queries keep using
-``clickhouse-connect`` for the polished ``QueryResult``.
+``httpx.AsyncClient`` with ``?default_format=JSONEachRow`` as a URL parameter.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import Any, cast
 
 import httpx
 from clickhouse_connect.driver.client import Client
@@ -37,17 +40,20 @@ from iris.clickhouse.audit import (
 )
 from iris.clickhouse.config import ClickHouseSettings
 from iris.clickhouse.grants import (
+    TIER_DBADMIN,
+    TIER_DBREADER,
+    TIER_DBWRITER,
+    create_tier_roles,
+    drop_tier_roles,
     grant_insert_update_to_table,
     grant_select_to_database,
+    grant_tier_to_group,
+    grant_tier_to_user,
+    revoke_tier_from_group,
+    revoke_tier_from_user,
+    tier_role_name,
 )
-from iris.auth.authz.mapping import RoleMappingError
-from iris.clickhouse.database_admins import DatabaseAdminStore
-from iris.clickhouse.grants import revoke_select_from_database
 from iris.clickhouse.identifiers import quote_identifier, validate_identifier
-from iris.clickhouse.users import GROUP_ROLE_SUFFIX, USER_ROLE_SUFFIX
-
-if TYPE_CHECKING:
-    from iris.auth.authz.store import RoleMappingStore
 from iris.clickhouse.policies import add_row_policy, revoke_row_policy
 from iris.clickhouse.users import init_user_rights
 
@@ -57,8 +63,6 @@ class ClickHouseHandle:
 
     Exposes only ``query_as_user``, which prepends ``EXECUTE AS <quoted_username>``
     to the SQL via raw HTTP so the query runs under the user's CH identity.
-    Service-identity queries and admin functions are not exposed here — see
-    :class:`ClickHouseAdminHandle`.
 
     Returns ``list[dict[str, Any]]`` (parsed JSONEachRow). Numeric types are
     preserved by ClickHouse's JSON encoder, but column-type metadata is lost
@@ -98,7 +102,7 @@ class ClickHouseHandle:
 
 
 class ClickHouseAdminHandle(ClickHouseHandle):
-    """Admin-capable handle for routes gated on the ``clickhouse_admin`` role.
+    """Admin-capable handle for routes gated on ``rights.is_admin``.
 
     Adds service-identity queries (no impersonation) and async wrappers around
     the existing module-level admin/audit functions. ``query_as_user`` is
@@ -222,10 +226,11 @@ class ClickHouseAdminHandle(ClickHouseHandle):
 
 
 class ClickHouseDatabaseCreatorHandle:
-    """Handle for users with the ``clickhouse_database_creator`` role.
+    """Handle for users with ``can_create_database`` (or ``is_admin``).
 
-    Exposes only ``create_database`` — creates a CH database and atomically
-    records the calling iris user as an admin of the new database.
+    ``create_database`` creates the database, the three tier roles, the
+    privilege grants, and grants ``DBADMIN`` to the creator's per-user role.
+    All steps are ``IF NOT EXISTS`` and idempotent.
     """
 
     def __init__(
@@ -233,36 +238,35 @@ class ClickHouseDatabaseCreatorHandle:
         *,
         client: Client,
         settings: ClickHouseSettings,
-        db_admin_store: DatabaseAdminStore,
         username: str,
     ) -> None:
         self._client = client
         self._settings = settings
-        self._db_admin_store = db_admin_store
         self._username = username
 
     async def create_database(self, name: str) -> None:
-        """``CREATE DATABASE IF NOT EXISTS <name>``; record the calling user as
-        an admin of the new database. The CH ``IF NOT EXISTS`` and the store's
-        ``INSERT OR IGNORE`` together make this safe to retry after a partial
-        failure."""
         validate_identifier(name, kind="database")
         quoted = quote_identifier(name, kind="database")
         await asyncio.to_thread(
             self._client.command, f"CREATE DATABASE IF NOT EXISTS {quoted}"
         )
-        await self._db_admin_store.add_admin_user(
-            database=name, username=self._username
+        await asyncio.to_thread(create_tier_roles, self._client, database=name)
+        await asyncio.to_thread(
+            grant_tier_to_user,
+            self._client,
+            database=name,
+            tier=TIER_DBADMIN,
+            username=self._username,
         )
 
 
 class ClickHouseDatabaseAdminHandle:
     """Per-database admin handle.
 
-    Bound to a specific database. Methods translate iris-friendly identifiers
-    (username, group) to CH role names (<username>_USER, <group>_GRP) using
-    the existing suffix constants. Read grants, row policies, and admin
-    delegation are scoped to ``self._database``.
+    All grant/revoke operations are tier-role grants on per-user/per-group
+    roles in CH. Reading "who is admin of database X" is querying CH for
+    members of ``X_DBADMIN``. Adding an admin is granting ``X_DBADMIN`` to
+    the target's ``<username>_USER`` role (pre-creating it if absent).
     """
 
     def __init__(
@@ -271,166 +275,154 @@ class ClickHouseDatabaseAdminHandle:
         client: Client,
         http_client: httpx.AsyncClient,
         settings: ClickHouseSettings,
-        db_admin_store: DatabaseAdminStore,
-        authz_store: "RoleMappingStore",
         database: str,
         username: str,
     ) -> None:
         self._client = client
         self._http_client = http_client
         self._settings = settings
-        self._db_admin_store = db_admin_store
-        self._authz_store = authz_store
         self._database = database
         self._username = username
 
-    # ---- grants ----
+    # ---- tier grants ----
 
-    async def _ensure_ch_role(self, role: str) -> None:
-        """``CREATE ROLE IF NOT EXISTS`` for the named CH role.
-
-        Pre-creating the role makes grant/policy operations idempotent
-        regardless of whether the iris user/group has logged in yet:
-        the grant is recorded against the role, and ``init_user_rights``
-        attaches the role to the CH user on first login. Without this
-        pre-creation, a missing role would surface as a CH error which
-        leaks "user-X has not yet authenticated" information to the
-        admin caller.
-        """
-        validate_identifier(role, kind="role")
-        role_q = quote_identifier(role, kind="role")
+    async def grant_reader(self, username: str) -> None:
         await asyncio.to_thread(
-            self._client.command, f"CREATE ROLE IF NOT EXISTS {role_q}"
-        )
-
-    async def grant_select_to_user(self, username: str) -> None:
-        role = f"{username}{USER_ROLE_SUFFIX}"
-        await self._ensure_ch_role(role)
-        await asyncio.to_thread(
-            grant_select_to_database,
+            grant_tier_to_user,
             self._client,
             database=self._database,
-            role=role,
+            tier=TIER_DBREADER,
+            username=username,
         )
 
-    async def grant_select_to_group(self, group: str) -> None:
-        role = f"{group}{GROUP_ROLE_SUFFIX}"
-        await self._ensure_ch_role(role)
+    async def grant_writer(self, username: str) -> None:
         await asyncio.to_thread(
-            grant_select_to_database,
+            grant_tier_to_user,
             self._client,
             database=self._database,
-            role=role,
+            tier=TIER_DBWRITER,
+            username=username,
         )
-
-    async def revoke_select_from_user(self, username: str) -> None:
-        await asyncio.to_thread(
-            revoke_select_from_database,
-            self._client,
-            database=self._database,
-            role=f"{username}{USER_ROLE_SUFFIX}",
-        )
-
-    async def revoke_select_from_group(self, group: str) -> None:
-        await asyncio.to_thread(
-            revoke_select_from_database,
-            self._client,
-            database=self._database,
-            role=f"{group}{GROUP_ROLE_SUFFIX}",
-        )
-
-    # ---- row policies ----
-
-    async def add_row_policy_for_user(
-        self, *, table: str, column: str, username: str, value: str
-    ) -> None:
-        role = f"{username}{USER_ROLE_SUFFIX}"
-        await self._ensure_ch_role(role)
-        await asyncio.to_thread(
-            add_row_policy,
-            self._client,
-            database=self._database,
-            table=table,
-            column=column,
-            role=role,
-            value=value,
-            settings=self._settings,
-        )
-
-    async def add_row_policy_for_group(
-        self, *, table: str, column: str, group: str, value: str
-    ) -> None:
-        role = f"{group}{GROUP_ROLE_SUFFIX}"
-        await self._ensure_ch_role(role)
-        await asyncio.to_thread(
-            add_row_policy,
-            self._client,
-            database=self._database,
-            table=table,
-            column=column,
-            role=role,
-            value=value,
-            settings=self._settings,
-        )
-
-    async def revoke_row_policy_for_user(
-        self, *, table: str, username: str, value: str
-    ) -> None:
-        await asyncio.to_thread(
-            revoke_row_policy,
-            self._client,
-            database=self._database,
-            table=table,
-            role=f"{username}{USER_ROLE_SUFFIX}",
-            value=value,
-        )
-
-    async def revoke_row_policy_for_group(
-        self, *, table: str, group: str, value: str
-    ) -> None:
-        await asyncio.to_thread(
-            revoke_row_policy,
-            self._client,
-            database=self._database,
-            table=table,
-            role=f"{group}{GROUP_ROLE_SUFFIX}",
-            value=value,
-        )
-
-    # ---- delegation ----
 
     async def add_admin_user(self, username: str) -> None:
-        await self._db_admin_store.add_admin_user(
-            database=self._database, username=username
+        await asyncio.to_thread(
+            grant_tier_to_user,
+            self._client,
+            database=self._database,
+            tier=TIER_DBADMIN,
+            username=username,
+        )
+
+    async def revoke_reader(self, username: str) -> None:
+        await asyncio.to_thread(
+            revoke_tier_from_user,
+            self._client,
+            database=self._database,
+            tier=TIER_DBREADER,
+            username=username,
+        )
+
+    async def revoke_writer(self, username: str) -> None:
+        await asyncio.to_thread(
+            revoke_tier_from_user,
+            self._client,
+            database=self._database,
+            tier=TIER_DBWRITER,
+            username=username,
         )
 
     async def remove_admin_user(self, username: str) -> None:
-        await self._db_admin_store.remove_admin_user(
-            database=self._database, username=username
+        await asyncio.to_thread(
+            revoke_tier_from_user,
+            self._client,
+            database=self._database,
+            tier=TIER_DBADMIN,
+            username=username,
         )
 
-    async def add_admin_role(self, role: str) -> None:
-        mapping = await self._authz_store.get_mapping()
-        if role not in mapping.roles:
-            raise RoleMappingError(f"role {role!r} is not defined in the role mapping")
-        await self._db_admin_store.add_admin_role(
-            database=self._database, role=role
+    # ---- group equivalents ----
+
+    async def grant_reader_to_group(self, group: str) -> None:
+        await asyncio.to_thread(
+            grant_tier_to_group,
+            self._client,
+            database=self._database,
+            tier=TIER_DBREADER,
+            group=group,
         )
 
-    async def remove_admin_role(self, role: str) -> None:
-        # No validation: removing a role from per-DB admin can target a role
-        # that has since been deleted from the authz mapping (cleanup case).
-        await self._db_admin_store.remove_admin_role(
-            database=self._database, role=role
+    async def grant_writer_to_group(self, group: str) -> None:
+        await asyncio.to_thread(
+            grant_tier_to_group,
+            self._client,
+            database=self._database,
+            tier=TIER_DBWRITER,
+            group=group,
+        )
+
+    async def add_admin_group(self, group: str) -> None:
+        await asyncio.to_thread(
+            grant_tier_to_group,
+            self._client,
+            database=self._database,
+            tier=TIER_DBADMIN,
+            group=group,
+        )
+
+    async def revoke_reader_from_group(self, group: str) -> None:
+        await asyncio.to_thread(
+            revoke_tier_from_group,
+            self._client,
+            database=self._database,
+            tier=TIER_DBREADER,
+            group=group,
+        )
+
+    async def revoke_writer_from_group(self, group: str) -> None:
+        await asyncio.to_thread(
+            revoke_tier_from_group,
+            self._client,
+            database=self._database,
+            tier=TIER_DBWRITER,
+            group=group,
+        )
+
+    async def remove_admin_group(self, group: str) -> None:
+        await asyncio.to_thread(
+            revoke_tier_from_group,
+            self._client,
+            database=self._database,
+            tier=TIER_DBADMIN,
+            group=group,
+        )
+
+    # ---- database lifecycle ----
+
+    async def delete_database(self) -> None:
+        """``DROP DATABASE IF EXISTS`` then drop the three tier roles. Idempotent.
+
+        Order matters: drop the database first so a partial failure leaves the
+        data dropped (the goal) rather than orphan grants.
+        """
+        db_q = quote_identifier(self._database, kind="database")
+        await asyncio.to_thread(
+            self._client.command, f"DROP DATABASE IF EXISTS {db_q}"
+        )
+        await asyncio.to_thread(
+            drop_tier_roles, self._client, database=self._database
         )
 
     # ---- listing ----
 
-    async def list_admin_users(self) -> list[str]:
-        return await self._db_admin_store.list_admin_users(database=self._database)
-
-    async def list_admin_roles(self) -> list[str]:
-        return await self._db_admin_store.list_admin_roles(database=self._database)
+    async def list_admin_members(self) -> list[str]:
+        """Members of ``<database>_DBADMIN`` — both user and group roles."""
+        admin_role = tier_role_name(self._database, TIER_DBADMIN)
+        rows = await asyncio.to_thread(
+            self._client.query,
+            "SELECT role_name FROM system.role_grants WHERE granted_role_name = {r:String}",
+            {"r": admin_role},
+        )
+        return [cast(str, row["role_name"]) for row in rows.named_results()]
 
     # ---- audit ----
 

@@ -1,22 +1,20 @@
-from fastapi import Depends
 from fastapi.testclient import TestClient
 
-from iris.auth.authz.deps import require_role
-from iris.auth.session import Session
+from iris.auth import SessionAdmin
 
 
 def test_forbidden_html_renders_template(monkeypatch):
-    # Use a username that's NOT the bootstrap admin user (conftest sets
-    # AUTHZ_BOOTSTRAP_USER=alice). Bob has no role assignments, so the
-    # admin-gated route should 403.
+    # Bob is not bootstrapped as admin (only alice is in the conftest), and
+    # tests run with install_clickhouse=False so derive_rights never runs —
+    # bob's session has empty Rights. The SessionAdmin-gated route 403s.
     monkeypatch.setenv("MOCK_USERNAME", "bob")
-    monkeypatch.setenv("MOCK_GROUPS", "users")  # NOT admins
+    monkeypatch.setenv("MOCK_GROUPS", "users")
     from iris.app import build_app
 
     app = build_app(install_clickhouse=False)
 
     @app.get("/admin-only")
-    async def admin_only(_: Session = Depends(require_role("admin"))):
+    async def admin_only(_: SessionAdmin):
         return {"ok": True}
 
     client = TestClient(app)

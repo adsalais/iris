@@ -16,10 +16,11 @@ Schema:
         created_at_ts            INTEGER NOT NULL,
         expires_at_ts            INTEGER NOT NULL,
         absolute_expires_at_ts   INTEGER NOT NULL,
-        data_json                TEXT NOT NULL DEFAULT '{}'
+        data_json                TEXT NOT NULL DEFAULT '{}',
+        rights_json              TEXT NOT NULL DEFAULT '{}'
     );
 
-Timestamps are Unix epoch INTEGER. Groups and data are JSON text.
+Timestamps are Unix epoch INTEGER. Groups, data, and rights are JSON text.
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ from datetime import datetime, timedelta, UTC
 from typing import Any
 
 from iris.auth.identity import User, UserSession
+from iris.auth.session import EMPTY_RIGHTS, Rights, rights_from_dict, rights_to_dict
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -42,7 +44,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at_ts            INTEGER NOT NULL,
     expires_at_ts            INTEGER NOT NULL,
     absolute_expires_at_ts   INTEGER NOT NULL,
-    data_json                TEXT NOT NULL DEFAULT '{}'
+    data_json                TEXT NOT NULL DEFAULT '{}',
+    rights_json              TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_subject ON sessions(subject);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at_ts);
@@ -64,6 +67,8 @@ def _row_to_session(row: sqlite3.Row) -> UserSession:
         display_name=row["display_name"],
         groups=tuple(json.loads(row["groups_json"])),
     )
+    rights_raw = json.loads(row["rights_json"]) if row["rights_json"] else {}
+    rights = rights_from_dict(rights_raw) if rights_raw else EMPTY_RIGHTS
     return UserSession(
         id=row["id"],
         user=user,
@@ -71,6 +76,7 @@ def _row_to_session(row: sqlite3.Row) -> UserSession:
         expires_at=_from_ts(row["expires_at_ts"]),
         absolute_expires_at=_from_ts(row["absolute_expires_at_ts"]),
         data=json.loads(row["data_json"]),
+        rights=rights,
     )
 
 
@@ -91,14 +97,12 @@ class SessionStore:
         self._conn = sqlite3.connect(
             path,
             check_same_thread=False,
-            isolation_level=None,  # autocommit; we issue BEGIN/COMMIT explicitly
+            isolation_level=None,
         )
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
 
     def _init_schema(self) -> None:
-        # journal_mode=WAL is per-database and persists in the file. Safe to set
-        # every time; no-op on :memory: (returns "memory").
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
@@ -124,8 +128,9 @@ class SessionStore:
                 """
                 INSERT INTO sessions (
                     id, subject, username, display_name, groups_json,
-                    created_at_ts, expires_at_ts, absolute_expires_at_ts, data_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at_ts, expires_at_ts, absolute_expires_at_ts,
+                    data_json, rights_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.id,
@@ -136,6 +141,7 @@ class SessionStore:
                     _to_ts(session.created_at),
                     _to_ts(session.expires_at),
                     _to_ts(session.absolute_expires_at),
+                    "{}",
                     "{}",
                 ),
             )
@@ -177,7 +183,6 @@ class SessionStore:
             "UPDATE sessions SET expires_at_ts = ? WHERE id = ?",
             (_to_ts(new_expires), session_id),
         )
-        # Build the session view from the row, but with the refreshed expires_at.
         session = _row_to_session(row)
         return UserSession(
             id=session.id,
@@ -186,16 +191,30 @@ class SessionStore:
             expires_at=new_expires,
             absolute_expires_at=session.absolute_expires_at,
             data=session.data,
+            rights=session.rights,
         )
 
     async def update_data(self, session_id: str, data: dict[str, Any]) -> None:
-        # Serialize OUTSIDE the lock so TypeError surfaces before we touch the DB.
         data_json = json.dumps(data)
         async with self._lock:
             await asyncio.to_thread(
                 self._conn.execute,
                 "UPDATE sessions SET data_json = ? WHERE id = ?",
                 (data_json, session_id),
+            )
+
+    async def set_rights(self, session_id: str, rights: Rights) -> None:
+        """Persist the derived ``Rights`` view onto a session row.
+
+        Called once per real login by the post-login hook chain after
+        ``init_user_rights`` and ``derive_rights`` succeed.
+        """
+        rights_json = json.dumps(rights_to_dict(rights))
+        async with self._lock:
+            await asyncio.to_thread(
+                self._conn.execute,
+                "UPDATE sessions SET rights_json = ? WHERE id = ?",
+                (rights_json, session_id),
             )
 
     async def delete(self, session_id: str) -> None:

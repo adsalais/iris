@@ -273,17 +273,18 @@ def test_provider_code_reuse_raises_oauth_exchange_on_second_call(
     assert exc.value.token == "oauth_exchange"
 
 
-def test_route_oauth_alice_full_flow_creates_session_with_admin_role(
+def test_route_oauth_alice_full_flow_creates_session(
     oauth_app, keycloak_http
 ):
     """End-to-end: authorize -> Keycloak login -> callback -> iris session
-    cookie set; whoami succeeds. Alice is the bootstrap admin user
-    (AUTHZ_BOOTSTRAP_USER=alice from tests/conftest.py), so she resolves
-    to {admin, clickhouse_admin} — admin from the bootstrap-seeded users
-    list, clickhouse_admin via the include edge.
-    """
-    from iris.auth.authz.core import resolve_roles
+    cookie set; whoami succeeds and surfaces the user's groups.
 
+    With install_clickhouse=False these tests don't run the post-login
+    rights derivation — alice's session lands with EMPTY_RIGHTS. The
+    Keycloak integration still validates the OAuth + session-creation
+    pipeline; rights derivation has its own dedicated tests under
+    tests/clickhouse/.
+    """
     test_client = TestClient(oauth_app)
     response = simulate_login(
         test_client=test_client, http=keycloak_http,
@@ -298,27 +299,22 @@ def test_route_oauth_alice_full_flow_creates_session_with_admin_role(
     body = me.json()
     assert body["display_name"] == "Alice Example"
     assert set(body["groups"]) == {"admins", "users"}
-
-    # Roles aren't surfaced by /api/whoami; resolve them via the store and
-    # the role-mapping store to confirm the bootstrap-seeded mapping was applied.
-    store = oauth_app.state.auth_session_store
-    user_session = asyncio.run(store.get_and_refresh(sid))
-    assert user_session is not None
-    mapping = asyncio.run(oauth_app.state.authz_store.get_mapping())
-    roles = resolve_roles(user_session.user, mapping)
-    assert "admin" in roles
-    assert "clickhouse_admin" in roles  # via the bootstrap include edge
+    # Rights default to empty when CH isn't installed.
+    assert body["rights"] == {
+        "is_admin": False,
+        "can_create_database": False,
+        "db_admin": [],
+        "db_writer": [],
+        "db_reader": [],
+    }
 
 
-def test_route_oauth_bob_full_flow_creates_session_with_no_roles(
+def test_route_oauth_bob_full_flow_creates_session_with_empty_rights(
     oauth_app, keycloak_http
 ):
-    """Bob is only in the `users` group and is NOT the bootstrap admin user.
-    The bootstrap-seeded mapping has no users:[bob] entry and no `users`
-    group on any role, so bob's effective role set is empty. Whoami still
-    succeeds — being authenticated doesn't require a role."""
-    from iris.auth.authz.core import resolve_roles
-
+    """Bob authenticates and gets a session with empty rights (CH not
+    installed for these tests). Authentication succeeds independently of
+    whether the user has any rights."""
     test_client = TestClient(oauth_app)
     response = simulate_login(
         test_client=test_client, http=keycloak_http,
@@ -335,8 +331,7 @@ def test_route_oauth_bob_full_flow_creates_session_with_no_roles(
     store = oauth_app.state.auth_session_store
     user_session = asyncio.run(store.get_and_refresh(sid))
     assert user_session is not None
-    mapping = asyncio.run(oauth_app.state.authz_store.get_mapping())
-    assert resolve_roles(user_session.user, mapping) == frozenset()
+    assert user_session.rights.is_admin is False
 
 
 def test_provider_wrong_ca_bundle_raises_oauth_discovery(

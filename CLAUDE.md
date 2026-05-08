@@ -90,39 +90,56 @@ Routes then take `signals: Signals` and get a guaranteed dict — no None handli
 
 ## Authentication
 
-The `iris.auth` package adds session-based authentication to all routes. Public surface:
+The `iris.auth` package adds session-based authentication and tier-based authorization to all routes. Public surface:
 
 ```python
 from iris.auth import (
-    Session, require_session, optional_session, require_role, User, install,
+    AuthSession,                       # the dataclass returned by every auth dep
+    Rights, EMPTY_RIGHTS,              # the rights view + a useful default
+    Session, SessionOptional,          # auth-only aliases
+    SessionAdmin,                      # global admin
+    SessionDatabaseCreator,            # admin OR can_create_database
+    SessionDatabaseAdmin,              # admin of the path's `database` parameter
+    SessionWrite, SessionRead,         # tier-scoped checks against `database`
+    User, install, bootstrap_admin,
 )
 ```
 
-Routes get a session via one of three FastAPI deps, all of which return a `Session`:
+Routes consume the dep aliases as type annotations — no `= Depends(...)` is needed:
 
-- `require_session` — `session: Session = Depends(require_session)` — 401 if no session cookie.
-- `optional_session` — `session: Session | None = Depends(optional_session)` — returns `None` when there's no session, never raises.
-- `require_role(name)` — `session: Session = Depends(require_role("admin"))` — 401 if no session, 403 if the session lacks the named role, 500 if the role isn't defined in the YAML/store.
+```python
+@app.get("/me")
+async def me(session: Session) -> dict:
+    return {"username": session.user.username}
 
-All three return the same `Session` shape: `id`, `user`, `created_at`, `expires_at`, `data`, `roles`.
+@app.get("/db/{database}/read")
+async def read_db(database: str, session: SessionRead) -> ...:
+    ...
 
-The `Session` view exposes everything routes legitimately need from a logged-in session: `id`, `user` (a `User`), `created_at`, `expires_at`, `data` (the per-session mutable dict), and `roles` (a `frozenset[str]` of effective role names with `includes:` closure already applied). The `data` field is the same dict object as the session store's storage, so `session.data[key] = value` writes through with no commit step. All other fields are frozen.
+@app.post("/db/{database}/grants/users/{username}")
+async def grant_read(database: str, username: str, session: SessionDatabaseAdmin) -> ...:
+    ...
+```
 
-`require_role("admin")` is a dependency factory that 403s if the user's effective role set doesn't contain the named role. It returns a `Session`, so role-gated routes write `session: Session = Depends(require_role("admin"))` and access `session.user`/`session.data`/`session.roles` from the same value. See "Authorization (roles)" below for the schema and inheritance semantics.
+`AuthSession` exposes `id`, `user` (a `User`), `created_at`, `expires_at`, `data` (the per-session mutable dict), and `rights` (a frozen `Rights` view). The `data` field is the same dict object as the session store's storage, so `session.data[key] = value` writes through with no commit step. All other fields are frozen. There is no `roles` field; templates that want the IdP groups read `session.user.groups`.
 
-**One type, three deps.** Every auth-flavored route parameter has the same uniform shape: `session: Session = Depends(<dep>)`. The choice of dep determines the access-control policy:
+**One type, seven deps.** Every auth-flavored route parameter has the same uniform shape: `session: <Alias>` where `<Alias>` is one of the seven aliases below. The choice of alias determines the access-control policy:
 
-| Dep | When it admits | When it raises |
+| Alias | Admits when | Raises |
 |---|---|---|
-| `require_session` | any logged-in user | 401 with no session |
-| `optional_session` | any caller (returns `None` if no session) | never |
-| `require_role(name)` | session has `name` in `roles` (closure-resolved) | 401 / 403 / 500 |
+| `Session` | any logged-in user | 401 with no session |
+| `SessionOptional` | any caller (returns `None` if no session) | never |
+| `SessionAdmin` | `session.rights.is_admin` | 401 / 403 |
+| `SessionDatabaseCreator` | admin or `can_create_database` | 401 / 403 |
+| `SessionDatabaseAdmin` | admin or `db_admin[database]` | 401 / 403 |
+| `SessionWrite` | admin or `db_admin[database]` or `db_writer[database]` | 401 / 403 |
+| `SessionRead` | admin or any tier on `database` | 401 / 403 |
 
-There used to be `Session` and `OptionalSession` `Annotated` aliases that baked `Depends` into the type metadata, but that conflicts with FastAPI's "no `Depends` in both `Annotated` and default value" rule and forced a dual-import dance. The aliases are gone — every route uses the explicit-`Depends` form, which composes cleanly with `require_role(...)`.
+The three database-scoped aliases (`SessionRead`/`SessionWrite`/`SessionDatabaseAdmin`) read `database: str` from the calling route's path or query parameters via FastAPI's normal binding. A typo'd or missing role configuration is no longer a 500 case — rights come from CH at login, and any check just compares against the cached `Rights` value.
 
 ### Per-session server-side data
 
-Each `UserSession` carries a mutable `data: dict[str, Any]` field for arbitrary route-managed state (drafts, wizard steps, recently-viewed lists, etc.). The `Session` dep exposes it via `session.data`:
+Each `UserSession` carries a mutable `data: dict[str, Any]` field for arbitrary route-managed state (drafts, wizard steps, recently-viewed lists, etc.). Every alias dep exposes it via `session.data`:
 
 ```python
 from fastapi import Request
@@ -146,132 +163,67 @@ async def me_full(session: Session):
         "id": session.id,
         "logged_in_at": session.created_at,
         "data_keys": list(session.data),
-        "roles": sorted(session.roles),
+        "is_admin": session.rights.is_admin,
+        "groups": list(session.user.groups),
     }
 ```
 
 - `session.data` is a per-request snapshot — a fresh `dict` deserialized from the SQLite row on every request. Mutations to the dict do **not** auto-persist; routes that want the change to survive call `await request.app.state.auth_session_store.update_data(session.id, session.data)` before returning.
-- `Session` exposes `id`, `user`, `created_at`, `expires_at`, `data`, and `roles` on a single value. Routes that need only the user write `session.user`; routes that need the per-session bag write `session.data`.
-
-A single `Session` dep injection resolves the underlying session lookup, the per-request `Session` view construction, and the role computation exactly once. A route taking both `session: Session` and `Depends(require_role(...))` makes one store hit, computes roles once, and runs the role check on the cached view.
+- `AuthSession` exposes `id`, `user`, `created_at`, `expires_at`, `data`, and `rights` on a single value. Routes that need only the user write `session.user`; routes that need the per-session bag write `session.data`; routes that need the authorization view write `session.rights`.
 
 Lifecycle: `data` is JSON-encoded into the SQLite row alongside the session. Mutations are persisted by `update_data` and survive process restarts. Values must be JSON-encodable (strings, ints, floats, bools, `None`, lists, dicts) — anything else raises `TypeError` at write time. Read-modify-write across an `await` between two requests for the same session has the standard interleaving race; acceptable at ≤20-user scale, document or use `asyncio.Lock` if a route needs atomic updates.
 
-### Authorization (roles)
+### Authorization (CH-derived rights)
 
-Application code references **internal role names only** (`admin`, `writer`, `reader`, etc.). The mapping from role → external IdP groups/usernames lives in SQLite, in the same `AUTH_DB_PATH` file as the session store. Routes never reference IdP group names directly; they use `Depends(require_role("admin"))`. Operators edit the mapping via the `RoleMappingStore` API (future admin routes); no file edits, no app restart.
+ClickHouse is the only source of truth for authorization. There is no SQLite role mapping, no `authz_*` tables, no `RoleMappingStore`, no per-database admin store. Iris derives a frozen `Rights` view from CH grants once at login (in the post-login hook chain) and caches it on the session row; routes gate via the alias deps in `iris.auth.deps`, which inspect `session.rights`.
 
-**Schema** (four tables, `authz_*` prefix):
-
-```sql
-CREATE TABLE authz_roles (
-    name TEXT PRIMARY KEY                     -- regex: [a-zA-Z0-9_-]+
-);
-CREATE TABLE authz_role_groups (
-    role_name  TEXT NOT NULL,
-    group_name TEXT NOT NULL,
-    PRIMARY KEY (role_name, group_name),
-    FOREIGN KEY (role_name) REFERENCES authz_roles(name) ON DELETE CASCADE
-);
-CREATE TABLE authz_role_users (
-    role_name      TEXT NOT NULL,
-    username_lower TEXT NOT NULL,             -- case-insensitive: stored lowercased
-    PRIMARY KEY (role_name, username_lower),
-    FOREIGN KEY (role_name) REFERENCES authz_roles(name) ON DELETE CASCADE
-);
-CREATE TABLE authz_role_includes (
-    role_name     TEXT NOT NULL,
-    included_role TEXT NOT NULL,
-    PRIMARY KEY (role_name, included_role),
-    FOREIGN KEY (role_name)     REFERENCES authz_roles(name) ON DELETE CASCADE,
-    FOREIGN KEY (included_role) REFERENCES authz_roles(name) ON DELETE RESTRICT
-);
-```
-
-`ON DELETE CASCADE` on the child tables means dropping a role removes its assignments automatically. `ON DELETE RESTRICT` on `included_role` prevents deleting a role that another role still includes. Cycles are rejected app-side on `add_include` — SQLite can't enforce graph acyclicity.
-
-**Mutator API** — two paths, same underlying SQL:
-
-1. **Session-scoped (recommended for routes).** Obtain a mutator from the store; each call re-checks the session has the configured admin role:
+**The `Rights` shape:**
 
 ```python
-mutator = request.app.state.authz_store.for_session(session)
-await mutator.add_role(name)
-await mutator.remove_role(name)
-# ... etc — same surface as the bare store ...
+@dataclass(frozen=True, slots=True)
+class Rights:
+    is_admin: bool                          # global admin
+    can_create_database: bool               # CREATE DATABASE on *.*
+    db_admin: frozenset[str]                # databases with full delegation power
+    db_writer: frozenset[str]               # databases with SELECT+INSERT+ALTER UPDATE
+    db_reader: frozenset[str]               # databases with SELECT
 ```
 
-`for_session(session, *, required_role="admin")` returns a `RoleMappingStoreMutator` bound to the caller's session. Defense-in-depth: even if a route forgets the `Depends(require_role("admin"))` gate, the mutator catches the call with `AuthForbidden`. Operators with a non-default authz-admin role pass it explicitly.
+`Rights` exposes three helpers — `has_read(database)`, `has_write(database)`, `has_admin(database)` — each using the implied tier ordering (`is_admin` ⊇ `db_admin[X]` ⊇ `db_writer[X]` ⊇ `db_reader[X]`).
 
-2. **Bare store (internal trusted code only).** Bootstrap, install, and test fixtures call directly:
+**How rights are derived.** At login, `iris.clickhouse.rights.derive_rights(client, username, groups)`:
 
-```python
-await store.add_role(name)
-await store.remove_role(name)             # raises if another role includes it
-await store.add_group_to_role(role, group)
-await store.remove_group_from_role(role, group)
-await store.add_user_to_role(role, username)         # username lowercased on storage
-await store.remove_user_from_role(role, username)
-await store.add_include(role, included_role)        # cycle-checked app-side
-await store.remove_include(role, included_role)
-```
+1. Walks `system.role_grants` transitively to collect the user's effective role set (starting from `<username>_USER` plus each `<group>_GRP`).
+2. Splits any role ending in `_DBADMIN`, `_DBWRITER`, `_DBREADER` to recover the database name and populates the corresponding `frozenset`.
+3. Queries `system.grants` filtered to the effective role set:
+   - `is_admin = True` if some role holds `ROLE ADMIN` at global scope (`database IS NULL`) with `grant_option=1`. CH always expands `GRANT ALL` into primitive privileges, so `access_type='ALL'` never appears — ROLE ADMIN+WGO is the stable single-row marker.
+   - `can_create_database = True` if some role holds `CREATE DATABASE` at global scope (no GRANT OPTION required).
 
-Routes should NOT call the bare store; route bugs that bypass `for_session` lose the defense-in-depth check.
+Operator changes (new tier-role grants, revocations) take effect on the user's next login. There is no mid-session re-derivation. To force a re-derive operationally: revoke the grant in CH (so any actual query fails) and delete the user's session rows from the auth DB.
 
-Each mutator validates inputs (role names against `[a-zA-Z0-9_-]+`) and translates SQLite FK violations into `RoleMappingError` with a clean message. `add_*` are idempotent (`INSERT OR IGNORE`).
+**The CH-side storage.** Per-database tier roles, created at database creation and dropped at deletion:
+- `<X>_DBADMIN` — `GRANT ALL ON X.* WITH GRANT OPTION`
+- `<X>_DBWRITER` — `GRANT SELECT, INSERT, ALTER UPDATE ON X.*`
+- `<X>_DBREADER` — `GRANT SELECT ON X.*`
+
+The per-user (`<username>_USER`) and per-group (`<group>_GRP`) roles continue to be created lazily by `init_user_rights` on each login. They serve as the recipients of tier-role grants: `add_writer(bob)` runs `GRANT <X>_DBWRITER TO bob_USER`.
+
+**Bootstrap** (option β). On app boot, after `ensure_service_admin`, if `IRIS_BOOTSTRAP_USER` is set and no iris user role currently holds the admin marker (ROLE ADMIN+WGO at global scope, `_USER`-suffixed), iris seeds `<username>_USER` with `GRANT ALL ON *.* WITH GRANT OPTION`. Idempotent: re-runs with an existing admin are no-ops. Wiping the CH server re-triggers the seed.
+
+The detection is restricted to roles ending in `_USER` so iris's own service identity (which necessarily holds ROLE ADMIN+WGO to manage RBAC state) is never mistaken for a bootstrapped admin.
+
+**Pre-create-on-grant** is preserved as a username-enumeration defense. Tier-grant helpers (`grant_tier_to_user`, `grant_tier_to_group`) issue `CREATE ROLE IF NOT EXISTS <target>_USER` before granting, so an admin granting access to a never-logged-in user gets the same CH response as for an existing user.
 
 **Identity matching:**
-- `groups` — exact, case-sensitive match against `User.groups` (verbatim from the IdP).
-- `users` — case-insensitive match against `User.username`.
-  - OAuth provider sources `username` from the `preferred_username` claim, falling back to `sub` if absent. If your OIDC IdP doesn't issue `preferred_username`, your `users` lists must contain the `sub` UUIDs.
+- `groups` — exact, case-sensitive match against `User.groups` (verbatim from the IdP). The `<group>_GRP` role in CH is named after the group string.
+- `users` — `<username>_USER` — case-sensitive match against `User.username` (the CH role name uses the literal username).
+  - OAuth provider sources `username` from the `preferred_username` claim, falling back to `sub` if absent.
   - LDAP provider sources `username` from the `username` substituted into `LDAP_BIND_DN_TEMPLATE`.
   - Mock provider sources `username` from `MOCK_USERNAME`.
 
-**Use in routes:**
+**Use in routes:** see the alias table in the section above. `require_role(name)` and `RoleMappingStore` are gone; `SessionAdmin` / `SessionRead` / etc. cover all the previous role-gating use cases. The `clickhouse_admin` role concept disappears — iris admin and CH admin are the same `is_admin` flag, derived from CH.
 
-```python
-from iris.auth import Session
-from iris.auth.authz.deps import require_role
-
-@app.get("/docs")
-async def list_docs(session: Session = Depends(require_role("reader"))):
-    ...
-```
-
-For routes that want bare auth and need to read roles:
-
-```python
-from iris.auth import Session, require_session
-
-@app.get("/me/roles")
-async def my_roles(session: Session = Depends(require_session)):
-    return {"roles": sorted(session.roles)}
-```
-
-Same shape, different dep — the route author picks `require_role(...)` when they need a specific role and `require_session` when any authenticated user is fine.
-
-`require_role("reader")` admits any user whose effective role set contains `reader`, directly or via `includes` (so admins and writers get in too). `session.roles` returns the user's full effective role set as a `frozenset[str]` — useful for templates and `/api/whoami`-style endpoints.
-
-If a route names a role that isn't defined in the DB, the request returns **500** (not 403) with a generic body — silent 403s would mask operator typos like `require_role("reder")`. The missing role name is logged server-side.
-
-**First-install bootstrap.** Two env vars seed the initial admin user:
-
-```
-AUTHZ_BOOTSTRAP_ROLE=admin       # default: "admin"
-AUTHZ_BOOTSTRAP_USER=alice       # if unset, no bootstrap
-```
-
-`install_authz_schema` runs at app boot. If `authz_roles` doesn't yet exist, it creates the schema AND seeds:
-- a row in `authz_roles` for the bootstrap role (default `admin`),
-- a row in `authz_roles` for `clickhouse_admin`,
-- an include edge `(admin → clickhouse_admin)` so the seeded user immediately gets ClickHouse admin powers,
-- a row in `authz_role_users` adding the bootstrap user to the admin role.
-
-Once tables exist, the function only ensures the schema (idempotent) and leaves content alone. Operators can rename/delete the bootstrap role, change includes, remove the bootstrap user — restart won't fight them. Wiping the DB file re-triggers bootstrap.
-
-If `AUTHZ_BOOTSTRAP_USER` is unset on a fresh DB, the tables are empty. Role-gated routes 500 until the operator populates the mapping via `app.state.authz_store` calls.
-
-The hardcoded string `"clickhouse_admin"` in `iris.auth.authz.bootstrap` must match `iris.clickhouse.deps.CLICKHOUSE_ADMIN_ROLE`. A drift test in `tests/auth/authz/test_authz_bootstrap.py` asserts equality.
+For the full design and rationale, see `docs/superpowers/specs/2026-05-08-clickhouse-only-authz-design.md`.
 
 ### Configuration
 
@@ -285,10 +237,9 @@ SESSION_COOKIE_NAME=iris_session
 SESSION_TTL_SECONDS=43200            # 12h, sliding TTL refreshed on each request
 SESSION_ABSOLUTE_TTL_SECONDS=2592000 # 30d, hard cap on top of sliding TTL
 SESSION_MAX_PER_USER=10              # cap concurrent sessions per User.subject (oldest evicted)
-AUTH_DB_PATH=./iris-auth.db          # SQLite file backing sessions, authz, and per-database admin tables; :memory: for tests
+AUTH_DB_PATH=./iris-auth.db          # SQLite file backing the session store; :memory: for tests
 COOKIE_SECURE=true                   # set false for local dev over http
-AUTHZ_BOOTSTRAP_ROLE=admin           # role created on first install (when authz_roles doesn't yet exist)
-AUTHZ_BOOTSTRAP_USER=                # if set, seeded into the bootstrap role on first install
+IRIS_BOOTSTRAP_USER=                 # if set, seeded as the first CH admin on a fresh CH
 
 # OAuth (OIDC discovery)
 OIDC_ISSUER_URL=https://keycloak.example.com/realms/iris
@@ -325,36 +276,27 @@ Sessions also survive process restarts. `uv run iris` and a redeploy no longer l
 
 ```
 src/iris/auth/
-├── __init__.py        # public surface: Session, require_session, optional_session, require_role, User, install
-├── session.py         # Session frozen dataclass (request-scoped view)
-├── config.py          # AuthSettings.from_env() + per-method sub-settings
-├── identity.py        # User (frozen+slots), UserSession (mutable for sliding TTL; internal)
-├── sessions.py        # SessionStore (SQLite): create / get_and_refresh / update_data / delete / close
-├── exceptions.py      # AuthRequired, AuthForbidden, AuthError, AuthorizationMisconfigured + install_exception_handlers
-├── deps.py            # require_session, optional_session, set_session_store, set_settings
-├── csrf.py            # double-submit CSRF: mint_csrf_token, attach_csrf_cookie, issue_csrf_token, verify_csrf_form, delete_csrf_cookie
-├── rate_limit.py      # TokenBucket: in-process per-key token-bucket limiter (used on POST /login)
+├── __init__.py        # public surface: AuthSession, Rights, EMPTY_RIGHTS, Session, SessionOptional,
+│                      #                  SessionAdmin, SessionDatabaseCreator, SessionDatabaseAdmin,
+│                      #                  SessionWrite, SessionRead, User, install, bootstrap_admin
+├── session.py         # Rights frozen dataclass + serialization helpers + EMPTY_RIGHTS constant
+├── identity.py        # User (frozen+slots), UserSession (mutable; internal), AuthSession (frozen view)
+├── config.py          # AuthSettings.from_env() — reads IRIS_BOOTSTRAP_USER, AUTH_METHOD, etc.
+├── sessions.py        # SessionStore (SQLite): create / get_and_refresh / update_data / set_rights / delete / close
+├── exceptions.py      # AuthRequired, AuthForbidden, AuthError + install_exception_handlers
+├── deps.py            # the seven Annotated alias deps + set_session_store / set_settings
+├── csrf.py            # double-submit CSRF
+├── rate_limit.py      # TokenBucket (used on POST /login)
 ├── routes.py          # /login, /login/callback, /logout, /api/whoami; install(app)
-├── providers/
-│   ├── __init__.py    # build_provider(settings) factory dispatching AUTH_METHOD
-│   ├── base.py        # Provider Protocol
-│   ├── mock.py        # MockProvider (config-driven creds, returns configured groups)
-│   ├── ldap.py        # LDAPProvider (ldap3 bind + group search; tests use MOCK_SYNC)
-│   └── oauth.py       # OAuthProvider (OIDC discovery + PKCE + signed-cookie state)
-└── authz/
-    ├── __init__.py    # (empty package marker)
-    ├── mapping.py     # RoleDef / RoleMapping value types + compute_closure helper
-    ├── store.py       # RoleMappingStore: get_mapping + 8 mutators + close
-    ├── bootstrap.py   # install_authz_schema: first-install schema creation + seeding
-    ├── core.py        # resolve_roles, current_mapping helpers (read from app.state.authz_store)
-    └── deps.py        # require_role(name) factory
+├── bootstrap.py       # bootstrap_admin: first-install CH admin seed (option β)
+└── providers/         # mock, ldap, oauth — unchanged
 ```
 
 `install(app)` reads env, builds the provider, and wires the auth router + exception handlers + session store into a FastAPI app. Called from `build_app()` in `src/iris/app.py`.
 
 ### Authorization model
 
-Roles are internal names (`admin`, `writer`, `reader`, …) defined in SQLite (`authz_*` tables in `AUTH_DB_PATH`), mapped to external IdP groups and/or usernames. Routes guard themselves with `Depends(require_role("admin"))` — they never reference IdP group names directly. Operators edit the mapping via `app.state.authz_store` (or future admin routes) to (re)map roles to whatever the deployment's IdP exposes; no code change needed when group names differ across OAuth and LDAP. See "Authorization (roles)" above for the schema, mutator API, and inheritance semantics.
+ClickHouse RBAC is the single source of truth. Iris does not maintain a separate role mapping. Routes guard themselves with the alias deps from `iris.auth.deps`; the seven aliases cover every previous gating use case (any-auth, optional, global admin, database creator, per-DB admin, per-DB writer, per-DB reader). See "Authorization (CH-derived rights)" above for derivation, the bootstrap, and CH-side storage.
 
 ### Login flows
 
@@ -398,9 +340,9 @@ The realm seed at `tests/auth/integration/seed/keycloak-realm.json` is committed
 - Rate limiting on `POST /login` keys on `request.client.host`. Behind a reverse proxy this is the proxy's IP — the bucket becomes effectively global. Mitigation: run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy>` so `request.client.host` reflects the `X-Forwarded-For` value. Not enforced; deployment-config concern.
 - `OAuthProvider` caches the IdP's JWKS once on first discovery. If the IdP rotates signing keys, all logins fail until iris is restarted. Acceptable at ≤20-user / multi-month rotation cadence; tighten by re-fetching on `kid`-not-in-set if rotation matters.
 - OIDC discovery is now lazy: the *first* login attempt after restart pays the discovery latency. Acceptable for v1, but means a slow IdP shifts startup latency to a request boundary instead of failing loud at boot.
-- `RoleMappingStore.get_mapping()` runs four SELECTs per request to assemble the closure. Sub-millisecond at ≤20-user scale; for higher request volumes, add an in-process cache with a version-column invalidation.
+- `derive_rights` runs a small handful of CH queries at login (role-grants walk + a single grants enumeration). Sub-millisecond at ≤20-user scale; for higher request volumes, profile and consider caching the effective role set per user with a CH version-column invalidation.
 
-These are accepted residual risks for the ≤20-user / `--workers 1` deploy profile; revisit when scaling out or relocating behind a load balancer.
+These are accepted residual risks for the ≤20-user deploy profile; revisit when scaling out or relocating behind a load balancer.
 
 ## ClickHouse
 
@@ -412,15 +354,23 @@ The `iris.clickhouse` package provisions ClickHouse users, roles, grants, and ro
 from iris.clickhouse import (
     # plain-data helpers
     ClickHouseSettings, build_client, ensure_service_admin,
-    init_user_rights,
+    init_user_rights, derive_rights,
     grant_select_to_database, grant_insert_update_to_table,
     add_row_policy, revoke_row_policy,
+    # tier-role helpers
+    TIER_DBADMIN, TIER_DBWRITER, TIER_DBREADER,
+    create_tier_roles, drop_tier_roles, tier_role_name,
+    grant_tier_to_user, grant_tier_to_group,
+    revoke_tier_from_user, revoke_tier_from_group,
+    # audit helpers
     user_grants, role_grants, user_role_memberships,
     user_row_policies, role_row_policies, table_row_policies,
     # FastAPI bridge
     ClickHouseHandle, ClickHouseAdminHandle,
+    ClickHouseDatabaseCreatorHandle, ClickHouseDatabaseAdminHandle,
     get_clickhouse_handle, require_clickhouse_admin,
-    install, CLICKHOUSE_ADMIN_ROLE,
+    require_clickhouse_database_creator, require_clickhouse_database_admin,
+    install,
 )
 ```
 
@@ -468,16 +418,20 @@ CLICKHOUSE_SERVICE_ADMIN_ROLE=service_admin_role # wildcard-policy grantee; gran
 
 ### Auth ↔ ClickHouse bridge
 
-Routes that need to query ClickHouse declare one of two FastAPI deps:
+Routes consume the alias deps from `iris.auth` for authorization, and call the matching CH handle provider from `iris.clickhouse.deps` for data-plane operations. The alias dep enforces the access tier; the handle provider just constructs a per-request handle.
 
 ```python
+from fastapi import Depends
+from iris.auth import Session, SessionAdmin, SessionDatabaseAdmin
 from iris.clickhouse import (
-    ClickHouseHandle, ClickHouseAdminHandle,
+    ClickHouseHandle, ClickHouseAdminHandle, ClickHouseDatabaseAdminHandle,
     get_clickhouse_handle, require_clickhouse_admin,
+    require_clickhouse_database_admin,
 )
 
 @app.get("/click-user")
 async def click_user(
+    session: Session,
     handle: ClickHouseHandle = Depends(get_clickhouse_handle),
 ):
     rows = await handle.query_as_user("SELECT count() FROM orders.lines")
@@ -485,49 +439,36 @@ async def click_user(
 
 @app.get("/click-admin")
 async def click_admin(
+    session: SessionAdmin,
     handle: ClickHouseAdminHandle = Depends(require_clickhouse_admin),
 ):
     return await handle.user_grants(username="alice")
 ```
 
-`get_clickhouse_handle` admits any logged-in user; the handle exposes only `query_as_user`. `require_clickhouse_admin` 403s users without the `clickhouse_admin` role (and 500s if the role isn't defined in the authz mapping); on success it returns a `ClickHouseAdminHandle` that adds `query_as_service` (no impersonation), the `grant_*`/`add_row_policy`/`revoke_row_policy` mutators, and the audit helpers (`user_grants`, `role_grants`, `user_row_policies`, …). Admin routes that want a user-impersonated query can still call `handle.query_as_user(...)` on the admin handle.
+`get_clickhouse_handle` admits any logged-in user; the handle exposes only `query_as_user`. `require_clickhouse_admin` returns a `ClickHouseAdminHandle` that adds `query_as_service` (no impersonation), the `grant_*`/`add_row_policy`/`revoke_row_policy` mutators, and the audit helpers. The 403 for non-admin sessions is enforced by the `SessionAdmin` alias on the route signature, not by the handle provider.
 
-**Why two HTTP transports.** `query_as_user` prepends `EXECUTE AS <quoted_username>` to the SQL. ClickHouse's `EXECUTE AS user <SELECT>` body grammar rejects `FORMAT` clauses, but `clickhouse-connect`'s `query()` always appends `FORMAT Native` — incompatible. The handle therefore uses a separate `httpx.AsyncClient` for impersonated queries, posting to ClickHouse's HTTP endpoint with `?default_format=JSONEachRow` as a URL parameter (which the server *does* honor). `query_as_service` and the admin/audit methods keep using `clickhouse-connect`. As a consequence, `query_as_user` returns `list[dict[str, Any]]` (parsed JSON Lines) rather than a `QueryResult` — types are preserved by JSON encoding (ints stay ints, strings stay strings) but column-type metadata is lost. Routes needing column types should use the admin handle's `query_as_service`. Named parameters work via `param_<name>=<value>` URL params translated from the `parameters=` kwarg.
+**Why two HTTP transports.** `query_as_user` prepends `EXECUTE AS <quoted_username>` to the SQL. ClickHouse's `EXECUTE AS user <SELECT>` body grammar rejects `FORMAT` clauses, but `clickhouse-connect`'s `query()` always appends `FORMAT Native` — incompatible. The handle therefore uses a separate `httpx.AsyncClient` for impersonated queries, posting to ClickHouse's HTTP endpoint with `?default_format=JSONEachRow` as a URL parameter. `query_as_service` and the admin/audit methods keep using `clickhouse-connect`. As a consequence, `query_as_user` returns `list[dict[str, Any]]` (parsed JSON Lines) rather than a `QueryResult` — types are preserved by JSON encoding but column-type metadata is lost. Routes needing column types should use the admin handle's `query_as_service`. Named parameters work via `param_<name>=<value>` URL params translated from the `parameters=` kwarg.
 
-`init_user_rights` runs on every successful login (form submit or OAuth callback) via a generic post-login hook list at `app.state.post_login_hooks`, populated by `iris.clickhouse.install(app)`. Subsequent cookie-based session refreshes do NOT re-provision. Group changes between two logins are reconciled. If ClickHouse is unreachable at boot, `ensure_service_admin` raises and the app refuses to start; if it's unreachable mid-life, the post-login hook raises and the user gets a 500.
+**Post-login hook chain.** `iris.clickhouse.install(app)` registers a hook on `app.state.post_login_hooks` that fires on every successful login (form submit or OAuth callback). The hook does two things in order: `init_user_rights` (provisions the CH user/role/group memberships) and `derive_rights` (computes the `Rights` view), then `set_rights` persists the rights to the session row. Cookie-based session refreshes do NOT re-provision; the cached `Rights` is what every subsequent request sees. Group changes between two logins are reconciled.
 
-**iris's liveness is tied to ClickHouse's.** This is intentional: iris is a thin layer in front of ClickHouse, and a logged-in user with no ability to reach the data backend can't accomplish anything useful. Rather than hide that with best-effort provisioning, login fails loud when CH is down — operators see the exact failure mode in the access logs, monitoring catches it, and users get a real error rather than a half-broken session that errors on every subsequent query. There's no partial-install mode: either the whole bridge is up or the whole iris deploy is.
+**iris's liveness is tied to ClickHouse's.** This is intentional: iris is a thin layer in front of ClickHouse, and a logged-in user with no ability to reach the data backend can't accomplish anything useful. Rather than hide that with best-effort provisioning, login fails loud when CH is down — operators see the exact failure mode in the access logs, monitoring catches it, and users get a real error rather than a half-broken session that errors on every subsequent query.
 
-The `clickhouse_admin` role is a regular role in the authz mapping (created automatically by the bootstrap on first install, seeded as an include of the bootstrap admin role). Operators map it to whichever IdP groups they want via the mutator API; the role name itself is a `Final` constant `iris.clickhouse.deps.CLICKHOUSE_ADMIN_ROLE = "clickhouse_admin"` and not env-configurable.
-
-`build_app(install_clickhouse=False)` skips the bridge entirely — used by auth tests that don't need a CH testcontainer. The `iris.app` module no longer exports a singleton `app`; production launches via uvicorn factory mode (`uvicorn.run("iris.app:build_app", factory=True, ...)` in `iris.main`), so importing `build_app` is side-effect-free for tests.
+`build_app(install_clickhouse=False)` skips the bridge entirely — used by auth tests that don't need a CH testcontainer. With CH disabled, the post-login hook chain is empty and sessions land with `EMPTY_RIGHTS`. Tests that want non-empty rights for a session call `await store.set_rights(sid, rights)` directly. Production launches via uvicorn factory mode (`uvicorn.run("iris.app:build_app", factory=True, ...)`), so importing `build_app` is side-effect-free for tests.
 
 ### Per-database admin tier
 
-Three tiers of CH authorization, in increasing privilege:
+Per-database admin is a CH role membership: a user is admin of database `X` iff their effective role set (transitively) includes `<X>_DBADMIN`. There is no separate SQLite admin store. The same applies to writer (`<X>_DBWRITER`) and reader (`<X>_DBREADER`).
 
-1. **Any logged-in user** — `get_clickhouse_handle` returns a `ClickHouseHandle` that runs impersonated SELECTs.
-2. **Per-database admin** — `require_clickhouse_database_admin` returns a `ClickHouseDatabaseAdminHandle` scoped to one database. Methods cover `grant_select_to_user/group`, `revoke_select_from_user/group`, `add_row_policy_for_user/group`, `revoke_row_policy_for_user/group`, `add/remove_admin_user`, `add/remove_admin_role` (delegation), plus listing/audit. The dep takes `database: str` as a regular FastAPI parameter that gets bound from the calling route's path/query. A user is admin of a database if they're listed in `clickhouse_database_admins_users` for that DB, or any of their effective roles is listed in `clickhouse_database_admins_roles`. Global admins (`clickhouse_admin`) short-circuit to admin-of-everything.
-3. **Global admin** — `require_clickhouse_admin` returns the existing `ClickHouseAdminHandle`. Strict superset of the per-DB tier.
+Four handle providers cover the operations:
 
-A separate role gates **database creation**: `require_clickhouse_database_creator` returns a `ClickHouseDatabaseCreatorHandle` whose only method, `create_database(name)`, runs `CREATE DATABASE IF NOT EXISTS` and atomically records the calling user in `clickhouse_database_admins_users`. The bootstrap creates the empty `clickhouse_database_creator` role on first install but does NOT include it in the bootstrap admin role — operators decide via the mutator API.
+1. **Any logged-in user** — `get_clickhouse_handle` returns `ClickHouseHandle` (impersonated SELECTs only). Use `Session` to gate.
+2. **Database creator** — `require_clickhouse_database_creator` returns `ClickHouseDatabaseCreatorHandle` (just `create_database`). Use `SessionDatabaseCreator`.
+3. **Per-database admin** — `require_clickhouse_database_admin` returns `ClickHouseDatabaseAdminHandle` with tier-grant/revoke methods (`grant_reader/writer`, `add_admin_user`, group equivalents, revokes), `delete_database`, and audit/listing. The handle is scoped to one database, bound from the calling route's path/query parameter. Use `SessionDatabaseAdmin`.
+4. **Global admin** — `require_clickhouse_admin` returns `ClickHouseAdminHandle`. Use `SessionAdmin`.
 
-Two new SQLite tables live in the same `AUTH_DB_PATH` file:
+`create_database(name)` is the lifecycle entry point: it runs `CREATE DATABASE IF NOT EXISTS`, creates the three tier roles (`<name>_DBADMIN`, `<name>_DBWRITER`, `<name>_DBREADER`) with their privilege grants, and grants `<name>_DBADMIN` to the creator's `<creator>_USER` role. All steps idempotent. `delete_database()` (on the admin handle) reverses: `DROP DATABASE IF EXISTS` then drops the three tier roles.
 
-```sql
-CREATE TABLE clickhouse_database_admins_users (
-    database_name  TEXT NOT NULL,
-    username_lower TEXT NOT NULL,
-    PRIMARY KEY (database_name, username_lower)
-);
-CREATE TABLE clickhouse_database_admins_roles (
-    database_name  TEXT NOT NULL,
-    role_name      TEXT NOT NULL,
-    PRIMARY KEY (database_name, role_name)
-);
-```
-
-The `DatabaseAdminStore` class wraps these tables. It's installed by `iris.clickhouse.install` and exposed on `app.state.clickhouse_database_admins`. Routes that need to mutate per-DB admin assignments should obtain a session+database-scoped mutator via `store.for_session(session, database=...)`; the mutator re-checks `is_admin` before each call. Bare store methods are reserved for internal trusted code (the creator/admin handles, install, fixtures).
+There is no separate `clickhouse_database_creator` CH role. The capability is the `can_create_database` flag on `Rights`, derived from `GRANT CREATE DATABASE ON *.*` on any role in the user's effective set. Global admins also satisfy `SessionDatabaseCreator` via the `is_admin` superset.
 
 Example routes:
 
@@ -535,6 +476,7 @@ Example routes:
 @app.post("/clickhouse/databases/{database}")
 async def create_database(
     database: str,
+    session: SessionDatabaseCreator,
     handle: ClickHouseDatabaseCreatorHandle = Depends(require_clickhouse_database_creator),
 ):
     await handle.create_database(database)
@@ -545,9 +487,10 @@ async def create_database(
 async def grant_read(
     database: str,
     username: str,
+    session: SessionDatabaseAdmin,
     handle: ClickHouseDatabaseAdminHandle = Depends(require_clickhouse_database_admin),
 ):
-    await handle.grant_select_to_user(username)
+    await handle.grant_reader(username)
     return {"granted": True}
 
 
@@ -555,13 +498,24 @@ async def grant_read(
 async def delegate_admin(
     database: str,
     username: str,
+    session: SessionDatabaseAdmin,
     handle: ClickHouseDatabaseAdminHandle = Depends(require_clickhouse_database_admin),
 ):
     await handle.add_admin_user(username)
     return {"ok": True}
+
+
+@app.delete("/clickhouse/databases/{database}")
+async def delete_database(
+    database: str,
+    session: SessionDatabaseAdmin,
+    handle: ClickHouseDatabaseAdminHandle = Depends(require_clickhouse_database_admin),
+):
+    await handle.delete_database()
+    return {"deleted": database}
 ```
 
-**Pre-existing target user constraint.** Grants and row policies target `<username>_USER` (or `<group>_GRP`) roles. These exist only after the user/group has been provisioned, which happens at login time via the existing `init_user_rights` post-login hook. Granting access to a user who has never logged in raises a CH error; the user must authenticate at least once first.
+**Pre-create-on-grant for username enumeration.** Granting a tier role to a user who has never logged in is supported: tier-grant helpers issue `CREATE ROLE IF NOT EXISTS <target>_USER` before granting, so the CH response is the same whether the target has authenticated or not. Once the target eventually logs in, `init_user_rights` reuses the existing role and `derive_rights` picks up the tier membership.
 
 ### Tests
 

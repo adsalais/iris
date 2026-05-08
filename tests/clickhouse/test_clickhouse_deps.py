@@ -1,4 +1,4 @@
-"""Unit tests for the ClickHouse FastAPI deps."""
+"""Unit tests for the ClickHouse FastAPI handle providers."""
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -9,14 +9,23 @@ import httpx
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from iris.auth.identity import User
-from iris.auth.session import Session
+from iris.auth.deps import _require_session
+from iris.auth.exceptions import install_exception_handlers
+from iris.auth.identity import AuthSession, User
+from iris.auth.session import EMPTY_RIGHTS, Rights
 from iris.clickhouse.config import ClickHouseSettings
 from iris.clickhouse.deps import (
-    CLICKHOUSE_ADMIN_ROLE,
     get_clickhouse_handle,
+    require_clickhouse_admin,
+    require_clickhouse_database_admin,
+    require_clickhouse_database_creator,
 )
-from iris.clickhouse.handle import ClickHouseHandle
+from iris.clickhouse.handle import (
+    ClickHouseAdminHandle,
+    ClickHouseDatabaseAdminHandle,
+    ClickHouseDatabaseCreatorHandle,
+    ClickHouseHandle,
+)
 
 
 def _settings() -> ClickHouseSettings:
@@ -33,7 +42,7 @@ def _settings() -> ClickHouseSettings:
     )
 
 
-def _session(*, roles: frozenset[str] = frozenset()) -> Session:
+def _session(*, rights: Rights = EMPTY_RIGHTS) -> AuthSession:
     user = User(
         subject="mock:alice",
         username="alice",
@@ -41,42 +50,36 @@ def _session(*, roles: frozenset[str] = frozenset()) -> Session:
         groups=("admins",),
     )
     now = datetime.now(UTC)
-    return Session(
+    return AuthSession(
         id="sid",
         user=user,
         created_at=now,
         expires_at=now + timedelta(hours=1),
         data={},
-        roles=roles,
+        rights=rights,
     )
 
 
-def _make_app() -> tuple[FastAPI, MagicMock]:
+def _make_app(*, rights: Rights = EMPTY_RIGHTS) -> FastAPI:
     app = FastAPI()
-    client = MagicMock()
-    app.state.clickhouse_client = client
+    app.state.clickhouse_client = MagicMock()
     app.state.clickhouse_settings = _settings()
     app.state.clickhouse_http_client = httpx.AsyncClient(
         base_url="http://h:1",
         transport=httpx.MockTransport(lambda _r: httpx.Response(200, content=b"{}\n")),
     )
-    return app, client
+    app.state.templates = MagicMock()
+    install_exception_handlers(app, cookie_name="iris_session")
+
+    async def fake_session() -> AuthSession:
+        return _session(rights=rights)
+
+    app.dependency_overrides[_require_session] = fake_session
+    return app
 
 
 def test_get_clickhouse_handle_returns_handle_for_session() -> None:
-    """The dep injects a ClickHouseHandle bound to the session's username.
-
-    We override the auth dep on the app — the focus of this test is the CH
-    dep, not the auth chain.
-    """
-    from iris.auth.deps import require_session
-
-    app, _client = _make_app()
-
-    async def fake_session() -> Session:
-        return _session()
-
-    app.dependency_overrides[require_session] = fake_session
+    app = _make_app()
 
     @app.get("/use")
     async def use(handle: ClickHouseHandle = Depends(get_clickhouse_handle)) -> dict[str, Any]:
@@ -87,48 +90,30 @@ def test_get_clickhouse_handle_returns_handle_for_session() -> None:
     assert response.json() == {"username": "alice"}
 
 
-def test_clickhouse_admin_role_constant() -> None:
-    assert CLICKHOUSE_ADMIN_ROLE == "clickhouse_admin"
+def test_require_clickhouse_admin_403s_when_not_admin() -> None:
+    app = _make_app(rights=EMPTY_RIGHTS)
 
+    @app.get("/admin")
+    async def admin_route(
+        handle: ClickHouseAdminHandle = Depends(require_clickhouse_admin),
+    ) -> dict[str, Any]:
+        return {"ok": True}
 
-def _mapping_with_admin_role():
-    from iris.auth.authz.mapping import RoleDef, RoleMapping
-
-    role = RoleDef(
-        name=CLICKHOUSE_ADMIN_ROLE,
-        groups=frozenset({"admins"}),
-        users_lower=frozenset(),
-        includes=(),
+    response = TestClient(app).get(
+        "/admin", headers={"accept": "application/json"}
     )
-    return RoleMapping(
-        roles={CLICKHOUSE_ADMIN_ROLE: role},
-        closure={CLICKHOUSE_ADMIN_ROLE: frozenset({CLICKHOUSE_ADMIN_ROLE})},
+    assert response.status_code == 403
+
+
+def test_require_clickhouse_admin_admits_when_is_admin() -> None:
+    rights = Rights(
+        is_admin=True,
+        can_create_database=False,
+        db_admin=frozenset(),
+        db_writer=frozenset(),
+        db_reader=frozenset(),
     )
-
-
-def _mapping_without_admin_role():
-    from iris.auth.authz.mapping import RoleMapping
-
-    return RoleMapping(roles={}, closure={})
-
-
-def _admin_app(mapping, session_roles: frozenset[str]):
-    from iris.auth.authz.core import current_mapping
-    from iris.auth.deps import require_session
-    from iris.auth.exceptions import install_exception_handlers
-    from iris.clickhouse.deps import require_clickhouse_admin
-    from iris.clickhouse.handle import ClickHouseAdminHandle
-
-    app, _client = _make_app()
-
-    async def fake_session() -> Session:
-        return _session(roles=session_roles)
-
-    async def fake_mapping():
-        return mapping
-
-    app.dependency_overrides[require_session] = fake_session
-    app.dependency_overrides[current_mapping] = fake_mapping
+    app = _make_app(rights=rights)
 
     @app.get("/admin")
     async def admin_route(
@@ -136,29 +121,96 @@ def _admin_app(mapping, session_roles: frozenset[str]):
     ) -> dict[str, Any]:
         return {"ok": True, "username": handle._username}
 
-    app.state.templates = MagicMock()
-    install_exception_handlers(app, cookie_name="iris_session")
-    return app
+    response = TestClient(app).get("/admin")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "username": "alice"}
 
 
-def test_require_clickhouse_admin_500s_when_role_missing_from_yaml() -> None:
-    app = _admin_app(_mapping_without_admin_role(), frozenset())
-    response = TestClient(app, raise_server_exceptions=False).get("/admin")
-    assert response.status_code == 500
+def test_require_clickhouse_database_creator_admits_creator() -> None:
+    rights = Rights(
+        is_admin=False,
+        can_create_database=True,
+        db_admin=frozenset(),
+        db_writer=frozenset(),
+        db_reader=frozenset(),
+    )
+    app = _make_app(rights=rights)
+
+    @app.post("/db/{database}")
+    async def create(
+        database: str,
+        handle: ClickHouseDatabaseCreatorHandle = Depends(
+            require_clickhouse_database_creator
+        ),
+    ) -> dict[str, Any]:
+        return {"ok": True}
+
+    response = TestClient(app).post("/db/finance")
+    assert response.status_code == 200
 
 
-def test_require_clickhouse_admin_403s_when_user_lacks_role() -> None:
-    app = _admin_app(_mapping_with_admin_role(), frozenset({"reader"}))
-    response = TestClient(app).get(
-        "/admin", headers={"accept": "application/json"}
+def test_require_clickhouse_database_creator_403s_when_neither_admin_nor_creator() -> None:
+    app = _make_app(rights=EMPTY_RIGHTS)
+
+    @app.post("/db/{database}")
+    async def create(
+        database: str,
+        handle: ClickHouseDatabaseCreatorHandle = Depends(
+            require_clickhouse_database_creator
+        ),
+    ) -> dict[str, Any]:
+        return {"ok": True}
+
+    response = TestClient(app).post(
+        "/db/finance", headers={"accept": "application/json"}
     )
     assert response.status_code == 403
 
 
-def test_require_clickhouse_admin_returns_admin_handle_on_success() -> None:
-    app = _admin_app(
-        _mapping_with_admin_role(), frozenset({CLICKHOUSE_ADMIN_ROLE})
+def test_require_clickhouse_database_admin_admits_for_db_admin() -> None:
+    rights = Rights(
+        is_admin=False,
+        can_create_database=False,
+        db_admin=frozenset({"finance"}),
+        db_writer=frozenset(),
+        db_reader=frozenset(),
     )
-    response = TestClient(app).get("/admin")
+    app = _make_app(rights=rights)
+
+    @app.post("/db/{database}/admin")
+    async def admin(
+        database: str,
+        handle: ClickHouseDatabaseAdminHandle = Depends(
+            require_clickhouse_database_admin
+        ),
+    ) -> dict[str, Any]:
+        return {"db": handle._database}
+
+    response = TestClient(app).post("/db/finance/admin")
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "username": "alice"}
+    assert response.json() == {"db": "finance"}
+
+
+def test_require_clickhouse_database_admin_403s_for_other_db() -> None:
+    rights = Rights(
+        is_admin=False,
+        can_create_database=False,
+        db_admin=frozenset({"finance"}),
+        db_writer=frozenset(),
+        db_reader=frozenset(),
+    )
+    app = _make_app(rights=rights)
+
+    @app.post("/db/{database}/admin")
+    async def admin(
+        database: str,
+        handle: ClickHouseDatabaseAdminHandle = Depends(
+            require_clickhouse_database_admin
+        ),
+    ) -> dict[str, Any]:
+        return {"ok": True}
+
+    response = TestClient(app).post(
+        "/db/hr/admin", headers={"accept": "application/json"}
+    )
+    assert response.status_code == 403
