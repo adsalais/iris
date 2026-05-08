@@ -17,7 +17,7 @@ import asyncio
 import json
 import re
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import httpx
@@ -55,22 +55,146 @@ def _parse_placeholder_types(sql: str) -> dict[str, str]:
     return found
 
 
-def _marshal_param(v: object) -> str:
-    """Marshal a Python value for CH's HTTP ``param_<name>`` query string.
+_DATETIME64_RE = re.compile(r"^DateTime64\((\d+)\)$")
+_DATETIME_TZ_RE = re.compile(r"^DateTime(?:\([^)]*\))?$")
+_FIXED_STRING_RE = re.compile(r"^FixedString\(\d+\)$")
+_INT_TYPES = frozenset(
+    {"Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64"}
+)
+_FLOAT_TYPES = frozenset({"Float32", "Float64"})
 
-    CH's ``{name:Type}`` placeholders apply server-side type conversion, so
-    we hand it a string. ``bool`` must be checked before ``int`` (Python
-    ``bool`` subclasses ``int`` and would otherwise stringify to "True");
-    ``datetime`` is rendered without the ``+00:00`` UTC suffix so CH parses
-    it as ``DateTime``.
+
+def _format_datetime_seconds(v: datetime) -> str:
+    """Format ``v`` as ``YYYY-MM-DD HH:MM:SS`` in UTC.
+
+    Naive datetimes are treated as UTC (matches iris's repo-wide
+    convention of ``datetime.now(UTC)``); aware datetimes are converted.
     """
-    if isinstance(v, bool):
-        return "1" if v else "0"
-    if isinstance(v, (int, float, str)):
+    if v.tzinfo is None:
+        v = v.replace(tzinfo=UTC)
+    else:
+        v = v.astimezone(UTC)
+    return v.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _format_datetime64(v: datetime, precision: int) -> str:
+    """Format ``v`` as ``YYYY-MM-DD HH:MM:SS.fff…`` with ``precision``
+    fractional digits, in UTC. Python ``datetime`` carries microsecond
+    precision (6 digits); higher precisions right-pad with zeros, lower
+    precisions truncate."""
+    seconds = _format_datetime_seconds(v)
+    if precision == 0:
+        return seconds
+    micros = v.microsecond if v.tzinfo is None else v.astimezone(UTC).microsecond
+    # 6-digit microsecond field; pad on the right to up to 9 digits, then
+    # take the first ``precision`` digits.
+    fractional = f"{micros:06d}".ljust(9, "0")[:precision]
+    return f"{seconds}.{fractional}"
+
+
+def _format_array(v: object, inner_type: str) -> str:
+    if not isinstance(v, (list, tuple)):
+        raise TypeError(
+            f"Array({inner_type}) expects list or tuple, got {type(v).__name__}"
+        )
+    parts = [_marshal_array_element(e, inner_type) for e in v]
+    return "[" + ",".join(parts) + "]"
+
+
+def _marshal_array_element(v: object, ch_type: str) -> str:
+    """Like ``_marshal_param`` but quotes Strings (CH's array literal
+    syntax requires single-quoted string elements). Nullable inside an
+    array still emits the bare ``NULL`` token."""
+    ch_type = ch_type.strip()
+    if ch_type.startswith("Nullable(") and ch_type.endswith(")"):
+        if v is None:
+            return "NULL"
+        return _marshal_array_element(v, ch_type[len("Nullable(") : -1])
+    if ch_type == "String" or _FIXED_STRING_RE.match(ch_type):
+        if not isinstance(v, str):
+            raise TypeError(f"{ch_type} expects str, got {type(v).__name__}")
+        # Backslash first, then single quote — order matters.
+        escaped = v.replace("\\", "\\\\").replace("'", "\\'")
+        return f"'{escaped}'"
+    return _marshal_param(v, ch_type)
+
+
+def _marshal_param(v: object, ch_type: str) -> str:
+    """Marshal a Python value to the wire format CH expects for the
+    declared placeholder type ``ch_type``.
+
+    The full grammar is in
+    ``docs/superpowers/specs/2026-05-09-typed-param-marshaller-design.md``.
+
+    Briefly: dispatches on the declared CH type, peeling ``Nullable(...)``
+    and ``Array(...)`` wrappers recursively. Raises ``TypeError`` for
+    unsupported types and value/type mismatches.
+    """
+    ch_type = ch_type.strip()
+
+    # Nullable(T): None → "NULL", else recurse on inner T.
+    if ch_type.startswith("Nullable(") and ch_type.endswith(")"):
+        inner = ch_type[len("Nullable(") : -1]
+        if v is None:
+            return "NULL"
+        return _marshal_param(v, inner)
+
+    # Array(T): bracket-comma-join, with strings quoted inside.
+    if ch_type.startswith("Array(") and ch_type.endswith(")"):
+        inner = ch_type[len("Array(") : -1]
+        return _format_array(v, inner)
+
+    # bool — checked before any int-like branch because bool subclasses int.
+    if ch_type == "Bool":
+        if not isinstance(v, bool):
+            raise TypeError(f"Bool expects bool, got {type(v).__name__}")
+        return "true" if v else "false"
+
+    # Numbers — must reject bool first.
+    if ch_type in _INT_TYPES:
+        if isinstance(v, bool):
+            raise TypeError(f"{ch_type} rejects bool (use Bool type)")
+        if not isinstance(v, int):
+            raise TypeError(f"{ch_type} expects int, got {type(v).__name__}")
         return str(v)
-    if isinstance(v, datetime):
-        return v.isoformat(timespec="seconds").replace("+00:00", "")
-    raise TypeError(f"unsupported CH param type: {type(v).__name__}")
+    if ch_type in _FLOAT_TYPES:
+        if isinstance(v, bool):
+            raise TypeError(f"{ch_type} rejects bool")
+        if not isinstance(v, (int, float)):
+            raise TypeError(
+                f"{ch_type} expects int or float, got {type(v).__name__}"
+            )
+        return str(v)
+
+    # String / FixedString(N): bare passthrough; quoting only happens inside arrays.
+    if ch_type == "String" or _FIXED_STRING_RE.match(ch_type):
+        if not isinstance(v, str):
+            raise TypeError(f"{ch_type} expects str, got {type(v).__name__}")
+        return v
+
+    # Date / Date32 — accepts both date and datetime, formats YYYY-MM-DD.
+    if ch_type in ("Date", "Date32"):
+        if isinstance(v, datetime):
+            return v.date().isoformat()
+        if isinstance(v, date):
+            return v.isoformat()
+        raise TypeError(f"{ch_type} expects date or datetime, got {type(v).__name__}")
+
+    # DateTime64(p) — must come BEFORE DateTime since the latter regex
+    # matches "DateTime" with optional "(...)".
+    m64 = _DATETIME64_RE.match(ch_type)
+    if m64:
+        if not isinstance(v, datetime):
+            raise TypeError(f"{ch_type} expects datetime, got {type(v).__name__}")
+        return _format_datetime64(v, int(m64.group(1)))
+
+    # DateTime / DateTime('TZ') — second precision in UTC.
+    if _DATETIME_TZ_RE.match(ch_type):
+        if not isinstance(v, datetime):
+            raise TypeError(f"{ch_type} expects datetime, got {type(v).__name__}")
+        return _format_datetime_seconds(v)
+
+    raise TypeError(f"unsupported CH param type: {ch_type!r}")
 
 
 async def query_as_user(
@@ -92,8 +216,9 @@ async def query_as_user(
     if database:
         params["database"] = database
     if parameters:
+        type_map = _parse_placeholder_types(sql)
         for k, v in parameters.items():
-            params[f"param_{k}"] = _marshal_param(v)
+            params[f"param_{k}"] = _marshal_param(v, type_map[k])
     response = await http_client.post("/", params=params, content=body)
     response.raise_for_status()
     text = response.text.strip()
