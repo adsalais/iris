@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
@@ -24,6 +25,34 @@ from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.query import QueryResult
 
 from iris.clickhouse.identifiers import quote_identifier
+
+_PLACEHOLDER_RE = re.compile(r"\{(\w+):([^}]+)\}")
+
+
+def _parse_placeholder_types(sql: str) -> dict[str, str]:
+    """Extract every ``{name:Type}`` placeholder from ``sql``.
+
+    Returns a ``name -> type-string`` map. Type strings are stripped of
+    leading/trailing whitespace; interior whitespace (e.g. inside
+    ``Decimal(10, 2)``) is preserved.
+
+    Raises ``ValueError`` if the same name appears with conflicting types
+    in two different placeholders. The same name with the same type is
+    allowed (collapses to one entry).
+
+    The regex relies on CH type strings never containing ``}``; nested
+    parametric types like ``Array(Nullable(Int32))`` stay inside parens.
+    """
+    found: dict[str, str] = {}
+    for m in _PLACEHOLDER_RE.finditer(sql):
+        name, ch_type = m.group(1), m.group(2).strip()
+        prev = found.get(name)
+        if prev is not None and prev != ch_type:
+            raise ValueError(
+                f"conflicting CH types for placeholder {name!r}: {prev!r} vs {ch_type!r}"
+            )
+        found[name] = ch_type
+    return found
 
 
 def _marshal_param(v: object) -> str:
