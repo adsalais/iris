@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, UTC
 from typing import Any
 
 from iris.auth.identity import User, UserSession
-from iris.auth.session import EMPTY_RIGHTS, Rights, rights_from_dict, rights_to_dict
+from iris.auth.session import Rights, rights_from_dict, rights_to_dict
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -67,8 +67,7 @@ def _row_to_session(row: sqlite3.Row) -> UserSession:
         display_name=row["display_name"],
         groups=tuple(json.loads(row["groups_json"])),
     )
-    rights_raw = json.loads(row["rights_json"]) if row["rights_json"] else {}
-    rights = rights_from_dict(rights_raw) if rights_raw else EMPTY_RIGHTS
+    rights = rights_from_dict(json.loads(row["rights_json"]))
     return UserSession(
         id=row["id"],
         user=user,
