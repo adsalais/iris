@@ -417,3 +417,31 @@ def test_callback_error_clears_state_cookie(provider):
     # delete_cookie sets Max-Age=0 (or expires in the past); confirm it's a clear, not a set.
     lower = set_cookie.lower()
     assert ("max-age=0" in lower) or ("expires=" in lower)
+
+
+def test_oauth_state_signing_key_is_not_the_client_secret(settings):
+    """The state-signing key must not equal the OAuth client_secret. The signer
+    is constructed from a SHA-256 derivation, so introspecting the signer's
+    secret_keys shows the derived bytes, not the raw secret."""
+    import hashlib
+
+    provider = OAuthProvider(settings)
+    expected_derived = hashlib.sha256(
+        b"iris-oauth-state-signing-v1:" + settings.client_secret.encode()
+    ).digest()
+
+    keys = list(provider._signer.secret_keys)
+    assert keys, "signer should have at least one secret key"
+    assert expected_derived in keys
+    assert settings.client_secret.encode() not in keys
+
+
+def test_oauth_state_round_trips_with_derived_key(settings):
+    """End-to-end: signing then loading a state payload still works after
+    the derivation change."""
+    from iris.auth.providers.oauth import STATE_COOKIE_TTL
+
+    provider = OAuthProvider(settings)
+    signed = provider._signer.dumps({"state": "x", "verifier": "y", "next": "/"})
+    loaded = provider._signer.loads(signed, max_age=STATE_COOKIE_TTL)
+    assert loaded == {"state": "x", "verifier": "y", "next": "/"}
