@@ -72,15 +72,22 @@ def test_user_role_memberships(ch_client, ch_settings, prefix):
 
 
 def _setup_policy_for_role(ch_client, ch_settings, prefix_db, role):
+    from iris.clickhouse.bootstrap import GLOBAL_ADMIN_ROLE
+    from iris.clickhouse.grants import TIER_DBADMIN, tier_role_name
+
     ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{prefix_db}`")
     ch_client.command(
         f"CREATE TABLE IF NOT EXISTS `{prefix_db}`.`t` (id UInt64, region String) ENGINE = MergeTree ORDER BY id"
     )
     ch_client.command(f"CREATE ROLE IF NOT EXISTS `{role}`")
+    # Wildcard targets must exist before add_row_policy creates policies on them.
+    ch_client.command(
+        f"CREATE ROLE IF NOT EXISTS `{tier_role_name(prefix_db, TIER_DBADMIN)}`"
+    )
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{GLOBAL_ADMIN_ROLE}`")
     add_row_policy(
         ch_client,
         database=prefix_db, table="t", column="region", role=role, value="EU",
-        settings=ch_settings,
     )
 
 

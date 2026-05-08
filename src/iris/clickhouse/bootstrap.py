@@ -1,16 +1,10 @@
 """ClickHouse-side bootstrap.
 
-Two responsibilities, both idempotent:
-
-- ``ensure_service_admin``: creates the configured CH role and grants it to the
-  configured user, so iris's connection identity has the privileges it needs to
-  manage RBAC. (Deprecated — to be removed once callers stop referencing it.)
-
-- ``bootstrap_admin``: at iris launch, creates the ``iris_global_admin`` sentinel
-  role and (optionally) bootstraps an admin user role + admin group role from
-  ``CLICKHOUSE_ADMIN_USER`` / ``CLICKHOUSE_ADMIN_GROUP`` env vars. Each admin role
-  is granted full admin privileges plus ``iris_global_admin`` (so wildcard row
-  policies on ``iris_global_admin`` apply to every admin's effective role set).
+At iris launch, ``bootstrap_admin`` creates the ``iris_global_admin`` sentinel
+role and (optionally) bootstraps an admin user role + admin group role from
+``CLICKHOUSE_ADMIN_USER`` / ``CLICKHOUSE_ADMIN_GROUP`` env vars. Each admin role
+is granted full admin privileges plus ``iris_global_admin`` (so wildcard row
+policies on ``iris_global_admin`` apply to every admin's effective role set).
 """
 
 from __future__ import annotations
@@ -21,26 +15,12 @@ from typing import cast
 from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.exceptions import DatabaseError
 
-from iris.clickhouse.config import ClickHouseSettings
 from iris.clickhouse.identifiers import quote_identifier
 from iris.clickhouse.users import GROUP_ROLE_SUFFIX, USER_ROLE_SUFFIX
 
 logger = logging.getLogger("iris.clickhouse.bootstrap")
 
 GLOBAL_ADMIN_ROLE = "iris_global_admin"
-
-
-def ensure_service_admin(client: Client, settings: ClickHouseSettings) -> None:
-    """DEPRECATED — kept for the breakage window only.
-
-    The ``service_admin_role`` concept goes away in this refactor. This
-    function becomes dead code once ``ClickHouseSettings`` drops
-    ``service_admin_user`` / ``service_admin_role``. Don't extend it.
-    """
-    role = quote_identifier(settings.service_admin_role, kind="service_admin_role")
-    user = quote_identifier(settings.service_admin_user, kind="service_admin_user")
-    client.command(f"CREATE ROLE IF NOT EXISTS {role}")
-    client.command(f"GRANT {role} TO {user}")
 
 
 def _has_admin_role_with_suffix(client: Client, suffix: str) -> bool:

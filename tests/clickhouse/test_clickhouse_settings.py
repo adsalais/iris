@@ -2,7 +2,6 @@ import os
 import pytest
 
 from iris.clickhouse.config import ClickHouseSettings
-from iris.clickhouse.identifiers import InvalidIdentifierError
 
 
 @pytest.fixture
@@ -21,8 +20,6 @@ def test_from_env_minimal_happy_path(env):
     env.setenv("CLICKHOUSE_PASSWORD", "secret")
     env.setenv("CLICKHOUSE_SECURE", "true")
     env.setenv("CLICKHOUSE_VERIFY", "true")
-    env.setenv("CLICKHOUSE_SERVICE_ADMIN_USER", "iris_service")
-    env.setenv("CLICKHOUSE_SERVICE_ADMIN_ROLE", "service_admin_role")
 
     s = ClickHouseSettings.from_env()
 
@@ -33,8 +30,6 @@ def test_from_env_minimal_happy_path(env):
     assert s.secure is True
     assert s.verify is True
     assert s.ca_cert_path is None
-    assert s.service_admin_user == "iris_service"
-    assert s.service_admin_role == "service_admin_role"
 
 
 def test_from_env_optional_ca_cert_path(env):
@@ -44,8 +39,6 @@ def test_from_env_optional_ca_cert_path(env):
     env.setenv("CLICKHOUSE_PASSWORD", "p")
     env.setenv("CLICKHOUSE_SECURE", "false")
     env.setenv("CLICKHOUSE_VERIFY", "false")
-    env.setenv("CLICKHOUSE_SERVICE_ADMIN_USER", "u")
-    env.setenv("CLICKHOUSE_SERVICE_ADMIN_ROLE", "r")
     env.setenv("CLICKHOUSE_CA_CERT_PATH", "/etc/ssl/ca.pem")
 
     s = ClickHouseSettings.from_env()
@@ -62,8 +55,6 @@ def _set_minimum(env):
     env.setenv("CLICKHOUSE_PASSWORD", "p")
     env.setenv("CLICKHOUSE_SECURE", "false")
     env.setenv("CLICKHOUSE_VERIFY", "true")
-    env.setenv("CLICKHOUSE_SERVICE_ADMIN_USER", "u")
-    env.setenv("CLICKHOUSE_SERVICE_ADMIN_ROLE", "r")
 
 
 @pytest.mark.parametrize(
@@ -75,8 +66,6 @@ def _set_minimum(env):
         "CLICKHOUSE_PASSWORD",
         "CLICKHOUSE_SECURE",
         "CLICKHOUSE_VERIFY",
-        "CLICKHOUSE_SERVICE_ADMIN_USER",
-        "CLICKHOUSE_SERVICE_ADMIN_ROLE",
     ],
 )
 def test_from_env_rejects_missing_required(env, missing):
@@ -97,18 +86,4 @@ def test_from_env_rejects_typo_boolean(env):
     _set_minimum(env)
     env.setenv("CLICKHOUSE_SECURE", "ture")
     with pytest.raises(ValueError, match="CLICKHOUSE_SECURE"):
-        ClickHouseSettings.from_env()
-
-
-def test_from_env_rejects_bad_service_admin_user_identifier(env):
-    _set_minimum(env)
-    env.setenv("CLICKHOUSE_SERVICE_ADMIN_USER", "has space")
-    with pytest.raises(InvalidIdentifierError, match="CLICKHOUSE_SERVICE_ADMIN_USER"):
-        ClickHouseSettings.from_env()
-
-
-def test_from_env_rejects_bad_service_admin_role_identifier(env):
-    _set_minimum(env)
-    env.setenv("CLICKHOUSE_SERVICE_ADMIN_ROLE", "weird-role")
-    with pytest.raises(InvalidIdentifierError, match="CLICKHOUSE_SERVICE_ADMIN_ROLE"):
         ClickHouseSettings.from_env()

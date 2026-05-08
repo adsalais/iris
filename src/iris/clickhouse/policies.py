@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from clickhouse_connect.driver.client import Client
 
-from iris.clickhouse.config import ClickHouseSettings
+from iris.clickhouse.bootstrap import GLOBAL_ADMIN_ROLE
+from iris.clickhouse.grants import TIER_DBADMIN, tier_role_name
 from iris.clickhouse.identifiers import (
     policy_name,
     quote_identifier,
@@ -21,14 +22,18 @@ def add_row_policy(
     column: str,
     role: str,
     value: str,
-    settings: ClickHouseSettings,
 ) -> None:
     """Create a row policy ``<column> = <value>`` for ``<role>`` on ``<database>.<table>``.
 
-    Also ensures a wildcard ``USING 1`` policy exists for ``settings.service_admin_role``
-    so the service admin can read every row regardless of other policies. The wildcard
-    name is the constant ``<database>_<table>_<service_admin_role>``; subsequent calls
-    are no-ops thanks to ``IF NOT EXISTS``.
+    Also ensures two ``USING 1`` wildcard policies exist on the same table:
+
+    - One for ``iris_global_admin`` (every global admin sees all rows).
+    - One for ``<database>_DBADMIN`` (every per-database admin sees all rows).
+
+    Names of the wildcard policies are deterministic so re-runs are idempotent
+    via ``CREATE ROW POLICY IF NOT EXISTS``. The wildcards persist after the
+    last restrictive policy is revoked — this matches the prior service-admin
+    wildcard behavior.
     """
     validate_identifier(database, kind="database")
     validate_identifier(table, kind="table")
@@ -40,18 +45,37 @@ def add_row_policy(
     column_q = quote_identifier(column, kind="column")
     role_q = quote_identifier(role, kind="role")
 
+    # 1. The restrictive policy the caller asked for.
     name = policy_name(database, table, role, value)
     name_q = quote_identifier(name, kind="policy")
     client.command(
-        f"CREATE ROW POLICY IF NOT EXISTS {name_q} ON {db_q}.{table_q} FOR SELECT USING {column_q} = {quote_string(value)} TO {role_q}"
+        " ".join((
+            f"CREATE ROW POLICY IF NOT EXISTS {name_q} ON {db_q}.{table_q}",
+            f"FOR SELECT USING {column_q} = {quote_string(value)} TO {role_q}",
+        ))
     )
 
-    sa_role = settings.service_admin_role
-    sa_role_q = quote_identifier(sa_role, kind="service_admin_role")
-    sa_name = f"{database}_{table}_{sa_role}"
-    sa_name_q = quote_identifier(sa_name, kind="policy")
+    # 2. The iris_global_admin wildcard (deterministic name, idempotent).
+    ga_name = f"{database}_{table}_{GLOBAL_ADMIN_ROLE}"
+    ga_name_q = quote_identifier(ga_name, kind="policy")
+    ga_role_q = quote_identifier(GLOBAL_ADMIN_ROLE, kind="role")
     client.command(
-        f"CREATE ROW POLICY IF NOT EXISTS {sa_name_q} ON {db_q}.{table_q} FOR SELECT USING 1 TO {sa_role_q}"
+        " ".join((
+            f"CREATE ROW POLICY IF NOT EXISTS {ga_name_q} ON {db_q}.{table_q}",
+            f"FOR SELECT USING 1 TO {ga_role_q}",
+        ))
+    )
+
+    # 3. The <database>_DBADMIN wildcard (deterministic name, idempotent).
+    dba_role = tier_role_name(database, TIER_DBADMIN)
+    dba_name = f"{database}_{table}_{dba_role}"
+    dba_name_q = quote_identifier(dba_name, kind="policy")
+    dba_role_q = quote_identifier(dba_role, kind="role")
+    client.command(
+        " ".join((
+            f"CREATE ROW POLICY IF NOT EXISTS {dba_name_q} ON {db_q}.{table_q}",
+            f"FOR SELECT USING 1 TO {dba_role_q}",
+        ))
     )
 
 
@@ -63,11 +87,11 @@ def revoke_row_policy(
     role: str,
     value: str,
 ) -> None:
-    """Drop the named row policy created by ``add_row_policy(database, table, column, role, value)``.
+    """Drop the named restrictive row policy created by ``add_row_policy``.
 
-    The wildcard service-admin policy is *not* dropped — it's a singleton per
-    ``(database, table, service_admin_role)`` triple and may still apply to other
-    policies on the same table.
+    Wildcards on ``iris_global_admin`` and ``<database>_DBADMIN`` are *not*
+    dropped — they may apply to other restrictive policies on the same table,
+    and persist intentionally so admins continue to see all rows.
     """
     validate_identifier(database, kind="database")
     validate_identifier(table, kind="table")

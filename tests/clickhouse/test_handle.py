@@ -34,8 +34,6 @@ def _settings() -> ClickHouseSettings:
         secure=False,
         verify=False,
         ca_cert_path=None,
-        service_admin_user="iris_svc",
-        service_admin_role="service_admin_role",
     )
 
 
@@ -266,7 +264,6 @@ def test_add_row_policy_impl_delegates() -> None:
                 column="region",
                 role="reader",
                 value="EU",
-                settings=_settings(),
             )
         )
     mock_add.assert_called_once()

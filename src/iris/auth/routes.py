@@ -183,7 +183,6 @@ def install(app: FastAPI) -> None:
 
     settings = AuthSettings.from_env()
     app.state.auth_db_path = settings.auth_db_path
-    app.state.auth_bootstrap_user = settings.bootstrap_user
 
     store = SessionStore(
         path=settings.auth_db_path,

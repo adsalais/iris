@@ -16,10 +16,6 @@ os.environ.setdefault("COOKIE_SECURE", "false")
 # per process means :memory: works for single-process tests; multi-process
 # tests use a tempfile.
 os.environ.setdefault("AUTH_DB_PATH", ":memory:")
-# Bootstrap is a no-op when install_clickhouse=False (tests at this level don't
-# spin up a CH testcontainer). Setting the env var keeps any code path that
-# reads it from raising on absence.
-os.environ.setdefault("IRIS_BOOTSTRAP_USER", "alice")
 
 
 @pytest.fixture

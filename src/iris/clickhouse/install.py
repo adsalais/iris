@@ -2,26 +2,24 @@
 
 Builds the shared clickhouse-connect Client and a shared httpx.AsyncClient for
 impersonated queries (see iris.clickhouse.handle for why both are needed),
-runs ensure_service_admin, optionally seeds the bootstrap admin from
-``IRIS_BOOTSTRAP_USER``, stashes everything on app.state, and registers a
-post-login provisioning hook so init_user_rights + derive_rights run once per
-real authentication.
-
-The httpx.AsyncClient is closed on app shutdown via app.state.clickhouse_close_http,
-which iris.app:_lifespan invokes.
+runs the CH-side bootstrap (creates iris_global_admin sentinel + optional
+admin user/group roles from CLICKHOUSE_ADMIN_USER / CLICKHOUSE_ADMIN_GROUP),
+stashes everything on app.state, and registers a post-login provisioning hook
+so init_user_rights + derive_rights run once per real authentication.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 import httpx
 from fastapi import FastAPI
 
-from iris.auth.bootstrap import bootstrap_admin
 from iris.auth.identity import User
 from iris.auth.sessions import SessionStore
-from iris.clickhouse.bootstrap import ensure_service_admin
+from iris.clickhouse.bootstrap import bootstrap_admin
 from iris.clickhouse.client import build_client
 from iris.clickhouse.config import ClickHouseSettings
 from iris.clickhouse.rights import derive_rights
@@ -33,15 +31,10 @@ logger = logging.getLogger("iris.clickhouse")
 def install(app: FastAPI) -> None:
     settings = ClickHouseSettings.from_env()
     client = build_client(settings)
-    ensure_service_admin(client, settings)
 
-    # Bootstrap option β: seed the first iris admin in CH if the env var is set
-    # and no admin yet exists. Idempotent — re-running with an existing admin
-    # is a no-op. Reads the bootstrap username from the auth install (which has
-    # already run by this point and stashed it on app.state).
-    bootstrap_user = getattr(app.state, "auth_bootstrap_user", None)
-    if bootstrap_user:
-        bootstrap_admin(client, username=bootstrap_user)
+    admin_user = os.environ.get("CLICKHOUSE_ADMIN_USER", "").strip() or None
+    admin_group = os.environ.get("CLICKHOUSE_ADMIN_GROUP", "").strip() or None
+    bootstrap_admin(client, admin_user=admin_user, admin_group=admin_group)
 
     scheme = "https" if settings.secure else "http"
     base_url = f"{scheme}://{settings.host}:{settings.port}"
