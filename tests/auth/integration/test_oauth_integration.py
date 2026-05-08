@@ -32,13 +32,14 @@ def _oauth_provider(
     )
 
 
-def _verifier_from_oauth_state(test_client: TestClient) -> str:
-    """Decode the verifier out of the oauth_state cookie iris set during /login.
+def _oauth_state_payload(test_client: TestClient) -> dict[str, str]:
+    """Decode the oauth_state cookie iris set during /login.
 
-    OAuthProvider signs the state cookie with a SHA-256 derivation of the
-    client_secret (prefixed with the v1 derivation tag) plus a fixed salt;
-    re-construct the same signer here to extract the verifier so we can
-    hand it back to exchange_code. Mirrors OAuthProvider.__init__.
+    Returns the full signed payload so callers can extract verifier AND
+    nonce. OAuthProvider signs the state cookie with a SHA-256 derivation
+    of the client_secret (prefixed with the v1 derivation tag) plus a
+    fixed salt; re-construct the same signer here. Mirrors
+    OAuthProvider.__init__.
     """
     import hashlib
 
@@ -49,7 +50,12 @@ def _verifier_from_oauth_state(test_client: TestClient) -> str:
     ).digest()
     signer = URLSafeTimedSerializer(derived_key, salt="iris-oauth-state")
     payload = signer.loads(signed)
-    return payload["verifier"]
+    return payload
+
+
+def _verifier_from_oauth_state(test_client: TestClient) -> str:
+    """Backwards-compat shim around _oauth_state_payload."""
+    return _oauth_state_payload(test_client)["verifier"]
 
 
 def test_collection_smoke():
@@ -132,7 +138,12 @@ def test_simulate_login_drives_authorize_to_callback(oauth_app, keycloak_http):
 
 
 async def _exchange_and_close(
-    provider: OAuthProvider, *, code: str, verifier: str, redirect_uri: str
+    provider: OAuthProvider,
+    *,
+    code: str,
+    verifier: str,
+    redirect_uri: str,
+    nonce: str,
 ):
     """Run exchange_code and provider.close() inside a single event loop.
 
@@ -143,7 +154,10 @@ async def _exchange_and_close(
     """
     try:
         return await provider.exchange_code(
-            code=code, code_verifier=verifier, redirect_uri=redirect_uri,
+            code=code,
+            code_verifier=verifier,
+            redirect_uri=redirect_uri,
+            expected_nonce=nonce,
         )
     finally:
         await provider.close()
@@ -159,13 +173,15 @@ def test_provider_exchange_code_returns_alice_with_groups(
         test_client=test_client, http=keycloak_http,
         username="alice", password="secret",
     )
-    verifier = _verifier_from_oauth_state(test_client)
+    payload = _oauth_state_payload(test_client)
 
     user = asyncio.run(
         _exchange_and_close(
             _oauth_provider(keycloak_container, tls_paths),
-            code=code, verifier=verifier,
+            code=code,
+            verifier=payload["verifier"],
             redirect_uri="http://testserver/login/callback",
+            nonce=payload["nonce"],
         )
     )
 
@@ -183,13 +199,15 @@ def test_provider_exchange_code_returns_bob_with_users_group(
         test_client=test_client, http=keycloak_http,
         username="bob", password="hunter2",
     )
-    verifier = _verifier_from_oauth_state(test_client)
+    payload = _oauth_state_payload(test_client)
 
     user = asyncio.run(
         _exchange_and_close(
             _oauth_provider(keycloak_container, tls_paths),
-            code=code, verifier=verifier,
+            code=code,
+            verifier=payload["verifier"],
             redirect_uri="http://testserver/login/callback",
+            nonce=payload["nonce"],
         )
     )
 
@@ -211,7 +229,7 @@ def test_provider_wrong_client_secret_raises_oauth_exchange(
         test_client=test_client, http=keycloak_http,
         username="alice", password="secret",
     )
-    verifier = _verifier_from_oauth_state(test_client)
+    payload = _oauth_state_payload(test_client)
 
     with pytest.raises(AuthError) as exc:
         asyncio.run(
@@ -219,8 +237,10 @@ def test_provider_wrong_client_secret_raises_oauth_exchange(
                 _oauth_provider(
                     keycloak_container, tls_paths, client_secret="WRONG-SECRET"
                 ),
-                code=code, verifier=verifier,
+                code=code,
+                verifier=payload["verifier"],
                 redirect_uri="http://testserver/login/callback",
+                nonce=payload["nonce"],
             )
         )
     assert exc.value.token == "oauth_exchange"
@@ -240,14 +260,16 @@ def test_provider_redirect_uri_mismatch_raises_oauth_exchange(
         test_client=test_client, http=keycloak_http,
         username="alice", password="secret",
     )
-    verifier = _verifier_from_oauth_state(test_client)
+    payload = _oauth_state_payload(test_client)
 
     with pytest.raises(AuthError) as exc:
         asyncio.run(
             _exchange_and_close(
                 _oauth_provider(keycloak_container, tls_paths),
-                code=code, verifier=verifier,
+                code=code,
+                verifier=payload["verifier"],
                 redirect_uri="http://testserver/some-other-path",
+                nonce=payload["nonce"],
             )
         )
     assert exc.value.token == "oauth_exchange"
@@ -267,19 +289,25 @@ def test_provider_code_reuse_raises_oauth_exchange_on_second_call(
         test_client=test_client, http=keycloak_http,
         username="alice", password="secret",
     )
-    verifier = _verifier_from_oauth_state(test_client)
+    payload = _oauth_state_payload(test_client)
     redirect_uri = "http://testserver/login/callback"
 
     async def _exchange_twice():
         provider = _oauth_provider(keycloak_container, tls_paths)
         try:
             user = await provider.exchange_code(
-                code=code, code_verifier=verifier, redirect_uri=redirect_uri,
+                code=code,
+                code_verifier=payload["verifier"],
+                redirect_uri=redirect_uri,
+                expected_nonce=payload["nonce"],
             )
             assert user.username == "alice"
             # Second call against the same code: Keycloak invalidates on use.
             await provider.exchange_code(
-                code=code, code_verifier=verifier, redirect_uri=redirect_uri,
+                code=code,
+                code_verifier=payload["verifier"],
+                redirect_uri=redirect_uri,
+                expected_nonce=payload["nonce"],
             )
         finally:
             await provider.close()

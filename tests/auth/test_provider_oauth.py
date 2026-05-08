@@ -82,7 +82,7 @@ def test_discovery_failure_surfaces_oauth_discovery_token(settings):
 
 
 def test_build_authorize_url_includes_state_and_pkce(provider):
-    url, state, verifier = provider.build_authorize_url(
+    url, state, verifier, nonce = provider.build_authorize_url(
         redirect_uri="http://localhost/login/callback",
         authorize_endpoint=AUTHZ,
     )
@@ -90,7 +90,9 @@ def test_build_authorize_url_includes_state_and_pkce(provider):
     assert "client_id=iris" in url
     assert f"state={state}" in url
     assert "code_challenge=" in url
+    assert f"nonce={nonce}" in url
     assert verifier  # non-empty
+    assert nonce  # non-empty
 
 
 def test_concurrent_ensure_discovered_runs_once(settings):
@@ -134,6 +136,7 @@ def test_complete_callback_returns_user(provider):
             code="dummy",
             code_verifier="dummy-verifier",
             redirect_uri="http://localhost/login/callback",
+            expected_nonce=_DEFAULT_NONCE,
         )
     )
     assert user.subject == "abc-123"
@@ -225,8 +228,17 @@ def _generate_keypair():
 _PRIVATE_PEM, _PUBLIC_JWK = _generate_keypair()
 
 
+_DEFAULT_NONCE = "test-nonce"
+
+
 def _make_id_token(
-    *, sub="abc-123", iss=ISSUER, aud="iris", exp_offset_seconds=300, kid="test-key-1"
+    *,
+    sub="abc-123",
+    iss=ISSUER,
+    aud="iris",
+    exp_offset_seconds=300,
+    kid="test-key-1",
+    nonce=_DEFAULT_NONCE,
 ):
     import time
 
@@ -240,14 +252,27 @@ def _make_id_token(
         "name": "Alice",
         "preferred_username": "alice",
         "groups": ["admins", "users"],
+        "nonce": nonce,
     }
     return pyjwt.encode(payload, _PRIVATE_PEM, algorithm="RS256", headers={"kid": kid})
 
 
-def _signing_mock_transport(id_token: str | None = None):
-    """Like _mock_transport but signs id_token via the JWKS keypair."""
+def _signing_mock_transport(
+    id_token: str | None = None,
+    *,
+    userinfo_sub: str = "abc-123",
+    userinfo_groups: object = None,  # default to ["admins", "users"]
+):
+    """Like _mock_transport but signs id_token via the JWKS keypair.
+
+    ``userinfo_sub`` lets tests force a sub-mismatch between id_token and
+    userinfo. ``userinfo_groups`` lets tests inject a non-list value to
+    exercise the defensive validation path.
+    """
     if id_token is None:
         id_token = _make_id_token()
+    if userinfo_groups is None:
+        userinfo_groups = ["admins", "users"]
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("openid-configuration"):
@@ -278,10 +303,10 @@ def _signing_mock_transport(id_token: str | None = None):
             return httpx.Response(
                 200,
                 json={
-                    "sub": "abc-123",
+                    "sub": userinfo_sub,
                     "name": "Alice",
                     "preferred_username": "alice",
-                    "groups": ["admins", "users"],
+                    "groups": userinfo_groups,
                 },
             )
         return httpx.Response(404)
@@ -303,6 +328,7 @@ def test_exchange_code_accepts_valid_id_token(signing_provider):
             code="dummy",
             code_verifier="v",
             redirect_uri="http://localhost/login/callback",
+            expected_nonce=_DEFAULT_NONCE,
         )
     )
     assert user.subject == "abc-123"
@@ -336,7 +362,10 @@ def test_exchange_code_rejects_missing_id_token(settings):
     with pytest.raises(AuthError) as exc:
         asyncio.run(
             provider.exchange_code(
-                code="x", code_verifier="v", redirect_uri="http://x/cb"
+                code="x",
+                code_verifier="v",
+                redirect_uri="http://x/cb",
+                expected_nonce=_DEFAULT_NONCE,
             )
         )
     assert exc.value.token == "oauth_exchange"
@@ -353,7 +382,10 @@ def test_exchange_code_rejects_id_token_with_wrong_audience(settings):
     with pytest.raises(AuthError) as exc:
         asyncio.run(
             provider.exchange_code(
-                code="x", code_verifier="v", redirect_uri="http://x/cb"
+                code="x",
+                code_verifier="v",
+                redirect_uri="http://x/cb",
+                expected_nonce=_DEFAULT_NONCE,
             )
         )
     assert exc.value.token == "oauth_exchange"
@@ -370,7 +402,10 @@ def test_exchange_code_rejects_expired_id_token(settings):
     with pytest.raises(AuthError) as exc:
         asyncio.run(
             provider.exchange_code(
-                code="x", code_verifier="v", redirect_uri="http://x/cb"
+                code="x",
+                code_verifier="v",
+                redirect_uri="http://x/cb",
+                expected_nonce=_DEFAULT_NONCE,
             )
         )
     assert exc.value.token == "oauth_exchange"
@@ -390,7 +425,14 @@ def test_exchange_code_rejects_id_token_signed_with_wrong_key(settings):
 
     other_pem, _other_jwk = _generate_keypair()
     forged = pyjwt.encode(
-        {"sub": "abc-123", "iss": ISSUER, "aud": "iris", "iat": 0, "exp": 9999999999},
+        {
+            "sub": "abc-123",
+            "iss": ISSUER,
+            "aud": "iris",
+            "iat": 0,
+            "exp": 9999999999,
+            "nonce": _DEFAULT_NONCE,
+        },
         other_pem,
         algorithm="RS256",
         headers={
@@ -403,16 +445,127 @@ def test_exchange_code_rejects_id_token_signed_with_wrong_key(settings):
     with pytest.raises(AuthError) as exc:
         asyncio.run(
             provider.exchange_code(
-                code="x", code_verifier="v", redirect_uri="http://x/cb"
+                code="x",
+                code_verifier="v",
+                redirect_uri="http://x/cb",
+                expected_nonce=_DEFAULT_NONCE,
             )
         )
     assert exc.value.token == "oauth_exchange"
 
 
-def test_user_from_claims_falls_back_to_sub_when_preferred_username_absent(provider):
-    """When preferred_username is absent, User.username falls back to the sub value."""
-    user = provider._user_from_claims({"sub": "abc-123", "groups": ["users"]})
+def test_user_from_id_and_userinfo_falls_back_to_sub_when_preferred_username_absent(
+    provider,
+):
+    """When userinfo lacks preferred_username, User.username falls back to id_token sub."""
+    user = provider._user_from_id_and_userinfo(
+        id_claims={"sub": "abc-123"},
+        ui_claims={"sub": "abc-123", "groups": ["users"]},
+    )
     assert user.username == "abc-123"
+
+
+def test_nonce_mismatch_is_rejected(settings):
+    """If the id_token's nonce does not match the cookie's nonce, fail."""
+    import asyncio
+
+    # Mock issues an id_token with a fixed nonce; we pass a different one.
+    provider = OAuthProvider(
+        settings,
+        _http_transport=_signing_mock_transport(
+            id_token=_make_id_token(nonce="alpha")
+        ),
+    )
+    with pytest.raises(AuthError) as exc:
+        asyncio.run(
+            provider.exchange_code(
+                code="dummy",
+                code_verifier="v",
+                redirect_uri="http://localhost/cb",
+                expected_nonce="beta",
+            )
+        )
+    assert exc.value.token == "oauth_exchange"
+
+
+def test_sub_mismatch_is_rejected(settings):
+    """If userinfo.sub != id_token.sub, fail with oauth_sub_mismatch.
+
+    The id_token still has sub='abc-123' (the default in _make_id_token);
+    we override the userinfo sub to a different value.
+    """
+    import asyncio
+
+    provider = OAuthProvider(
+        settings,
+        _http_transport=_signing_mock_transport(userinfo_sub="someone-else"),
+    )
+    with pytest.raises(AuthError) as exc:
+        asyncio.run(
+            provider.exchange_code(
+                code="dummy",
+                code_verifier="v",
+                redirect_uri="http://localhost/cb",
+                expected_nonce=_DEFAULT_NONCE,
+            )
+        )
+    assert exc.value.token == "oauth_sub_mismatch"
+
+
+def test_groups_not_a_list_is_treated_as_empty(settings, caplog):
+    """If userinfo returns groups as a string instead of a list, ignore it
+    and log a warning (do not iterate per-character)."""
+    import asyncio
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="iris.auth.oauth")
+    provider = OAuthProvider(
+        settings,
+        _http_transport=_signing_mock_transport(userinfo_groups="admin"),
+    )
+    user = asyncio.run(
+        provider.exchange_code(
+            code="dummy",
+            code_verifier="v",
+            redirect_uri="http://localhost/cb",
+            expected_nonce=_DEFAULT_NONCE,
+        )
+    )
+    assert user.groups == ()
+    assert any("not a list" in rec.message for rec in caplog.records)
+
+
+def test_id_token_missing_nonce_is_rejected(settings):
+    """jwt.decode requires the nonce claim; an id_token without one is rejected."""
+    import asyncio
+    import time as _time
+
+    now = int(_time.time())
+    no_nonce = pyjwt.encode(
+        {
+            "sub": "abc-123",
+            "iss": ISSUER,
+            "aud": "iris",
+            "iat": now,
+            "exp": now + 300,
+        },
+        _PRIVATE_PEM,
+        algorithm="RS256",
+        headers={"kid": "test-key-1"},
+    )
+    provider = OAuthProvider(
+        settings, _http_transport=_signing_mock_transport(id_token=no_nonce)
+    )
+    with pytest.raises(AuthError) as exc:
+        asyncio.run(
+            provider.exchange_code(
+                code="x",
+                code_verifier="v",
+                redirect_uri="http://x/cb",
+                expected_nonce=_DEFAULT_NONCE,
+            )
+        )
+    assert exc.value.token == "oauth_exchange"
 
 
 def test_callback_error_clears_state_cookie(provider):
