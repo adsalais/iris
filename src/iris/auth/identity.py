@@ -1,14 +1,31 @@
+# pyright: reportImportCycles=false
+# We import SessionStore from iris.auth.sessions in TYPE_CHECKING to avoid a
+# runtime cycle (sessions.py imports User/UserSession from this module). With
+# `from __future__ import annotations` the field annotation is a string at
+# runtime, so no resolution actually happens. Pyright flags the type-only
+# cycle — suppress here, the runtime import order is correct.
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
+import httpx
+from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.query import QueryResult
 
 from iris.auth.session import EMPTY_RIGHTS, Rights
+from iris.clickhouse.config import ClickHouseSettings
+
+if TYPE_CHECKING:
+    # Avoid the import cycle: sessions.py imports User/UserSession from
+    # identity.py at runtime, so identity.py can only reference SessionStore
+    # in type-checker mode. With ``from __future__ import annotations``
+    # already in effect, the ``store: SessionStore`` annotation is a string
+    # at runtime — no resolution needed.
+    from iris.auth.sessions import SessionStore
 from iris.clickhouse import audit, grants, policies
 from iris.clickhouse.grants import (
     TIER_DBADMIN,
@@ -73,6 +90,11 @@ class AuthSession:
     with identical ``id``/``user``/``rights``/etc. compare equal regardless
     of which connections happen to be wired in.
 
+    The CH refs are ``Optional`` because ``build_app(install_clickhouse=False)``
+    is a documented test mode that wires up auth without ClickHouse.
+    Subclass methods that perform CH operations call ``self._ch()`` once
+    at the top, which raises if the refs are missing.
+
     Note: ``AuthSession`` does not expose a ``query_as_user`` method. CH
     impersonation requires a target database; the database-scoped
     subclasses (``DatabaseSession`` and below) carry the per-database
@@ -85,10 +107,10 @@ class AuthSession:
     expires_at: datetime
     data: dict[str, Any]
     rights: Rights
-    client: Any = field(repr=False, compare=False)
-    http_client: Any = field(repr=False, compare=False)
-    settings: Any = field(repr=False, compare=False)
-    store: Any = field(repr=False, compare=False)
+    client: Client | None = field(repr=False, compare=False)
+    http_client: httpx.AsyncClient | None = field(repr=False, compare=False)
+    settings: ClickHouseSettings | None = field(repr=False, compare=False)
+    store: SessionStore | None = field(repr=False, compare=False)
 
     async def persist_data(self) -> None:
         """Write the current ``data`` dict back to the session store.
@@ -97,7 +119,33 @@ class AuthSession:
         request call this before returning. Values must be JSON-encodable;
         anything else raises ``TypeError`` at write time.
         """
+        if self.store is None:
+            raise RuntimeError(
+                "persist_data requires a SessionStore; this session was "
+                + "constructed without one (typically a CH-only test fixture)"
+            )
         await self.store.update_data(self.id, self.data)
+
+    def _ch(self) -> tuple[Client, httpx.AsyncClient, ClickHouseSettings]:
+        """Return the CH refs as a non-None triple, or raise if CH isn't installed.
+
+        Subclasses that perform CH operations call this once at the top of
+        each method instead of reading ``self.client`` / ``http_client`` /
+        ``settings`` directly. The Optional fields exist to support
+        ``build_app(install_clickhouse=False)`` — by the time a CH-using
+        method runs, the alias deps have already gated on
+        CH-derived ``Rights``, so the refs are populated in practice.
+        """
+        if (
+            self.client is None
+            or self.http_client is None
+            or self.settings is None
+        ):
+            raise RuntimeError(
+                "ClickHouse not installed; this method requires "
+                + "build_app(install_clickhouse=True)"
+            )
+        return self.client, self.http_client, self.settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,8 +162,9 @@ class DatabaseSession(AuthSession):
         sql: str,
         parameters: Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
+        _client, http_client, _settings = self._ch()
         return await query_as_user(
-            self.http_client,
+            http_client,
             username=self.user.username,
             sql=sql,
             parameters=parameters,
@@ -129,81 +178,93 @@ class DatabaseAdminSession(DatabaseSession):
     methods scoped to ``self.database``."""
 
     async def grant_reader(self, username: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            grant_tier_to_user, self.client,
+            grant_tier_to_user, client,
             database=self.database, tier=TIER_DBREADER, username=username,
         )
 
     async def grant_writer(self, username: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            grant_tier_to_user, self.client,
+            grant_tier_to_user, client,
             database=self.database, tier=TIER_DBWRITER, username=username,
         )
 
     async def add_admin_user(self, username: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            grant_tier_to_user, self.client,
+            grant_tier_to_user, client,
             database=self.database, tier=TIER_DBADMIN, username=username,
         )
 
     async def revoke_reader(self, username: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            revoke_tier_from_user, self.client,
+            revoke_tier_from_user, client,
             database=self.database, tier=TIER_DBREADER, username=username,
         )
 
     async def revoke_writer(self, username: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            revoke_tier_from_user, self.client,
+            revoke_tier_from_user, client,
             database=self.database, tier=TIER_DBWRITER, username=username,
         )
 
     async def remove_admin_user(self, username: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            revoke_tier_from_user, self.client,
+            revoke_tier_from_user, client,
             database=self.database, tier=TIER_DBADMIN, username=username,
         )
 
     async def grant_reader_to_group(self, group: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            grant_tier_to_group, self.client,
+            grant_tier_to_group, client,
             database=self.database, tier=TIER_DBREADER, group=group,
         )
 
     async def grant_writer_to_group(self, group: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            grant_tier_to_group, self.client,
+            grant_tier_to_group, client,
             database=self.database, tier=TIER_DBWRITER, group=group,
         )
 
     async def add_admin_group(self, group: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            grant_tier_to_group, self.client,
+            grant_tier_to_group, client,
             database=self.database, tier=TIER_DBADMIN, group=group,
         )
 
     async def revoke_reader_from_group(self, group: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            revoke_tier_from_group, self.client,
+            revoke_tier_from_group, client,
             database=self.database, tier=TIER_DBREADER, group=group,
         )
 
     async def revoke_writer_from_group(self, group: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            revoke_tier_from_group, self.client,
+            revoke_tier_from_group, client,
             database=self.database, tier=TIER_DBWRITER, group=group,
         )
 
     async def remove_admin_group(self, group: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            revoke_tier_from_group, self.client,
+            revoke_tier_from_group, client,
             database=self.database, tier=TIER_DBADMIN, group=group,
         )
 
     async def delete_database(self) -> None:
         db_q = quote_identifier(self.database, kind="database")
         database = self.database
-        client = self.client
+        client, _, _ = self._ch()
 
         def _sync() -> None:
             client.command(f"DROP DATABASE IF EXISTS {db_q}")
@@ -220,7 +281,7 @@ class DatabaseAdminSession(DatabaseSession):
         returned ``role_name`` and emitted ``None`` for direct user grants.
         """
         admin_role = tier_role_name(self.database, TIER_DBADMIN)
-        client = self.client
+        client, _, _ = self._ch()
 
         def _sync() -> list[dict[str, str]]:
             rows = client.query(
@@ -243,7 +304,7 @@ class DatabaseAdminSession(DatabaseSession):
         return await asyncio.to_thread(_sync)
 
     async def list_grants(self) -> list[dict[str, Any]]:
-        client = self.client
+        client, _, _ = self._ch()
         database = self.database
 
         def _sync() -> list[dict[str, Any]]:
@@ -256,7 +317,7 @@ class DatabaseAdminSession(DatabaseSession):
         return await asyncio.to_thread(_sync)
 
     async def list_row_policies(self) -> list[dict[str, Any]]:
-        client = self.client
+        client, _, _ = self._ch()
         database = self.database
 
         def _sync() -> list[dict[str, Any]]:
@@ -279,7 +340,7 @@ class DatabaseCreatorSession(AuthSession):
         validate_identifier(name, kind="database")
         quoted = quote_identifier(name, kind="database")
         creator_username = self.user.username
-        client = self.client
+        client, _, _ = self._ch()
 
         def _sync() -> None:
             client.command(f"CREATE DATABASE IF NOT EXISTS {quoted}")
@@ -306,67 +367,79 @@ class AdminSession(AuthSession):
         *,
         database: str | None = None,
     ) -> QueryResult:
+        client, _, _ = self._ch()
         return await query_as_service(
-            self.client, sql=sql, parameters=parameters, database=database,
+            client, sql=sql, parameters=parameters, database=database,
         )
 
     async def reprovision_user(self, *, username: str, groups: list[str]) -> None:
+        client, _, settings = self._ch()
         await asyncio.to_thread(
-            init_user_rights, self.client,
-            username=username, groups=groups, settings=self.settings,
+            init_user_rights, client,
+            username=username, groups=groups, settings=settings,
         )
 
     async def grant_select_to_database(self, *, database: str, role: str) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            grants.grant_select_to_database, self.client,
+            grants.grant_select_to_database, client,
             database=database, role=role,
         )
 
     async def grant_insert_update_to_table(
         self, *, database: str, table: str, role: str
     ) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            grants.grant_insert_update_to_table, self.client,
+            grants.grant_insert_update_to_table, client,
             database=database, table=table, role=role,
         )
 
     async def add_row_policy(
         self, *, database: str, table: str, column: str, role: str, value: str
     ) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            policies.add_row_policy, self.client,
+            policies.add_row_policy, client,
             database=database, table=table, column=column, role=role, value=value,
         )
 
     async def revoke_row_policy(
         self, *, database: str, table: str, role: str, value: str
     ) -> None:
+        client, _, _ = self._ch()
         await asyncio.to_thread(
-            policies.revoke_row_policy, self.client,
+            policies.revoke_row_policy, client,
             database=database, table=table, role=role, value=value,
         )
 
     async def user_grants(self, *, username: str) -> list[dict[str, Any]]:
-        return await asyncio.to_thread(audit.user_grants, self.client, username=username)
+        client, _, _ = self._ch()
+        return await asyncio.to_thread(audit.user_grants, client, username=username)
 
     async def role_grants(self, *, role: str) -> list[dict[str, Any]]:
-        return await asyncio.to_thread(audit.role_grants, self.client, role=role)
+        client, _, _ = self._ch()
+        return await asyncio.to_thread(audit.role_grants, client, role=role)
 
     async def user_role_memberships(
         self, *, username: str
     ) -> list[dict[str, Any]]:
-        return await asyncio.to_thread(audit.user_role_memberships, self.client, username=username)
+        client, _, _ = self._ch()
+        return await asyncio.to_thread(audit.user_role_memberships, client, username=username)
 
     async def user_row_policies(self, *, username: str) -> list[dict[str, Any]]:
-        return await asyncio.to_thread(audit.user_row_policies, self.client, username=username)
+        client, _, _ = self._ch()
+        return await asyncio.to_thread(audit.user_row_policies, client, username=username)
 
     async def role_row_policies(self, *, role: str) -> list[dict[str, Any]]:
-        return await asyncio.to_thread(audit.role_row_policies, self.client, role=role)
+        client, _, _ = self._ch()
+        return await asyncio.to_thread(audit.role_row_policies, client, role=role)
 
     async def table_row_policies(
         self, *, database: str, table: str
     ) -> list[dict[str, Any]]:
+        client, _, _ = self._ch()
         return await asyncio.to_thread(
-            audit.table_row_policies, self.client,
+            audit.table_row_policies, client,
             database=database, table=table,
         )

@@ -46,7 +46,10 @@ def _creator_session(
         data={},
         rights=EMPTY_RIGHTS,
         client=ch_client,
-        http_client=None,
+        http_client=httpx.AsyncClient(
+            base_url="http://stub",
+            transport=httpx.MockTransport(lambda _r: httpx.Response(200, content=b"")),
+        ),
         settings=ch_settings,
         store=None,
     )

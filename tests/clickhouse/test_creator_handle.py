@@ -7,8 +7,20 @@ in the spec under "CH-side state".
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import httpx
+
 from iris.auth.identity import DatabaseCreatorSession, User
 from iris.auth.session import EMPTY_RIGHTS
+
+
+def _stub_http() -> httpx.AsyncClient:
+    """Stub http_client for sessions that don't actually need to make HTTP
+    calls. The Session._ch() helper requires all three CH refs to be
+    non-None, even if the method under test only uses ``client``."""
+    return httpx.AsyncClient(
+        base_url="http://stub",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(200, content=b"")),
+    )
 
 
 def _session_for(user: str, *, ch_client, ch_settings) -> DatabaseCreatorSession:
@@ -22,7 +34,7 @@ def _session_for(user: str, *, ch_client, ch_settings) -> DatabaseCreatorSession
         data={},
         rights=EMPTY_RIGHTS,
         client=ch_client,
-        http_client=None,
+        http_client=_stub_http(),
         settings=ch_settings,
         store=None,
     )
