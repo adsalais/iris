@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Iris{% endblock %}</title>
+  <script type="module" src="/static/datastar.js"></script>
+  <link rel="stylesheet" href="/static/shell/shell.css">
+</head>
+<body data-signals='{"active": {{ active_tab_id | tojson }}, "tabs": {{ tabs_signal | tojson }}, "nav_collapsed": false, "account_open": false}'
+      data-attr:data-nav-collapsed="$nav_collapsed">
+
+  <aside class="iris-left-panel">
+    {% include "shell/_top_buttons.html" %}
+    {{ nav_html | safe }}
+  </aside>
+
+  <main class="iris-right-panel">
+    <div id="tab-strip" class="iris-tab-strip">
+      {% for tab in tabs %}
+      <button id="tab-button-{{ tab.id }}"
+              data-on:click="$active = {{ tab.id | tojson }}"
+              data-class="{active: $active === {{ tab.id | tojson }}}">
+        {{ tab.title }}
+        <span class="iris-tab-close"
+              data-on:click.stop="@delete('/api/tabs/{{ tab.id }}')">&times;</span>
+      </button>
+      {% endfor %}
+    </div>
+
+    <div id="tab-content" class="iris-tab-content">
+      {% for tab in tabs %}
+      <div id="tab-content-{{ tab.id }}"
+           class="iris-tab-panel"
+           data-show="$active === {{ tab.id | tojson }}"
+           data-init="@get('/feature/{{ tab.feature }}/{{ tab.id }}/render')">
+      </div>
+      {% endfor %}
+    </div>
+  </main>
+
+  {% include "shell/_account_popover.html" %}
+</body>
+</html>

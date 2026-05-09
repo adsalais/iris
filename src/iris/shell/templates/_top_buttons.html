@@ -1,0 +1,15 @@
+<div class="iris-top-buttons">
+  <button class="iris-top-btn"
+          aria-label="Toggle nav"
+          data-on:click="$nav_collapsed = !$nav_collapsed">
+    <span data-show="!$nav_collapsed">&#9664;</span>
+    <span data-show="$nav_collapsed">&#9654;</span>
+  </button>
+  <button class="iris-top-btn"
+          aria-label="Settings"
+          disabled
+          title="Settings (not yet available)">&#9881;</button>
+  <button class="iris-top-btn"
+          aria-label="Account"
+          data-on:click="$account_open = !$account_open">&#128100;</button>
+</div>

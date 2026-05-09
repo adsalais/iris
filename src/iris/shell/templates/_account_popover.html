@@ -1,0 +1,10 @@
+<div class="iris-account-popover" data-show="$account_open">
+  <div class="iris-account-info">
+    <strong>{{ user.display_name }}</strong>
+    <div class="iris-account-groups">{{ user.groups | join(", ") }}</div>
+  </div>
+  <form method="post" action="/logout">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Sign out</button>
+  </form>
+</div>
