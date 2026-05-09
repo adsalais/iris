@@ -9,10 +9,12 @@ from clickhouse_connect.driver.client import Client
 from iris.clickhouse.bootstrap import GLOBAL_ADMIN_ROLE
 from iris.clickhouse.grants import TIER_DBADMIN, tier_role_name
 from iris.clickhouse.identifiers import (
+    dict_policy_name,
     is_fixed_string_type,
     policy_name,
     quote_identifier,
     quote_sql_literal,
+    validate_dict_name,
     validate_identifier,
 )
 
@@ -124,6 +126,130 @@ def revoke_row_policy(
     db_q = quote_identifier(database, kind="database")
     table_q = quote_identifier(table, kind="table")
     name_q = quote_identifier(policy_name(database, table, role, value), kind="policy")
+    client.command(f"DROP ROW POLICY IF EXISTS {name_q} ON {db_q}.{table_q}")
+
+
+def add_row_dict_policy(
+    client: Client,
+    *,
+    database: str,
+    table: str,
+    auth_id: str,
+    dictionary: str,
+    authorisations: str,
+    role: str,
+    value: str,
+) -> None:
+    """Create a restrictive row policy gated by an external CH dictionary.
+
+    Builds USING ``has(dictGet('<dictionary>', '<authorisations>',
+    <auth_id_q>), <value_quoted>)`` so a row is visible to ``<role>`` iff the
+    dict's per-row array (looked up by the row's ``<auth_id>`` column value)
+    contains ``<value>``.
+
+    Also creates the same two wildcard policies as ``add_row_policy`` —
+    ``iris_global_admin`` and ``<database>_DBADMIN`` get ``USING 1`` so
+    admins continue to see every row. Names are deterministic and match
+    the scalar version, so calling both helpers on the same table is a
+    no-op for the wildcard CREATEs (``IF NOT EXISTS`` makes it idempotent).
+
+    Operator responsibilities (NOT done by iris):
+
+    1. Create the dict source table.
+    2. Create the dictionary (``CREATE DICTIONARY ...``).
+    3. ``GRANT dictGet ON <dictionary> TO <role>``. Without this grant, the
+       per-row evaluation raises ``Code: 497`` server-side and the user
+       sees zero rows from the policy's perspective. Iris does NOT issue
+       this grant — see ``CLAUDE.md`` § Operator follow-ups.
+    """
+    validate_identifier(database, kind="database")
+    validate_identifier(table, kind="table")
+    validate_identifier(auth_id, kind="column")
+    validate_identifier(role, kind="role")
+    validate_identifier(authorisations, kind="column")
+    validate_dict_name(dictionary)
+
+    db_q = quote_identifier(database, kind="database")
+    table_q = quote_identifier(table, kind="table")
+    auth_id_q = quote_identifier(auth_id, kind="column")
+    role_q = quote_identifier(role, kind="role")
+
+    dict_lit = quote_sql_literal(dictionary)
+    auth_attr_lit = quote_sql_literal(authorisations)
+    value_lit = quote_sql_literal(value)
+
+    clause = (
+        f"has(dictGet({dict_lit}, {auth_attr_lit}, {auth_id_q}), {value_lit})"
+    )
+
+    name = dict_policy_name(
+        database, table, role, value, dictionary, authorisations, auth_id,
+    )
+    name_q = quote_identifier(name, kind="policy")
+    client.command(
+        " ".join((
+            f"CREATE ROW POLICY IF NOT EXISTS {name_q} ON {db_q}.{table_q}",
+            f"FOR SELECT USING {clause} TO {role_q}",
+        ))
+    )
+
+    # iris_global_admin wildcard (deterministic name, idempotent — same name
+    # as add_row_policy emits, so a table that already had a scalar policy
+    # gets a no-op here).
+    ga_name = f"{database}_{table}_{GLOBAL_ADMIN_ROLE}"
+    ga_name_q = quote_identifier(ga_name, kind="policy")
+    ga_role_q = quote_identifier(GLOBAL_ADMIN_ROLE, kind="role")
+    client.command(
+        " ".join((
+            f"CREATE ROW POLICY IF NOT EXISTS {ga_name_q} ON {db_q}.{table_q}",
+            f"FOR SELECT USING 1 TO {ga_role_q}",
+        ))
+    )
+
+    # <database>_DBADMIN wildcard (same idempotency story).
+    dba_role = tier_role_name(database, TIER_DBADMIN)
+    dba_name = f"{database}_{table}_{dba_role}"
+    dba_name_q = quote_identifier(dba_name, kind="policy")
+    dba_role_q = quote_identifier(dba_role, kind="role")
+    client.command(
+        " ".join((
+            f"CREATE ROW POLICY IF NOT EXISTS {dba_name_q} ON {db_q}.{table_q}",
+            f"FOR SELECT USING 1 TO {dba_role_q}",
+        ))
+    )
+
+
+def revoke_row_dict_policy(
+    client: Client,
+    *,
+    database: str,
+    table: str,
+    auth_id: str,
+    dictionary: str,
+    authorisations: str,
+    role: str,
+    value: str,
+) -> None:
+    """Drop the named restrictive dict policy created by ``add_row_dict_policy``.
+
+    Wildcards on ``iris_global_admin`` and ``<database>_DBADMIN`` are NOT
+    dropped — same rule as ``revoke_row_policy``.
+    """
+    validate_identifier(database, kind="database")
+    validate_identifier(table, kind="table")
+    validate_identifier(auth_id, kind="column")
+    validate_identifier(role, kind="role")
+    validate_identifier(authorisations, kind="column")
+    validate_dict_name(dictionary)
+
+    db_q = quote_identifier(database, kind="database")
+    table_q = quote_identifier(table, kind="table")
+    name_q = quote_identifier(
+        dict_policy_name(
+            database, table, role, value, dictionary, authorisations, auth_id,
+        ),
+        kind="policy",
+    )
     client.command(f"DROP ROW POLICY IF EXISTS {name_q} ON {db_q}.{table_q}")
 
 

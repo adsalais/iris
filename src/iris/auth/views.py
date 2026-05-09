@@ -333,6 +333,42 @@ class DatabaseAdminSession(DatabaseSession):
             database=self.database, table=table, role=role, value=value,
         )
 
+    async def add_row_dict_policy(
+        self,
+        *,
+        table: str,
+        auth_id: str,
+        dictionary: str,
+        authorisations: str,
+        role: str,
+        value: str,
+    ) -> None:
+        client, _, _ = self._ch()
+        await asyncio.to_thread(
+            policies.add_row_dict_policy, client,
+            database=self.database, table=table, auth_id=auth_id,
+            dictionary=dictionary, authorisations=authorisations,
+            role=role, value=value,
+        )
+
+    async def revoke_row_dict_policy(
+        self,
+        *,
+        table: str,
+        auth_id: str,
+        dictionary: str,
+        authorisations: str,
+        role: str,
+        value: str,
+    ) -> None:
+        client, _, _ = self._ch()
+        await asyncio.to_thread(
+            policies.revoke_row_dict_policy, client,
+            database=self.database, table=table, auth_id=auth_id,
+            dictionary=dictionary, authorisations=authorisations,
+            role=role, value=value,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class DatabaseCreatorSession(AuthSession):

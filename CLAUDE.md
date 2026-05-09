@@ -68,6 +68,16 @@ Patterns an agent must follow that aren't obvious from reading code:
 - **Refactor pattern**: spec → plan → atomic commit. Big renames go through a deliberate breakage window with one big-bang commit at the end. Don't try to incrementally split refactors that need to be atomic.
 - **Tests don't mock the database**: `tests/clickhouse/` uses a real CH testcontainer (session-scoped). Per-test isolation is the `prefix` fixture (UUID-prefixed entity names).
 
+### Operator follow-ups
+
+These are NOT done by iris — call them out for operators wiring up new features:
+
+- **Dict-keyed row policies (`add_row_dict_policy`)** require, BEFORE the policy is useful:
+  1. The dict source table exists (any database; arbitrary schema as long as it has the key column and an `Array(String)` attribute column).
+  2. The dictionary exists (`CREATE DICTIONARY ...`) with a layout (`COMPLEX_KEY_HASHED` for `String` keys) and a `LIFETIME` matching how often the underlying data changes.
+  3. `GRANT dictGet ON <dictionary> TO <role>` for every role the policy is attached to. Without this grant, the per-row evaluation raises `Code: 497` server-side and the user sees zero rows from the policy's perspective (CH treats it as "policy did not match", not a hard error).
+- **Open: surface missing-`dictGet` grants in the admin UI.** When the Authorization feature gains awareness of dict policies, the per-database admin view should warn when a role with a dict policy on a table lacks `dictGet` on the referenced dict. Until then, the operator runs `SELECT * FROM system.grants WHERE access_type = 'dictGet'` to verify.
+
 ## Architecture & Datastar integration
 
 ### Layout
