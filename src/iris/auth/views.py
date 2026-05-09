@@ -49,7 +49,6 @@ from iris.clickhouse.grants import (
     grant_tier_to_user,
     revoke_tier_from_group,
     revoke_tier_from_user,
-    tier_role_name,
 )
 from iris.clickhouse.identifiers import quote_identifier, validate_identifier
 from iris.clickhouse.queries import query_as_service, query_as_user
@@ -258,35 +257,18 @@ class DatabaseAdminSession(DatabaseSession):
 
         await asyncio.to_thread(_sync)
 
-    async def list_admin_members(self) -> list[dict[str, str]]:
-        """Return everything granted the per-database admin role.
+    async def list_members(self) -> dict[str, list[dict[str, str]]]:
+        """Return tier-role members for self.database, grouped by tier:
+        ``{"admin": [...], "reader": [...], "writer": [...]}``.
 
-        Each entry is ``{"kind": "user" | "role", "name": <str>}``. Includes
+        Each entry is ``{"kind": "user" | "role", "name": <str>}`` —
         direct user grantees AND role grantees (e.g. group-roles or
-        per-user roles holding the admin tier).
+        per-user roles holding the tier).
         """
-        admin_role = tier_role_name(self.database, TIER_DBADMIN)
         client, _, _ = self._ch()
-
-        def _sync() -> list[dict[str, str]]:
-            rows = client.query(
-                """
-                SELECT user_name, role_name FROM system.role_grants
-                WHERE granted_role_name = {r:String}
-                """,
-                {"r": admin_role},
-            )
-            out: list[dict[str, str]] = []
-            for row in rows.named_results():
-                u = row.get("user_name")
-                r = row.get("role_name")
-                if u:
-                    out.append({"kind": "user", "name": cast(str, u)})
-                elif r:
-                    out.append({"kind": "role", "name": cast(str, r)})
-            return out
-
-        return await asyncio.to_thread(_sync)
+        return await asyncio.to_thread(
+            grants.list_tier_members, client, database=self.database,
+        )
 
     async def list_grants(self) -> list[dict[str, Any]]:
         client, _, _ = self._ch()
@@ -480,3 +462,23 @@ class AdminSession(AuthSession):
             audit.table_row_policies, client,
             database=database, table=table,
         )
+
+    async def list_users(self) -> list[dict[str, Any]]:
+        """All CH users with their granted role names."""
+        client, _, _ = self._ch()
+        return await asyncio.to_thread(audit.list_all_users, client)
+
+    async def list_databases(self) -> list[dict[str, Any]]:
+        """All databases with admin / writer / reader counts."""
+        client, _, _ = self._ch()
+        return await asyncio.to_thread(audit.list_all_databases, client)
+
+    async def list_all_row_policies(self) -> list[dict[str, Any]]:
+        """All ``system.row_policies`` rows."""
+        client, _, _ = self._ch()
+        return await asyncio.to_thread(audit.list_all_row_policies, client)
+
+    async def list_all_grants(self) -> list[dict[str, Any]]:
+        """All ``system.grants`` rows."""
+        client, _, _ = self._ch()
+        return await asyncio.to_thread(audit.list_all_grants, client)

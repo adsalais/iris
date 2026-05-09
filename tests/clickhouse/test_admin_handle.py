@@ -114,25 +114,26 @@ def test_delete_database_drops_tier_roles_and_db(ch_client, ch_settings, prefix)
     assert role_rows[0][0] == 0
 
 
-def test_list_admin_members_returns_creator(ch_client, ch_settings, prefix):
+def test_list_members_returns_creator_in_admin_tier(ch_client, ch_settings, prefix):
     creator = f"{prefix}_c"
     db = f"{prefix}_members"
     asyncio.run(
         _creator_session(ch_client, ch_settings, username=creator).create_database(db)
     )
     admin = _admin_session(ch_client, ch_settings, database=db, username=creator)
-    members = asyncio.run(admin.list_admin_members())
+    members = asyncio.run(admin.list_members())
     # Creator is granted DBADMIN to its <username>_USER role (not directly
     # to the user account), so the entry is kind="role" with the per-user
     # role name.
-    assert {"kind": "role", "name": f"{creator}_USER"} in members
+    assert set(members.keys()) == {"admin", "reader", "writer"}
+    assert {"kind": "role", "name": f"{creator}_USER"} in members["admin"]
 
 
-def test_list_admin_members_includes_direct_user_grant(
+def test_list_members_includes_direct_user_grant_in_admin_tier(
     ch_client, ch_settings, prefix
 ):
     """A user account granted the admin role directly (not via _USER role)
-    appears with kind='user'."""
+    appears in the admin tier with kind='user'."""
     creator = f"{prefix}_c2"
     db = f"{prefix}_members2"
     direct_user = f"{prefix}_direct"
@@ -146,8 +147,8 @@ def test_list_admin_members_includes_direct_user_grant(
     ch_client.command(f"GRANT `{db}_DBADMIN` TO `{direct_user}`")
 
     admin = _admin_session(ch_client, ch_settings, database=db, username=creator)
-    members = asyncio.run(admin.list_admin_members())
-    assert {"kind": "user", "name": direct_user} in members
+    members = asyncio.run(admin.list_members())
+    assert {"kind": "user", "name": direct_user} in members["admin"]
 
 
 def test_delete_database_revokes_orphan_grants_before_drop(ch_client, ch_settings, prefix):

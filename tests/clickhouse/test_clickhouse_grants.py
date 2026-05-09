@@ -181,3 +181,46 @@ def test_revoke_tier_from_group_does_not_create_role(ch_client, prefix):
         parameters={"n": f"{nonexistent_group}_GRP"},
     ).result_rows
     assert rows[0][0] == 0
+
+
+def test_list_tier_members_returns_three_tier_dict(ch_client, ch_settings, prefix):
+    """Tier-role membership grouped by tier, returning {admin, reader, writer}."""
+    from iris.clickhouse.bootstrap import GLOBAL_ADMIN_ROLE
+    from iris.clickhouse.grants import (
+        TIER_DBADMIN,
+        TIER_DBREADER,
+        TIER_DBWRITER,
+        create_tier_roles,
+        grant_tier_to_group,
+        grant_tier_to_user,
+        list_tier_members,
+    )
+
+    db = f"{prefix}_listmem"
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{GLOBAL_ADMIN_ROLE}`")
+    create_tier_roles(ch_client, database=db)
+
+    grant_tier_to_user(
+        ch_client, database=db, tier=TIER_DBADMIN, username=f"{prefix}_alice",
+    )
+    grant_tier_to_user(
+        ch_client, database=db, tier=TIER_DBWRITER, username=f"{prefix}_bob",
+    )
+    grant_tier_to_user(
+        ch_client, database=db, tier=TIER_DBREADER, username=f"{prefix}_carol",
+    )
+    grant_tier_to_group(
+        ch_client, database=db, tier=TIER_DBADMIN, group=f"{prefix}_group_x",
+    )
+
+    result = list_tier_members(ch_client, database=db)
+
+    assert set(result.keys()) == {"admin", "reader", "writer"}
+    admin_names = {(m["kind"], m["name"]) for m in result["admin"]}
+    assert ("role", f"{prefix}_alice_USER") in admin_names
+    assert ("role", f"{prefix}_group_x_GRP") in admin_names
+    writer_names = {(m["kind"], m["name"]) for m in result["writer"]}
+    assert ("role", f"{prefix}_bob_USER") in writer_names
+    reader_names = {(m["kind"], m["name"]) for m in result["reader"]}
+    assert ("role", f"{prefix}_carol_USER") in reader_names

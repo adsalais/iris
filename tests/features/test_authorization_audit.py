@@ -4,7 +4,7 @@ import asyncio
 
 
 def test_audit_section_renders_grants_list(app, capability_session, monkeypatch):
-    async def fake_list_members(_session):
+    async def fake_list_members(self):  # noqa: ARG001
         return {"admin": [], "reader": [], "writer": []}
     async def fake_list_policies(self):  # noqa: ARG001
         return []
@@ -15,7 +15,7 @@ def test_audit_section_renders_grants_list(app, capability_session, monkeypatch)
              "is_partial_revoke": 0, "grant_option": 0},
         ]
     monkeypatch.setattr(
-        "iris.features.authorization.service.list_members", fake_list_members,
+        "iris.auth.views.DatabaseAdminSession.list_members", fake_list_members,
     )
     monkeypatch.setattr(
         "iris.auth.views.DatabaseAdminSession.list_row_policies", fake_list_policies,

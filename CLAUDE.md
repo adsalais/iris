@@ -67,6 +67,9 @@ Patterns an agent must follow that aren't obvious from reading code:
 - **One parameter per route**: `session: SessionRead` / `SessionDatabaseAdmin` / etc. carry both admission and capability. Don't pair an alias with a separate handle dep — the handle classes are gone.
 - **Refactor pattern**: spec → plan → atomic commit. Big renames go through a deliberate breakage window with one big-bang commit at the end. Don't try to incrementally split refactors that need to be atomic.
 - **Tests don't mock the database**: `tests/clickhouse/` uses a real CH testcontainer (session-scoped). Per-test isolation is the `prefix` fixture (UUID-prefixed entity names).
+- **Don't access private fields across module boundaries.** A name with a leading underscore (`_field`, `_method`) is private to the module that defines it. Reaching into `obj._field` from another module — or adding `# pyright: ignore[reportPrivateUsage]` / `# noqa: SLF001` to suppress the warning — is forbidden in `src/`. If you need the functionality, propose a helper function (or method) on the owning module that exposes it through a proper public API. The suppression comment is the smell, not the fix. Tests are exempt by config (basedpyright + ruff disable both checks for `tests/`); the rule applies to `src/`.
+
+  In iris specifically, the `XxxSession` hierarchy in `iris.auth.views` IS the authorization boundary; reaching into `session._ch()` from a feature module bypasses the entire tier model and is a security violation. If a feature needs CH access, add a sync SQL helper in `iris.clickhouse.<module>` (`audit.py` for read-only system queries, `grants.py` for tier-role helpers, `policies.py` for row policies). Wrap it as an async method on the right `XxxSession` subclass — `AdminSession` for global, `DatabaseAdminSession` for per-database, `DatabaseSession` for impersonated user queries. Routes and service code consume the typed method.
 
 ### Operator follow-ups
 

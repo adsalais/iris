@@ -86,8 +86,8 @@ def test_admin_audit_queries_return_consistent_state(
                 database=db, table="records"
             )
 
-            # bob_admin (DatabaseAdminSession): list_admin_members on the db.
-            members = await bob_admin.list_admin_members()
+            # bob_admin (DatabaseAdminSession): list_members on the db.
+            members = await bob_admin.list_members()
 
             return {
                 "user_grants": user_grants,
@@ -124,14 +124,16 @@ def test_admin_audit_queries_return_consistent_state(
         sn.startswith(f"{db}_records_readers_GRP_EU_") for sn in short_names
     ), f"row policy not found in {short_names}"
 
-    # bob's list_admin_members shape is {"kind": "user"|"role", "name": ...}.
-    # bob's per-user role bob_USER got DBADMIN granted on create_database.
+    # bob's list_members returns {admin, reader, writer} dicts of
+    # {"kind": "user"|"role", "name": ...} entries. bob's per-user role
+    # bob_USER got DBADMIN granted on create_database.
     members = out["members"]
-    assert isinstance(members, list)
+    assert isinstance(members, dict)
+    assert set(members.keys()) == {"admin", "reader", "writer"}
     assert any(
         m.get("kind") == "role" and m.get("name") == "bob_USER"
-        for m in members
-    ), f"bob_USER missing from admin_members: {members}"
+        for m in members["admin"]
+    ), f"bob_USER missing from admin tier: {members}"
 
     # user_grants shape is the system.grants rows directly attached to
     # the carol user account (none in our setup — grants are on roles).
