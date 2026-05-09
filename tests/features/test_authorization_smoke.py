@@ -38,7 +38,7 @@ def test_open_my_access_tab_then_render(authed_client, parse_sse):
     tab_id = next(iter(sig["tabs"]))
     assert sig["active"] == tab_id
 
-    render_r = authed_client.get(f"/feature/auth/{tab_id}/render")
+    render_r = authed_client.get(f"/feature/auth/{tab_id}/my_access")
     assert render_r.status_code == 200
     assert "My access" in render_r.text
 

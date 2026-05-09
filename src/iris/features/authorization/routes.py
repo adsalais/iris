@@ -27,21 +27,82 @@ from iris.shell.tabs import find_tab
 router = APIRouter(prefix="/feature/auth")
 
 
-@router.get("/{tab_id}/render")
-async def render(
+# ---------------------------------------------------------------------------
+# Per-intent render routes — each intent has its own GET with the typed dep
+# that gates its capability requirement. The shell's tab_render_url Jinja
+# global builds the URL the panel hits.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{tab_id}/my_access")
+async def render_my_access(
     request: Request,
     session: Session,
     tab_id: str,
 ) -> Response:
-    rec = find_tab(session.data, tab_id)
-    if rec is None or rec.feature != "auth":
-        raise HTTPException(status_code=404, detail="tab not found")
+    from iris.features.authorization.service import my_access_view
+    templates = request.app.state.templates
+    ctx = my_access_view(session.capabilities)
+    return templates.TemplateResponse(
+        request, "authorization/my_access.html",
+        {
+            "user": session.user,
+            "panel_id": tab_panel_id(tab_id),
+            **ctx,
+        },
+    )
 
-    from iris.features.authorization.intents import RENDER_BY_INTENT
-    handler = RENDER_BY_INTENT.get(rec.intent)
-    if handler is None:
-        raise HTTPException(status_code=404, detail="unknown intent")
-    return await handler(request, session, rec)
+
+@router.get("/{tab_id}/manage")
+async def render_manage(
+    request: Request,
+    db: SessionDatabaseAdmin,
+    tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
+) -> Response:
+    from iris.features.authorization.service import manage_view
+    templates = request.app.state.templates
+    ctx = await manage_view(db)
+    return templates.TemplateResponse(
+        request, "authorization/manage.html",
+        {
+            "panel_id": tab_panel_id(tab_id),
+            "tab_id": tab_id,
+            "database": db.database,
+            **ctx,
+        },
+    )
+
+
+@router.get("/{tab_id}/create_database")
+async def render_create_database(
+    request: Request,
+    creator: SessionDatabaseCreator,  # noqa: ARG001  # gates is_admin or can_create_database  # pyright: ignore[reportUnusedParameter]
+    tab_id: str,
+) -> Response:
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request, "authorization/create_database.html",
+        {"panel_id": tab_panel_id(tab_id), "tab_id": tab_id, "error": None},
+    )
+
+
+@router.get("/{tab_id}/admin_console")
+async def render_admin_console(
+    request: Request,
+    admin: SessionAdmin,  # noqa: ARG001  # gates is_admin  # pyright: ignore[reportUnusedParameter]
+    tab_id: str,
+    subtab: Annotated[str, Query()] = "users",
+) -> Response:
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request, "authorization/admin_console.html",
+        {
+            "panel_id": tab_panel_id(tab_id),
+            "tab_id": tab_id,
+            "initial_subtab": subtab,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +407,7 @@ async def admin_audit(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{tab_id}/submit")
+@router.post("/{tab_id}/create_database")
 async def submit_create_database(
     request: Request,
     creator: SessionDatabaseCreator,

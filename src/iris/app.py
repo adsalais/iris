@@ -42,6 +42,13 @@ def build_app(*, install_clickhouse: bool = True) -> FastAPI:
     # Build the templates loader once all subsystems have registered their dirs.
     app.state.templates = init_templates()
 
+    # Register tab_render_url as a Jinja global so shell templates can build
+    # per-tab render URLs without each feature owning a URL convention.
+    # Jinja's globals typestub restricts the value union to specific builtins;
+    # any callable works at runtime — the ignore is a typing-stub limitation.
+    from iris.shell.url_builders import tab_render_url
+    app.state.templates.env.globals["tab_render_url"] = tab_render_url  # pyright: ignore[reportArgumentType]
+
     app.add_middleware(SecurityHeadersMiddleware)
 
     app.mount(
