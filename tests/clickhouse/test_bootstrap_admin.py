@@ -58,16 +58,20 @@ def test_bootstrap_group_channel_creates_admin_group_role(ch_client, prefix):
 
     group_role = f"{group}_GRP"
 
+    # Either an expanded ROLE ADMIN row or a condensed ALL row counts as
+    # admin coverage. CH stores GRANT ALL as an 'ALL' row when the granter
+    # holds the full privilege set.
     rows = ch_client.query(
         """
         SELECT count() FROM system.grants
         WHERE role_name = {r:String}
-          AND access_type = 'ROLE ADMIN'
+          AND database IS NULL
+          AND access_type IN ('ROLE ADMIN', 'ALL')
           AND grant_option = 1
         """,
         parameters={"r": group_role},
     ).result_rows
-    assert rows[0][0] == 1
+    assert rows[0][0] >= 1
 
     granted = ch_client.query(
         """
@@ -107,12 +111,13 @@ def test_bootstrap_group_channel_seeds_each_distinct_admin_name(ch_client, prefi
         """
         SELECT count() FROM system.grants
         WHERE role_name = {r:String}
-          AND access_type = 'ROLE ADMIN'
+          AND database IS NULL
+          AND access_type IN ('ROLE ADMIN', 'ALL')
           AND grant_option = 1
         """,
         parameters={"r": f"{b}_GRP"},
     ).result_rows
-    assert rows[0][0] == 1
+    assert rows[0][0] >= 1
 
 
 def test_bootstrap_user_channel_runs_when_unrelated_user_holds_role_admin(ch_client, prefix):
@@ -168,9 +173,10 @@ def test_bootstrap_both_channels_independent(ch_client, prefix):
         """
         SELECT count() FROM system.grants
         WHERE role_name = {r:String}
-          AND access_type = 'ROLE ADMIN'
+          AND database IS NULL
+          AND access_type IN ('ROLE ADMIN', 'ALL')
           AND grant_option = 1
         """,
         parameters={"r": f"{group}_GRP"},
     ).result_rows
-    assert rows[0][0] == 1
+    assert rows[0][0] >= 1

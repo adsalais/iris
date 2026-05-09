@@ -20,7 +20,6 @@ import logging
 from typing import cast
 
 from clickhouse_connect.driver.client import Client
-from clickhouse_connect.driver.exceptions import DatabaseError
 
 from iris.clickhouse.identifiers import quote_identifier
 from iris.clickhouse.users import GROUP_ROLE_SUFFIX, USER_ROLE_SUFFIX
@@ -52,16 +51,16 @@ def _admin_already_bootstrapped(client: Client, *, expected_role: str) -> bool:
 
 
 def _grant_full_admin(client: Client, *, role_q: str) -> None:
-    """``GRANT ALL ON *.* WITH GRANT OPTION``, with a ``CURRENT GRANTS`` fallback
-    for the testcontainer's missing NAMED COLLECTION ADMIN privilege."""
-    try:
-        client.command(f"GRANT ALL ON *.* TO {role_q} WITH GRANT OPTION")
-    except DatabaseError as err:
-        if "NAMED COLLECTION ADMIN" not in str(err):
-            raise
-        client.command(
-            f"GRANT CURRENT GRANTS ON *.* TO {role_q} WITH GRANT OPTION"
-        )
+    """``GRANT ALL ON *.* WITH GRANT OPTION`` to the iris admin role.
+
+    Requires the connecting client to hold every privilege ``GRANT ALL``
+    expands to (including server-scope rarities like NAMED COLLECTION
+    ADMIN) with grant option. Production iris's service identity is
+    configured this way; in tests, the conftest's users.d overlay grants
+    the missing pieces to the testcontainer's ``test`` user, and
+    iris_svc inherits via ``GRANT CURRENT GRANTS``.
+    """
+    client.command(f"GRANT ALL ON *.* TO {role_q} WITH GRANT OPTION")
 
 
 def bootstrap_admin(

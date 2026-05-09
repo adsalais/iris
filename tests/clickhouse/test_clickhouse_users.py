@@ -155,14 +155,23 @@ def test_init_user_rights_grants_impersonate_to_connection_user(
     init_user_rights(ch_client, username=username, groups=[], settings=ch_settings)
 
     # Verify iris's connection user (settings.user) can impersonate the newly
-    # provisioned user. Coverage is satisfied by either a specific grant
-    # (access_object == username) or a wildcard grant (access_object == '',
-    # which covers all users and absorbs per-user grants when both exist).
+    # provisioned user. Coverage is satisfied by:
+    #   - a specific IMPERSONATE grant (access_object == username), OR
+    #   - a wildcard IMPERSONATE grant (access_object == '', covers all
+    #     users and absorbs per-user grants when both exist), OR
+    #   - a condensed access_type='ALL' grant (which subsumes IMPERSONATE).
+    #     This is what we see in the testcontainer when iris_svc holds the
+    #     full privilege set: CH stores it as one ALL row instead of
+    #     expanding to per-privilege rows.
     rows = list(
         ch_client.query(
-            "SELECT * FROM system.grants WHERE user_name = {sa:String} AND access_type = 'IMPERSONATE'",
+            "SELECT * FROM system.grants WHERE user_name = {sa:String} AND access_type IN ('IMPERSONATE', 'ALL')",
             parameters={"sa": ch_settings.user},
         ).named_results()
     )
-    covered = any(r.get("access_object") in (username, "") for r in rows)
+    covered = any(
+        r.get("access_type") == "ALL"
+        or r.get("access_object") in (username, "")
+        for r in rows
+    )
     assert covered, f"No IMPERSONATE coverage for {username!r} in: {rows}"

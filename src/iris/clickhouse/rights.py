@@ -83,33 +83,47 @@ def derive_rights(
     is_admin = False
     can_create_database = False
     if effective:
-        # Two separate checks against system.grants. CH stores grants in
-        # expanded form — `access_type='ALL'` never appears, even when the
-        # operator wrote `GRANT ALL`. Global scope is `database IS NULL`
-        # (CH uses NULL, not '', for "no scope").
+        # Check system.grants for the admin / database-creation markers.
+        # Global scope is `database IS NULL` (CH uses NULL, not '', for
+        # "no scope").
         #
-        # is_admin marker: ROLE ADMIN at global scope with grant_option=1.
-        # ROLE ADMIN is one of the privileges expanded from ALL and is only
-        # granted to genuine admins; operators don't grant ROLE ADMIN
-        # selectively. WGO is required because the spec defines admin as
-        # having delegation power.
+        # CH usually stores grants in expanded form — individual access
+        # types per row. But when the granter holds the FULL privilege
+        # set (i.e. GRANT ALL or CURRENT GRANTS from a true superuser),
+        # CH condenses to a single `access_type='ALL'` row. So we accept
+        # either the expanded ROLE ADMIN row or the condensed ALL row as
+        # the admin marker.
         #
-        # can_create_database marker: CREATE DATABASE at global scope. Per
-        # spec this does not require WGO.
+        # is_admin marker:
+        #   - access_type='ROLE ADMIN' at global scope with grant_option=1, OR
+        #   - access_type='ALL' at global scope with grant_option=1 (which
+        #     subsumes ROLE ADMIN).
+        #   ROLE ADMIN is one of the privileges expanded from ALL and is
+        #   only granted to genuine admins; operators don't grant ROLE
+        #   ADMIN selectively. WGO is required because the spec defines
+        #   admin as having delegation power.
+        #
+        # can_create_database marker:
+        #   - access_type='CREATE DATABASE' at global scope (any grant_option), OR
+        #   - access_type='ALL' at global scope (subsumes CREATE DATABASE).
         rows = client.query(
             """
             SELECT DISTINCT access_type, grant_option
             FROM system.grants
             WHERE role_name IN ({names:Array(String)})
               AND database IS NULL
-              AND access_type IN ('ROLE ADMIN', 'CREATE DATABASE')
+              AND access_type IN ('ALL', 'ROLE ADMIN', 'CREATE DATABASE')
             """,
             parameters={"names": list(effective)},
         ).result_rows
         for access_type, grant_option in rows:
             access_type = cast(str, access_type)
             grant_option_v = cast(int, grant_option)
-            if access_type == "ROLE ADMIN" and grant_option_v == 1:
+            if access_type == "ALL":
+                if grant_option_v == 1:
+                    is_admin = True
+                can_create_database = True
+            elif access_type == "ROLE ADMIN" and grant_option_v == 1:
                 is_admin = True
             elif access_type == "CREATE DATABASE":
                 can_create_database = True

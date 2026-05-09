@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<!--
+Grant NAMED COLLECTION ADMIN to the testcontainer's `test` user.
+
+The CH testcontainer image's `test` user (created by CLICKHOUSE_USER env)
+holds nearly every privilege via CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+EXCEPT NAMED COLLECTION ADMIN. Without that one privilege, `test` cannot
+grant ALL to iris_svc, and iris_svc therefore cannot grant ALL to the
+admin role at bootstrap time.
+
+This overlay grants NAMED COLLECTION ADMIN to test directly via the XML
+config (the only way to surface it inside this image, since no user in
+the container holds it to grant via SQL). The CH server merges
+`users.d/*.xml` files into its user definitions at startup.
+
+Mounted by tests/clickhouse/conftest.py into
+/etc/clickhouse-server/users.d/.
+-->
+<clickhouse>
+  <users>
+    <test>
+      <named_collection_control>1</named_collection_control>
+      <show_named_collections_secrets>1</show_named_collections_secrets>
+    </test>
+  </users>
+</clickhouse>
