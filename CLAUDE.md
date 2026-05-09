@@ -55,7 +55,7 @@ ALWAYS use  2. *Inline Execution*  Execute tasks in this session using executing
 
 Patterns an agent must follow that aren't obvious from reading code:
 
-- **DDL safety**: external strings flow through `validate_identifier` + `quote_identifier` (`iris.clickhouse.identifiers`). Never f-string-concat raw user input into SQL. DML uses CH's `{name:Type}` placeholder syntax via `client.query(..., parameters=...)`.
+- **DDL safety**: external strings flow through `validate_identifier` + `quote_identifier` (`iris.clickhouse.identifiers`). For `kind` in `{database, username, group}`, `validate_identifier` also rejects names ending in iris's reserved role suffixes (`_USER`, `_GRP`, `_DBADMIN`, `_DBWRITER`, `_DBREADER`). String literals embedded in DDL use `quote_sql_literal` (inline literals) or `quote_sql_array_element` (CH array literal elements) — these have different escape grammars and the helper name picks the right one. DML uses CH's `{name:Type}` placeholder syntax via `client.query(..., parameters=...)`.
 - **Pre-create-on-grant**: tier-grant helpers issue `CREATE ROLE IF NOT EXISTS <target>_USER` before granting. Required for username-enumeration defence; don't shortcut.
 - **Session `data` is a per-request snapshot**: mutations don't auto-persist. Routes that want to write through call `await request.app.state.auth_session_store.update_data(session.id, session.data)`.
 - **Session methods import directly from `iris.clickhouse.{audit,grants,policies,users,queries}` and call `asyncio.to_thread(<sync_fn>, ...)` inline**: the previous `iris.clickhouse.handle.*_impl` thunk layer was deleted; methods talk to the sync helpers (and `query_as_user` / `query_as_service` for the async-only paths) directly. Don't reintroduce the indirection.

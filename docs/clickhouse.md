@@ -39,7 +39,7 @@ add_row_policy(client, database="orders", table="lines",
 
 ## DDL safety
 
-`identifiers.py` is the single safety contract. External-source strings (usernames from auth, db/table/column names from callers) flow through `validate_identifier` (rejects anything outside `[a-zA-Z0-9_]+`) and `quote_identifier` (validates + backticks). Row-policy values use `quote_string` for SQL literal escaping. DDL is built from these helpers; `client.command()` runs it without parameter binding. DML (audit `SELECT`s) uses ClickHouse's native `{name:Type}` placeholder syntax via `client.query(..., parameters=...)`.
+`identifiers.py` is the single safety contract. External-source strings (usernames from auth, db/table/column names from callers) flow through `validate_identifier` (rejects anything outside `[a-zA-Z0-9_]+`; also rejects names ending in iris's reserved role suffixes — `_USER`, `_GRP`, `_DBADMIN`, `_DBWRITER`, `_DBREADER` — for `kind in {database, username, group}`) and `quote_identifier` (validates + backticks). Row-policy values use `quote_sql_literal` (CH inline literal grammar: doubled `''`); array literal elements use `quote_sql_array_element` (CH array-literal grammar: backslash-escaped `\'`). DDL is built from these helpers; `client.command()` runs it without parameter binding. DML (audit `SELECT`s) uses ClickHouse's native `{name:Type}` placeholder syntax via `client.query(..., parameters=...)`.
 
 ## Per-tier methods and route examples
 
@@ -142,7 +142,8 @@ src/iris/clickhouse/
 ├── config.py        # ClickHouseSettings.from_env()
 ├── capabilities.py  # derive_capabilities (walks system.role_grants + system.grants)
 ├── grants.py        # tier constants, create/drop_tier_roles, grant/revoke_tier_*, tier_role_name
-├── identifiers.py   # validate_identifier, quote_identifier, quote_string
+├── identifiers.py   # validate_identifier (with reserved-suffix block), quote_identifier,
+│                    # quote_sql_literal, quote_sql_array_element, _FIXED_STRING_RE
 ├── install.py       # iris.clickhouse.install(app) — wires post-login hook; NOT re-exported
 ├── policies.py      # add_row_policy, revoke_row_policy
 ├── queries.py       # query_as_user (impersonated HTTP) + query_as_service (CH client)

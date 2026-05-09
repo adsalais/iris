@@ -148,3 +148,51 @@ def test_list_admin_members_includes_direct_user_grant(
     admin = _admin_session(ch_client, ch_settings, database=db, username=creator)
     members = asyncio.run(admin.list_admin_members())
     assert {"kind": "user", "name": direct_user} in members
+
+
+def test_delete_database_revokes_orphan_grants_before_drop(ch_client, ch_settings, prefix):
+    """U4: delete_database must REVOKE non-tier grants on the database
+    before DROP DATABASE so re-creating with the same name doesn't
+    reactivate orphan grants."""
+    creator_username = f"{prefix}_creator"
+    db = f"{prefix}_doomed_with_outsider"
+    outsider_role = f"{prefix}_outsider"
+
+    # Create the database via the normal creator path.
+    asyncio.run(
+        _creator_session(ch_client, ch_settings, username=creator_username).create_database(db)
+    )
+
+    # Out-of-band: create a role and grant it SELECT on the database.
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{outsider_role}`")
+    try:
+        ch_client.command(f"GRANT SELECT ON `{db}`.* TO `{outsider_role}`")
+
+        # Confirm the grant is present in system.grants.
+        before = ch_client.query(
+            "SELECT count() FROM system.grants WHERE database = {d:String} AND role_name = {r:String}",
+            parameters={"d": db, "r": outsider_role},
+        ).result_rows
+        assert before[0][0] >= 1, "outsider grant not visible in system.grants pre-drop"
+
+        # Run delete_database via the admin session.
+        admin = _admin_session(ch_client, ch_settings, database=db, username=creator_username)
+        asyncio.run(admin.delete_database())
+
+        # Database should be gone.
+        db_count = ch_client.query(
+            "SELECT count() FROM system.databases WHERE name = {n:String}",
+            parameters={"n": db},
+        ).result_rows
+        assert db_count[0][0] == 0, f"database {db} still present after delete"
+
+        # Crucially: no surviving grant rows reference the dropped database.
+        after = ch_client.query(
+            "SELECT count() FROM system.grants WHERE database = {d:String}",
+            parameters={"d": db},
+        ).result_rows
+        assert after[0][0] == 0, (
+            f"orphan grants on {db} survived delete_database (count={after[0][0]})"
+        )
+    finally:
+        ch_client.command(f"DROP ROLE IF EXISTS `{outsider_role}`")

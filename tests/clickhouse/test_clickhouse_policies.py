@@ -266,7 +266,7 @@ def test_build_policy_filter_array_of_datetime_raises():
 
 
 def test_build_policy_filter_quotes_value_with_apostrophe():
-    """quote_string uses SQL-standard double-single-quote escaping; verify
+    """quote_sql_literal uses SQL-standard double-single-quote escaping; verify
     the propagation works through both = and has(...) branches."""
     build, _ = _import_helpers()
     assert build("`region`", "String", "O'Brien") == "`region` = 'O''Brien'"

@@ -4,7 +4,8 @@ from iris.clickhouse.identifiers import (
     InvalidIdentifierError,
     policy_name,
     quote_identifier,
-    quote_string,
+    quote_sql_array_element,
+    quote_sql_literal,
     validate_identifier,
 )
 
@@ -40,21 +41,109 @@ def test_quote_identifier_rejects_invalid_input():
         quote_identifier("a b", kind="role")
 
 
-def test_quote_string_wraps_plain_value():
-    assert quote_string("EU") == "'EU'"
+def test_quote_sql_literal_wraps_plain_value():
+    assert quote_sql_literal("EU") == "'EU'"
 
 
-def test_quote_string_doubles_embedded_single_quotes():
-    assert quote_string("O'Brien") == "'O''Brien'"
+def test_quote_sql_literal_doubles_embedded_single_quotes():
+    assert quote_sql_literal("O'Brien") == "'O''Brien'"
 
 
-def test_quote_string_escapes_backslashes():
-    assert quote_string(r"a\b") == r"'a\\b'"
+def test_quote_sql_literal_escapes_backslashes():
+    assert quote_sql_literal(r"a\b") == r"'a\\b'"
 
 
-def test_quote_string_handles_combined_escapes():
+def test_quote_sql_literal_handles_combined_escapes():
     # backslash must be escaped before quotes, otherwise '\\\'' would be ambiguous
-    assert quote_string("a\\'b") == "'a\\\\''b'"
+    assert quote_sql_literal("a\\'b") == "'a\\\\''b'"
+
+
+def test_quote_sql_array_element_wraps_plain_value():
+    assert quote_sql_array_element("EU") == "'EU'"
+
+
+def test_quote_sql_array_element_backslash_escapes_single_quote():
+    """Inside a CH array literal, single quotes are backslash-escaped
+    (NOT doubled — that grammar is rejected inside `[...]`)."""
+    assert quote_sql_array_element("O'Brien") == "'O\\'Brien'"
+
+
+def test_quote_sql_array_element_doubles_backslash():
+    assert quote_sql_array_element(r"a\b") == r"'a\\b'"
+
+
+def test_quote_sql_array_element_handles_combined_escapes():
+    # Backslash doubled, then single quote backslash-escaped.
+    assert quote_sql_array_element("a\\'b") == "'a\\\\\\'b'"
+
+
+def test_quote_sql_array_element_empty_string():
+    assert quote_sql_array_element("") == "''"
+
+
+_RESERVED_SUFFIX_VALUES = ("_USER", "_GRP", "_DBADMIN", "_DBWRITER", "_DBREADER")
+
+
+@pytest.mark.parametrize("suffix", _RESERVED_SUFFIX_VALUES)
+def test_validate_identifier_rejects_reserved_suffix_for_database(suffix):
+    with pytest.raises(InvalidIdentifierError, match=suffix):
+        validate_identifier(f"foo{suffix}", kind="database")
+
+
+@pytest.mark.parametrize("suffix", _RESERVED_SUFFIX_VALUES)
+def test_validate_identifier_rejects_reserved_suffix_for_username(suffix):
+    with pytest.raises(InvalidIdentifierError, match=suffix):
+        validate_identifier(f"alice{suffix}", kind="username")
+
+
+@pytest.mark.parametrize("suffix", _RESERVED_SUFFIX_VALUES)
+def test_validate_identifier_rejects_reserved_suffix_for_group(suffix):
+    with pytest.raises(InvalidIdentifierError, match=suffix):
+        validate_identifier(f"sales{suffix}", kind="group")
+
+
+def test_validate_identifier_accepts_reserved_suffix_for_role():
+    """Tier role names like `<db>_DBADMIN` legitimately end in those
+    suffixes; the check must not fire for kind='role'."""
+    for suffix in _RESERVED_SUFFIX_VALUES:
+        assert validate_identifier(f"foo{suffix}", kind="role") == f"foo{suffix}"
+
+
+@pytest.mark.parametrize("kind", ["table", "column", "policy"])
+def test_validate_identifier_accepts_reserved_suffix_for_other_kinds(kind):
+    for suffix in _RESERVED_SUFFIX_VALUES:
+        assert validate_identifier(f"foo{suffix}", kind=kind) == f"foo{suffix}"
+
+
+def test_validate_identifier_accepts_normal_external_names():
+    assert validate_identifier("alice", kind="username") == "alice"
+    assert validate_identifier("sales", kind="group") == "sales"
+    assert validate_identifier("orders", kind="database") == "orders"
+
+
+def test_validate_identifier_error_message_mentions_offending_suffix():
+    """Error text must include the suffix so operators tracing logs see why."""
+    try:
+        validate_identifier("alice_DBADMIN", kind="username")
+    except InvalidIdentifierError as exc:
+        msg = str(exc)
+        assert "_DBADMIN" in msg, f"suffix not in error message: {msg!r}"
+        assert "username" in msg, f"kind not in error message: {msg!r}"
+    else:
+        pytest.fail("expected InvalidIdentifierError")
+
+
+def test_fixed_string_re_matches_expected_forms():
+    """The hoisted _FIXED_STRING_RE matches `FixedString(N)` and rejects
+    plain `String`, `Nullable(...)`, etc."""
+    from iris.clickhouse.identifiers import _FIXED_STRING_RE
+
+    assert _FIXED_STRING_RE.match("FixedString(16)") is not None
+    assert _FIXED_STRING_RE.match("FixedString(1)") is not None
+    assert _FIXED_STRING_RE.match("String") is None
+    assert _FIXED_STRING_RE.match("Nullable(String)") is None
+    assert _FIXED_STRING_RE.match("FixedString(N)") is None  # not a digit
+    assert _FIXED_STRING_RE.match("FixedString()") is None  # missing arg
 
 
 def test_policy_name_basic_shape():

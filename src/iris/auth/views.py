@@ -232,6 +232,27 @@ class DatabaseAdminSession(DatabaseSession):
         client, _, _ = self._ch()
 
         def _sync() -> None:
+            # Sweep grants on this database before dropping. CH leaves
+            # orphan rows in system.grants if a database is dropped while
+            # grants reference it; re-creating with the same name
+            # reactivates them. REVOKE ALL ON <db>.* per distinct grantee
+            # is idempotent and uniform across user vs role grantees
+            # (CH's REVOKE syntax accepts either).
+            rows = client.query(
+                """
+                SELECT DISTINCT name FROM (
+                    SELECT role_name AS name FROM system.grants
+                    WHERE database = {d:String} AND role_name IS NOT NULL
+                    UNION ALL
+                    SELECT user_name AS name FROM system.grants
+                    WHERE database = {d:String} AND user_name IS NOT NULL
+                )
+                """,
+                parameters={"d": database},
+            ).result_rows
+            for (grantee,) in rows:
+                grantee_q = quote_identifier(cast(str, grantee), kind="role")
+                client.command(f"REVOKE ALL ON {db_q}.* FROM {grantee_q}")
             client.command(f"DROP DATABASE IF EXISTS {db_q}")
             drop_tier_roles(client, database=database)
 

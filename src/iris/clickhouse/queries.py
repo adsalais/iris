@@ -24,7 +24,11 @@ import httpx
 from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.query import QueryResult
 
-from iris.clickhouse.identifiers import quote_identifier
+from iris.clickhouse.identifiers import (
+    _FIXED_STRING_RE,  # pyright: ignore[reportPrivateUsage]
+    quote_identifier,
+    quote_sql_array_element,
+)
 
 _PLACEHOLDER_RE = re.compile(r"\{(\w+):([^}]+)\}")
 
@@ -57,7 +61,6 @@ def _parse_placeholder_types(sql: str) -> dict[str, str]:
 
 _DATETIME64_RE = re.compile(r"^DateTime64\((\d+)\)$")
 _DATETIME_TZ_RE = re.compile(r"^DateTime(?:\([^)]*\))?$")
-_FIXED_STRING_RE = re.compile(r"^FixedString\(\d+\)$")
 _INT_TYPES = frozenset(
     {"Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32", "UInt64"}
 )
@@ -129,9 +132,7 @@ def _marshal_array_element(v: object, ch_type: str) -> str:
     if ch_type == "String" or _FIXED_STRING_RE.match(ch_type):
         if not isinstance(v, str):
             raise TypeError(f"{ch_type} expects str, got {type(v).__name__}")
-        # Backslash first, then single quote — order matters.
-        escaped = v.replace("\\", "\\\\").replace("'", "\\'")
-        return f"'{escaped}'"
+        return quote_sql_array_element(v)
     return _marshal_param(v, ch_type)
 
 

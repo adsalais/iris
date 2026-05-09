@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import cast
 
 from clickhouse_connect.driver.client import Client
@@ -10,14 +9,12 @@ from clickhouse_connect.driver.client import Client
 from iris.clickhouse.bootstrap import GLOBAL_ADMIN_ROLE
 from iris.clickhouse.grants import TIER_DBADMIN, tier_role_name
 from iris.clickhouse.identifiers import (
+    _FIXED_STRING_RE,  # pyright: ignore[reportPrivateUsage]
     policy_name,
     quote_identifier,
-    quote_string,
+    quote_sql_literal,
     validate_identifier,
 )
-
-
-_FIXED_STRING_RE = re.compile(r"^FixedString\(\d+\)$")
 
 
 def add_row_policy(
@@ -164,7 +161,7 @@ def _build_policy_filter(
 
     ``col_q`` is the already-backtick-quoted identifier (validated by
     ``add_row_policy``'s caller path); ``value`` is quoted into a SQL
-    string literal here via ``quote_string`` (regardless of branch,
+    string literal here via ``quote_sql_literal`` (regardless of branch,
     since both branches need a quoted literal).
     """
     if col_type.startswith("Array(") and col_type.endswith(")"):
@@ -175,5 +172,5 @@ def _build_policy_filter(
             raise TypeError(
                 f"add_row_policy supports Array(String) variants only; got {col_type}. Extend add_row_policy or pass non-array columns directly."
             )
-        return f"has({col_q}, {quote_string(value)})"
-    return f"{col_q} = {quote_string(value)}"
+        return f"has({col_q}, {quote_sql_literal(value)})"
+    return f"{col_q} = {quote_sql_literal(value)}"
