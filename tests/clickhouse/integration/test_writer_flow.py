@@ -77,18 +77,19 @@ def test_writer_session_can_select_inserted_rows(
             # supported by ClickHouse (returns SYNTAX_ERROR right after
             # VALUES) — only SELECT is. Insert via ch_client (iris_svc),
             # then verify carol's read path.
-            ch_client.command(
+            insert_sql = (
                 f"INSERT INTO `{db}`.records (id, region, tags, score, active, "
-                f"created_at, measured_at, birthday, note, counts) VALUES "
-                f"(1, 'EU', ['EU','UK'], 1.5, true, '2026-05-09 12:00:00', "
-                f"'2026-05-09 12:00:00.123', '2026-05-09', 'first', [1,NULL,3]), "
-                f"(2, 'EU', ['EU','DE'], 2.5, true, '2026-05-09 12:01:00', "
-                f"'2026-05-09 12:01:00.456', '2026-05-09', 'second', [4,5]), "
-                f"(3, 'US', ['US'],      3.5, false,'2026-05-09 12:02:00', "
-                f"'2026-05-09 12:02:00.789', '2026-05-09', NULL, [7]), "
-                f"(4, 'CA', ['CA'],      4.5, true, '2026-05-09 12:03:00', "
-                f"'2026-05-09 12:03:00.000', '2026-05-09', 'fourth', [])"
+                + "created_at, measured_at, birthday, note, counts) VALUES "
+                + "(1, 'EU', ['EU','UK'], 1.5, true, '2026-05-09 12:00:00', "
+                + "'2026-05-09 12:00:00.123', '2026-05-09', 'first', [1,NULL,3]), "
+                + "(2, 'EU', ['EU','DE'], 2.5, true, '2026-05-09 12:01:00', "
+                + "'2026-05-09 12:01:00.456', '2026-05-09', 'second', [4,5]), "
+                + "(3, 'US', ['US'],      3.5, false,'2026-05-09 12:02:00', "
+                + "'2026-05-09 12:02:00.789', '2026-05-09', NULL, [7]), "
+                + "(4, 'CA', ['CA'],      4.5, true, '2026-05-09 12:03:00', "
+                + "'2026-05-09 12:03:00.000', '2026-05-09', 'fourth', [])"
             )
+            ch_client.command(insert_sql)
 
             # Verify carol's writer-tier session can SELECT (the SELECT
             # privilege flows from DBWRITER, granted to writers_GRP and

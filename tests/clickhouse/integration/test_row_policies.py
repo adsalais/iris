@@ -62,18 +62,19 @@ def test_row_policy_filters_reader_but_not_admin(
             await bob_admin.grant_reader_to_group("readers")
 
             # Insert via iris_svc (CH's EXECUTE AS doesn't support INSERT).
-            ch_client.command(
+            insert_sql = (
                 f"INSERT INTO `{db}`.records (id, region, tags, score, active, "
-                f"created_at, measured_at, birthday, note, counts) VALUES "
-                f"(1, 'EU', ['EU','UK'], 1.0, true, '2026-05-09 12:00:00', "
-                f"'2026-05-09 12:00:00.100', '2026-05-09', NULL, [1]), "
-                f"(2, 'EU', ['EU','DE'], 2.0, true, '2026-05-09 12:01:00', "
-                f"'2026-05-09 12:01:00.200', '2026-05-09', NULL, [2]), "
-                f"(3, 'US', ['US'],      3.0, true, '2026-05-09 12:02:00', "
-                f"'2026-05-09 12:02:00.300', '2026-05-09', NULL, [3]), "
-                f"(4, 'CA', ['CA'],      4.0, true, '2026-05-09 12:03:00', "
-                f"'2026-05-09 12:03:00.400', '2026-05-09', NULL, [4])"
+                + "created_at, measured_at, birthday, note, counts) VALUES "
+                + "(1, 'EU', ['EU','UK'], 1.0, true, '2026-05-09 12:00:00', "
+                + "'2026-05-09 12:00:00.100', '2026-05-09', NULL, [1]), "
+                + "(2, 'EU', ['EU','DE'], 2.0, true, '2026-05-09 12:01:00', "
+                + "'2026-05-09 12:01:00.200', '2026-05-09', NULL, [2]), "
+                + "(3, 'US', ['US'],      3.0, true, '2026-05-09 12:02:00', "
+                + "'2026-05-09 12:02:00.300', '2026-05-09', NULL, [3]), "
+                + "(4, 'CA', ['CA'],      4.0, true, '2026-05-09 12:03:00', "
+                + "'2026-05-09 12:03:00.400', '2026-05-09', NULL, [4])"
             )
+            ch_client.command(insert_sql)
 
             # alice: add the row policy on tags for readers_GRP.
             alice_admin = await session_for(iris_app, alice_sid, kind="admin")
