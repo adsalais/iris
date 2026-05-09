@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from iris.clickhouse.bootstrap import GLOBAL_ADMIN_ROLE
@@ -25,6 +27,22 @@ def _setup_table(ch_client, db, table, role):
     ch_client.command(f"CREATE ROLE IF NOT EXISTS `{dba_role}`")
     # iris_global_admin must exist (created at iris launch via bootstrap_admin;
     # tests at this level haven't run that, so create explicitly).
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{GLOBAL_ADMIN_ROLE}`")
+
+
+def _setup_typed_table(
+    ch_client, db: str, table: str, role: str, column: str, column_type: str
+) -> None:
+    """Like _setup_table but the column name and type are caller-supplied,
+    so each test can declare its own table shape (Array(String),
+    Array(FixedString(8)), etc.)."""
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    ch_client.command(
+        f"CREATE TABLE IF NOT EXISTS `{db}`.`{table}` (id UInt64, `{column}` {column_type}) ENGINE = MergeTree ORDER BY id"
+    )
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{role}`")
+    dba_role = tier_role_name(db, TIER_DBADMIN)
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{dba_role}`")
     ch_client.command(f"CREATE ROLE IF NOT EXISTS `{GLOBAL_ADMIN_ROLE}`")
 
 
@@ -316,3 +334,116 @@ def test_column_type_raises_for_unknown_table(ch_client, ch_settings, prefix):
     ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
     with pytest.raises(ValueError, match="does not exist"):
         column_type(ch_client, database=db, table="ghost", column="anything")
+
+
+# ---- add_row_policy: select_filter dispatch ------------------------------
+
+
+def _read_policy_filter(ch_client, db, table, role, value) -> str:
+    """Return the SELECT filter clause CH stored for the named policy."""
+    expected_name = policy_name(db, table, role, value)
+    rows = list(
+        ch_client.query(
+            "SELECT select_filter FROM system.row_policies WHERE database = {d:String} AND table = {t:String} AND short_name = {n:String}",
+            parameters={"d": db, "t": table, "n": expected_name},
+        ).named_results()
+    )
+    assert len(rows) == 1, f"policy {expected_name} not found"
+    return cast(str, rows[0]["select_filter"])
+
+
+def test_add_row_policy_string_column_uses_equals(
+    ch_client, ch_settings, prefix
+):
+    """Regression: scalar String column still uses ``<col> = <val>``."""
+    db = f"{prefix}_eq"
+    table = "t"
+    role = f"{prefix}_role_eq"
+    _setup_typed_table(ch_client, db, table, role, "region", "String")
+    add_row_policy(
+        ch_client,
+        database=db, table=table, column="region", role=role, value="EU",
+    )
+    filt = _read_policy_filter(ch_client, db, table, role, "EU")
+    assert "=" in filt
+    assert "has(" not in filt
+    assert "'EU'" in filt
+
+
+def test_add_row_policy_array_string_uses_has(
+    ch_client, ch_settings, prefix
+):
+    db = f"{prefix}_arr_s"
+    table = "t"
+    role = f"{prefix}_role_arr_s"
+    _setup_typed_table(ch_client, db, table, role, "tags", "Array(String)")
+    add_row_policy(
+        ch_client,
+        database=db, table=table, column="tags", role=role, value="EU",
+    )
+    filt = _read_policy_filter(ch_client, db, table, role, "EU")
+    assert "has(" in filt
+    assert "'EU'" in filt
+
+
+def test_add_row_policy_nullable_array_string_uses_has(
+    ch_client, ch_settings, prefix
+):
+    db = f"{prefix}_arr_ns"
+    table = "t"
+    role = f"{prefix}_role_arr_ns"
+    _setup_typed_table(
+        ch_client, db, table, role, "tags", "Array(Nullable(String))"
+    )
+    add_row_policy(
+        ch_client,
+        database=db, table=table, column="tags", role=role, value="EU",
+    )
+    filt = _read_policy_filter(ch_client, db, table, role, "EU")
+    assert "has(" in filt
+
+
+def test_add_row_policy_array_fixed_string_uses_has(
+    ch_client, ch_settings, prefix
+):
+    db = f"{prefix}_arr_fs"
+    table = "t"
+    role = f"{prefix}_role_arr_fs"
+    _setup_typed_table(
+        ch_client, db, table, role, "tags", "Array(FixedString(8))"
+    )
+    add_row_policy(
+        ch_client,
+        database=db, table=table, column="tags", role=role,
+        value="eu      ",  # FixedString(8): caller pads to 8 chars
+    )
+    filt = _read_policy_filter(ch_client, db, table, role, "eu      ")
+    assert "has(" in filt
+
+
+def test_add_row_policy_array_int_raises(ch_client, ch_settings, prefix):
+    db = f"{prefix}_arr_i"
+    table = "t"
+    role = f"{prefix}_role_arr_i"
+    _setup_typed_table(ch_client, db, table, role, "nums", "Array(Int32)")
+    with pytest.raises(TypeError, match=r"Array\(Int32\)"):
+        add_row_policy(
+            ch_client,
+            database=db, table=table, column="nums", role=role, value="5",
+        )
+
+
+def test_add_row_policy_unknown_column_raises(
+    ch_client, ch_settings, prefix
+):
+    db = f"{prefix}_unk"
+    table = "t"
+    role = f"{prefix}_role_unk"
+    _setup_typed_table(
+        ch_client, db, table, role, "region", "String"
+    )
+    with pytest.raises(ValueError, match="does not exist"):
+        add_row_policy(
+            ch_client,
+            database=db, table=table, column="missing", role=role, value="v",
+        )
