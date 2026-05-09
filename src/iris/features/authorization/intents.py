@@ -79,7 +79,26 @@ async def render_manage(
     )
 
 
+async def render_create_database(
+    request: Request,
+    session: "AuthSession",
+    rec: "TabRecord",
+) -> Response:
+    from iris.shell.element_id import tab_panel_id
+
+    if not (session.capabilities.is_admin or session.capabilities.can_create_database):
+        raise HTTPException(status_code=403, detail="not allowed")
+
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request,
+        "authorization/create_database.html",
+        {"panel_id": tab_panel_id(rec.id), "tab_id": rec.id, "error": None},
+    )
+
+
 RENDER_BY_INTENT: dict[str, IntentHandler] = {
     "my_access": render_my_access,
     "manage": render_manage,
+    "create_database": render_create_database,
 }

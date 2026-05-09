@@ -48,6 +48,12 @@ def _register_intents(dispatcher: IntentDispatcher) -> None:
         title=lambda params: f"Manage {params.get('database', '')}",
         required=lambda c: c.is_admin or bool(c.db_admin),
     ))
+    dispatcher.register(IntentSpec(
+        feature="auth",
+        intent="create_database",
+        title=lambda _params: "Create database",
+        required=lambda c: c.is_admin or c.can_create_database,
+    ))
 
 
 def _register_nav(contribs: Contributions) -> None:
@@ -66,6 +72,11 @@ def _register_nav(contribs: Contributions) -> None:
                     )
                     for db in sorted(c.db_admin)
                 ],
+            ),
+            NavEntry(
+                "Create database",
+                visible=lambda c: c.is_admin or c.can_create_database,
+                on_click=TabIntent("auth", "create_database"),
             ),
         ),
     ))

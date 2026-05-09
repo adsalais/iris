@@ -273,6 +273,72 @@ async def revoke_policy(
 
 
 # ---------------------------------------------------------------------------
+# create_database — submit handler
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{tab_id}/submit")
+async def submit_create_database(
+    request: Request, session: Session, tab_id: str,
+    name: Annotated[str, Query(min_length=0, max_length=64)],
+    _: None = Depends(verify_csrf_header),
+) -> Response:
+    from iris.auth.views import DatabaseCreatorSession
+    from iris.shell.tabs import TabRecord, replace_tab
+
+    rec = find_tab(session.data, tab_id)
+    if rec is None or rec.feature != "auth" or rec.intent != "create_database":
+        raise HTTPException(status_code=404, detail="tab not found")
+    if not (session.capabilities.is_admin or session.capabilities.can_create_database):
+        raise HTTPException(status_code=403, detail="not allowed")
+
+    creator = DatabaseCreatorSession(
+        id=session.id, user=session.user,
+        created_at=session.created_at, expires_at=session.expires_at,
+        data=session.data, capabilities=session.capabilities,
+        client=session.client, http_client=session.http_client,
+        settings=session.settings, store=session.store,
+    )
+    templates = request.app.state.templates
+    panel_id = tab_panel_id(tab_id)
+
+    try:
+        await creator.create_database(name)
+    except (ValueError, RuntimeError) as e:
+        # Re-render the form with the error inline. Validation errors
+        # (InvalidIdentifierError <: ValueError) and CH-side errors all
+        # surface as inline error fragments for the user to fix.
+        html = templates.get_template("authorization/create_database.html").render(
+            panel_id=panel_id, tab_id=tab_id, error=str(e),
+        )
+        return DatastarResponse(
+            SSE.patch_elements(
+                html, selector=f"#{panel_id}", mode=ElementPatchMode.OUTER,
+            ),
+        )
+
+    # Success: re-target the existing tab to manage <new_db>.
+    new_rec = TabRecord(
+        id=tab_id, feature="auth", intent="manage",
+        params={"database": name}, title=f"Manage {name}",
+    )
+    replace_tab(session.data, tab_id, new_rec)
+    await session.persist_data()
+    return DatastarResponse([
+        SSE.patch_elements(
+            templates.get_template("shell/_tab_strip.html").render(tab=new_rec.to_json()),
+            selector=f"#tab-button-{tab_id}",
+            mode=ElementPatchMode.OUTER,
+        ),
+        SSE.patch_elements(
+            templates.get_template("shell/_tab_panel.html").render(tab=new_rec.to_json()),
+            selector=f"#tab-content-{tab_id}",
+            mode=ElementPatchMode.OUTER,
+        ),
+    ])
+
+
+# ---------------------------------------------------------------------------
 # danger zone — delete database
 # ---------------------------------------------------------------------------
 
