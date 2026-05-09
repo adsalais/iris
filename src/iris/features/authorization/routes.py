@@ -14,7 +14,12 @@ from datastar_py.fastapi import ServerSentEventGenerator as SSE
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from iris.auth.csrf import verify_csrf_header
-from iris.auth.deps import Session, SessionAdmin, SessionDatabaseAdmin
+from iris.auth.deps import (
+    Session,
+    SessionAdmin,
+    SessionDatabaseAdmin,
+    SessionDatabaseCreator,
+)
 from iris.auth.views import DatabaseAdminSession
 from iris.shell.element_id import tab_panel_id
 from iris.shell.tabs import find_tab
@@ -343,26 +348,18 @@ async def admin_audit(
 
 @router.post("/{tab_id}/submit")
 async def submit_create_database(
-    request: Request, session: Session, tab_id: str,
+    request: Request,
+    creator: SessionDatabaseCreator,
+    tab_id: str,
     name: Annotated[str, Query(min_length=0, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    from iris.auth.views import DatabaseCreatorSession
     from iris.shell.tabs import TabRecord, replace_tab
 
-    rec = find_tab(session.data, tab_id)
+    rec = find_tab(creator.data, tab_id)
     if rec is None or rec.feature != "auth" or rec.intent != "create_database":
         raise HTTPException(status_code=404, detail="tab not found")
-    if not (session.capabilities.is_admin or session.capabilities.can_create_database):
-        raise HTTPException(status_code=403, detail="not allowed")
 
-    creator = DatabaseCreatorSession(
-        id=session.id, user=session.user,
-        created_at=session.created_at, expires_at=session.expires_at,
-        data=session.data, capabilities=session.capabilities,
-        client=session.client, http_client=session.http_client,
-        settings=session.settings, store=session.store,
-    )
     templates = request.app.state.templates
     panel_id = tab_panel_id(tab_id)
 
@@ -386,8 +383,8 @@ async def submit_create_database(
         id=tab_id, feature="auth", intent="manage",
         params={"database": name}, title=f"Manage {name}",
     )
-    replace_tab(session.data, tab_id, new_rec)
-    await session.persist_data()
+    replace_tab(creator.data, tab_id, new_rec)
+    await creator.persist_data()
     return DatastarResponse([
         SSE.patch_elements(
             templates.get_template("shell/_tab_strip.html").render(tab=new_rec.to_json()),
