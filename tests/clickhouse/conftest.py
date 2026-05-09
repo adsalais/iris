@@ -11,6 +11,7 @@ with the ``prefix`` fixture, since state accumulates across tests within a sessi
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import clickhouse_connect
 import pytest
@@ -37,8 +38,23 @@ def ch_container():
     as ``service_admin_user`` so that the ``GRANT role TO user`` DDL can
     actually persist.
     """
-    container = ClickHouseContainer("clickhouse/clickhouse-server:26.3").with_env(
-        "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1"
+    # Overlay that grants NAMED COLLECTION ADMIN to the `test` user. CH's
+    # /etc/clickhouse-server/users.d/*.xml files are merged into the user
+    # definitions at startup. Without this, `test` lacks NAMED COLLECTION
+    # ADMIN and therefore cannot delegate it to iris_svc, which would
+    # break iris.bootstrap_admin's GRANT ALL.
+    users_d_overlay = (
+        Path(__file__).parent.parent / "seed" / "users.d" / "test-named-collection-admin.xml"
+    ).resolve()
+
+    container = (
+        ClickHouseContainer("clickhouse/clickhouse-server:26.3")
+        .with_env("CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT", "1")
+        .with_volume_mapping(
+            str(users_d_overlay),
+            "/etc/clickhouse-server/users.d/test-named-collection-admin.xml",
+            "ro",
+        )
     )
     with container as ch:
         host = ch.get_container_host_ip()

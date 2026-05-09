@@ -48,11 +48,11 @@ def test_admin_grant_yields_is_admin(ch_client, ch_settings, prefix):
     init_user_rights(ch_client, username=user, groups=[], settings=ch_settings)
     user_role = f"{user}_USER"
     # bootstrap_admin's production path is `GRANT ALL ON *.* WITH GRANT OPTION`.
-    # The testcontainer's privilege envelope (no NAMED COLLECTION ADMIN) makes
-    # that error, so we use `CURRENT GRANTS` here — CH expands to the same
-    # primitive privilege set either way (no `access_type='ALL'` row exists in
-    # system.grants), and derive_rights's marker (ROLE ADMIN+WGO at global
-    # scope) is part of both paths.
+    # CURRENT GRANTS is equivalent here — both produce admin-level coverage
+    # in system.grants. With iris_svc holding the full privilege set
+    # (granted via the conftest's users.d overlay), CH stores the result
+    # as a condensed `access_type='ALL'` row rather than expanding to
+    # individual privileges. derive_rights handles either form.
     ch_client.command(
         f"GRANT CURRENT GRANTS ON *.* TO `{user_role}` WITH GRANT OPTION"
     )
