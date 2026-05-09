@@ -229,7 +229,7 @@ The helper assumes the operator has already done the following before calling it
 2. **Created the dictionary** with the matching layout (`COMPLEX_KEY_HASHED` for `String` keys, `HASHED` for `UInt64`, etc.) and a refresh `LIFETIME` appropriate for how often the underlying data changes. (`SYSTEM RELOAD DICTIONARY <name>` if you need an immediate refresh after an INSERT.)
 3. **Granted `dictGet ON <dictionary>`** to every role that the policy will be attached to. Without this grant, the per-row evaluation raises `Code: 497. DB::Exception: <user>: Not enough privileges` and the user sees zero rows from the policy's perspective. (CH treats the missing privilege as "policy did not match" rather than a hard error to the client; it surfaces in the CH server log.)
 
-These are documented in the helper's docstring. Iris itself does NOT issue any of these statements.
+These are documented in the helper's docstring AND surfaced in `CLAUDE.md` under a new "Operator follow-ups" subsection (added by this work) so future agents and operators can see them at a glance — including the open follow-up to surface a "missing dictGet grant" check in the admin UI when one becomes useful. Iris itself does NOT issue any of these statements.
 
 ## 7. Testing
 
@@ -239,6 +239,7 @@ Mirror the structure of the existing `test_clickhouse_policies.py`:
 
 - `test_add_row_dict_policy_creates_named_policy_and_two_wildcards` — set up a dict + protected table, call helper, assert `system.row_policies` has the named policy plus the two wildcards.
 - `test_add_row_dict_policy_is_idempotent` — call twice with same args, assert no error and policy count unchanged.
+- `test_add_row_dict_policy_wildcards_no_op_when_scalar_already_present` — call the scalar `add_row_policy` first (which seeds the two wildcards), then `add_row_dict_policy` on the same table; assert the two wildcards still exist exactly once each (i.e. the dict helper's `CREATE ROW POLICY IF NOT EXISTS` for the wildcards was a no-op, NOT a duplicate or replacement). Locks in the §5.2 contract.
 - `test_add_row_dict_policy_validates_inputs` — bad database / table / auth_id / role / dictionary / authorisations all raise `InvalidIdentifierError`. Two-dot dictionary (`db.foo.bar`) raises.
 - `test_revoke_row_dict_policy_drops_named_policy` — create then revoke, assert the named policy is gone and the wildcards are still present.
 - `test_revoke_row_dict_policy_does_not_drop_wildcards` — explicit assertion mirroring the scalar test.
@@ -263,6 +264,7 @@ Two unit tests in `tests/auth/test_database_admin_dict_policies.py` (matching th
 | `tests/clickhouse/test_clickhouse_dict_policies.py` | Unit tests (§7.1). |
 | `tests/clickhouse/integration/test_dict_policy_filters.py` | Integration test (§7.2). |
 | `tests/auth/test_database_admin_dict_policies.py` | Wrapper tests (§7.3). |
+| `CLAUDE.md` | Add "Operator follow-ups" subsection under "Conventions" (or extend the existing follow-up tail) listing the three operator responsibilities from §6 plus the open admin-UI follow-up. |
 
 ## 9. Risks and tradeoffs
 
