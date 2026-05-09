@@ -22,7 +22,7 @@ def test_begin_renders_login_form():
     from pathlib import Path
     import iris
     from iris.templates import init_templates, register_template_dir
-    register_template_dir(Path(iris.__file__).parent / "templates")
+    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
     app.state.templates = init_templates()
 
     @app.get("/login")
@@ -72,7 +72,7 @@ def test_begin_escapes_next_url_in_attribute():
     from pathlib import Path
     import iris
     from iris.templates import init_templates, register_template_dir
-    register_template_dir(Path(iris.__file__).parent / "templates")
+    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
     app.state.templates = init_templates()
 
     @app.get("/login")
@@ -91,7 +91,7 @@ def test_begin_escapes_error_in_body():
     from pathlib import Path
     import iris
     from iris.templates import init_templates, register_template_dir
-    register_template_dir(Path(iris.__file__).parent / "templates")
+    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
     app.state.templates = init_templates()
 
     @app.get("/login")
@@ -116,7 +116,7 @@ def test_begin_renders_next_and_error_when_safe():
     from pathlib import Path
     import iris
     from iris.templates import init_templates, register_template_dir
-    register_template_dir(Path(iris.__file__).parent / "templates")
+    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
     app.state.templates = init_templates()
 
     @app.get("/login")
@@ -136,7 +136,7 @@ def test_begin_does_not_clobber_next_containing_placeholder():
     from pathlib import Path
     import iris
     from iris.templates import init_templates, register_template_dir
-    register_template_dir(Path(iris.__file__).parent / "templates")
+    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
     app.state.templates = init_templates()
 
     @app.get("/login")

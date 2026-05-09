@@ -582,7 +582,7 @@ def test_callback_error_clears_state_cookie(provider):
     import iris
     from iris.templates import init_templates, register_template_dir
 
-    register_template_dir(Path(iris.__file__).parent / "templates")
+    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
     app = FastAPI()
     app.state.shutdown_hooks = []
     app.state.auth_cookie_secure = False
