@@ -14,8 +14,8 @@ from datastar_py.fastapi import ServerSentEventGenerator as SSE
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from iris.auth.csrf import verify_csrf_header
-from iris.auth.deps import Session, SessionDatabaseAdmin
-from iris.auth.views import AdminSession, AuthSession, DatabaseAdminSession
+from iris.auth.deps import Session, SessionAdmin, SessionDatabaseAdmin
+from iris.auth.views import DatabaseAdminSession
 from iris.shell.element_id import tab_panel_id
 from iris.shell.tabs import find_tab
 
@@ -252,28 +252,13 @@ async def revoke_policy(
 # ---------------------------------------------------------------------------
 
 
-def _promote_to_admin(session: AuthSession) -> AdminSession:
-    if not session.capabilities.is_admin:
-        raise HTTPException(status_code=403, detail="admin only")
-    return AdminSession(
-        id=session.id, user=session.user,
-        created_at=session.created_at, expires_at=session.expires_at,
-        data=session.data, capabilities=session.capabilities,
-        client=session.client, http_client=session.http_client,
-        settings=session.settings, store=session.store,
-    )
-
-
-def _admin_panel_id(tab_id: str) -> str:
-    return tab_panel_id(tab_id)
-
-
 @router.get("/{tab_id}/admin/users")
-async def admin_users(request: Request, session: Session, tab_id: str) -> Response:
+async def admin_users(
+    request: Request, admin: SessionAdmin, tab_id: str,
+) -> Response:
     from iris.features.authorization.service import list_all_users
-    admin = _promote_to_admin(session)
     users = await list_all_users(admin)
-    panel_id = _admin_panel_id(tab_id)
+    panel_id = tab_panel_id(tab_id)
     templates = request.app.state.templates
     html = templates.get_template("authorization/_admin_users.html").render(
         panel_id=panel_id, tab_id=tab_id, users=users,
@@ -284,11 +269,12 @@ async def admin_users(request: Request, session: Session, tab_id: str) -> Respon
 
 
 @router.get("/{tab_id}/admin/databases")
-async def admin_databases(request: Request, session: Session, tab_id: str) -> Response:
+async def admin_databases(
+    request: Request, admin: SessionAdmin, tab_id: str,
+) -> Response:
     from iris.features.authorization.service import list_all_databases
-    admin = _promote_to_admin(session)
     databases = await list_all_databases(admin)
-    panel_id = _admin_panel_id(tab_id)
+    panel_id = tab_panel_id(tab_id)
     templates = request.app.state.templates
     html = templates.get_template("authorization/_admin_databases.html").render(
         panel_id=panel_id, tab_id=tab_id, databases=databases,
@@ -299,11 +285,12 @@ async def admin_databases(request: Request, session: Session, tab_id: str) -> Re
 
 
 @router.get("/{tab_id}/admin/policies")
-async def admin_policies(request: Request, session: Session, tab_id: str) -> Response:
+async def admin_policies(
+    request: Request, admin: SessionAdmin, tab_id: str,
+) -> Response:
     from iris.features.authorization.service import list_all_row_policies
-    admin = _promote_to_admin(session)
     policies = await list_all_row_policies(admin)
-    panel_id = _admin_panel_id(tab_id)
+    panel_id = tab_panel_id(tab_id)
     templates = request.app.state.templates
     html = templates.get_template("authorization/_admin_policies.html").render(
         panel_id=panel_id, tab_id=tab_id, policies=policies,
@@ -315,16 +302,15 @@ async def admin_policies(request: Request, session: Session, tab_id: str) -> Res
 
 @router.post("/{tab_id}/admin/users/{username}/reprovision")
 async def admin_reprovision_user(
-    request: Request, session: Session, tab_id: str, username: str,
+    request: Request, admin: SessionAdmin, tab_id: str, username: str,
     _: None = Depends(verify_csrf_header),
 ) -> Response:
     from iris.features.authorization.service import list_all_users
-    admin = _promote_to_admin(session)
     # IdP groups aren't accessible from this code path; reprovision_user
     # rebuilds CH user identity + tier roles with empty groups.
     await admin.reprovision_user(username=username, groups=[])
     users = await list_all_users(admin)
-    panel_id = _admin_panel_id(tab_id)
+    panel_id = tab_panel_id(tab_id)
     templates = request.app.state.templates
     html = templates.get_template("authorization/_admin_users.html").render(
         panel_id=panel_id, tab_id=tab_id, users=users,
@@ -335,11 +321,12 @@ async def admin_reprovision_user(
 
 
 @router.get("/{tab_id}/admin/audit")
-async def admin_audit(request: Request, session: Session, tab_id: str) -> Response:
+async def admin_audit(
+    request: Request, admin: SessionAdmin, tab_id: str,
+) -> Response:
     from iris.features.authorization.service import list_all_grants
-    admin = _promote_to_admin(session)
     grants = await list_all_grants(admin)
-    panel_id = _admin_panel_id(tab_id)
+    panel_id = tab_panel_id(tab_id)
     templates = request.app.state.templates
     html = templates.get_template("authorization/_admin_audit.html").render(
         panel_id=panel_id, tab_id=tab_id, grants=grants,
