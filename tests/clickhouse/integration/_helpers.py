@@ -25,6 +25,7 @@ from iris.auth.identity import (
     DatabaseCreatorSession,
     DatabaseSession,
 )
+from iris.clickhouse.rights import derive_rights
 from tests.auth.integration._keycloak_helpers import simulate_login
 
 SessionKind = Literal[
@@ -61,7 +62,14 @@ def login_as(
     username: str,
     password: str,
 ) -> str:
-    """Drive the full Keycloak login flow for ``username``; return the iris_session sid."""
+    """Drive the full Keycloak login flow for ``username``; return the iris_session sid.
+
+    Clears Keycloak cookies first so a previous user's SSO session
+    doesn't short-circuit the login. Otherwise Keycloak 302s straight
+    to ``http://testserver/login/callback`` from outside iris's
+    TestClient — unresolvable from the real httpx client.
+    """
+    keycloak_http.cookies.clear()
     response = simulate_login(
         test_client=test_client,
         http=keycloak_http,
@@ -71,6 +79,25 @@ def login_as(
     sid = response.cookies.get("iris_session")
     assert sid is not None, f"login for {username} did not set iris_session"
     return sid
+
+
+async def refresh_rights(app: FastAPI, sid: str) -> None:
+    """Re-derive the session's CH-side rights and persist them to the store.
+
+    Mirrors what the post-login hook does. Use after CH-side state changes
+    (e.g. a new tier grant) to refresh a logged-in user's view without
+    forcing a second Keycloak round-trip.
+    """
+    store = app.state.auth_session_store
+    stored = await store.get_and_refresh(sid)
+    assert stored is not None, f"session {sid!r} not in store"
+    client = app.state.clickhouse_client
+    rights = derive_rights(
+        client,
+        username=stored.user.username,
+        groups=list(stored.user.groups),
+    )
+    await store.set_rights(sid, rights)
 
 
 async def session_for(
