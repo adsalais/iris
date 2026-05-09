@@ -129,3 +129,56 @@ def policy_name(database: str, table: str, role: str, value: str) -> str:
     slug = _SLUG_RE.sub("_", value).strip("_") or "v"
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
     return f"{database}_{table}_{role}_{slug}_{digest}"
+
+
+def validate_dict_name(name: str) -> str:
+    """Validate ``<dict>`` or ``<db>.<dict>``. Return ``name`` unchanged on success.
+
+    Both halves of a dotted name go through ``validate_identifier`` (using
+    ``kind="database"`` for the left half and ``kind="table"`` for the right).
+    More than one dot, or any segment failing identifier validation, raises
+    ``InvalidIdentifierError``.
+
+    Used by ``add_row_dict_policy`` to gate ``dictionary`` parameters before
+    they're emitted as a SQL string literal in the policy USING clause.
+    """
+    parts = name.split(".")
+    if len(parts) == 1:
+        validate_identifier(parts[0], kind="table")
+    elif len(parts) == 2:
+        validate_identifier(parts[0], kind="database")
+        validate_identifier(parts[1], kind="table")
+    else:
+        msg = f"dictionary name must be '<dict>' or '<db>.<dict>'; got {name!r}"
+        raise InvalidIdentifierError(msg)
+    return name
+
+
+def dict_policy_name(
+    database: str,
+    table: str,
+    role: str,
+    value: str,
+    dictionary: str,
+    authorisations: str,
+    auth_id: str,
+) -> str:
+    """Build a row-policy name for a dict-keyed policy.
+
+    Same shape as ``policy_name``: ``<db>_<table>_<role>_<slug>_<16charhash>``.
+    The 16-char SHA-256 prefix incorporates ``value | dictionary |
+    authorisations | auth_id`` (NUL-separated) so two dict policies on the
+    same ``(database, table, role, value)`` tuple but using different
+    dictionaries / attributes / auth_id columns get distinct names.
+
+    The slug is derived from ``value`` only (matching the scalar
+    ``policy_name`` behavior) so the human-readable portion of the name
+    stays recognisable.
+    """
+    validate_identifier(database, kind="database")
+    validate_identifier(table, kind="table")
+    validate_identifier(role, kind="role")
+    slug = _SLUG_RE.sub("_", value).strip("_") or "v"
+    digest_input = f"{value}\0{dictionary}\0{authorisations}\0{auth_id}"
+    digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:16]
+    return f"{database}_{table}_{role}_{slug}_{digest}"
