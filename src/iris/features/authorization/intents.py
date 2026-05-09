@@ -18,4 +18,28 @@ if TYPE_CHECKING:
 
 IntentHandler = Callable[[Request, "AuthSession", "TabRecord"], Awaitable[Response]]
 
-RENDER_BY_INTENT: dict[str, IntentHandler] = {}
+
+async def render_my_access(
+    request: Request,
+    session: "AuthSession",
+    rec: "TabRecord",
+) -> Response:
+    from iris.features.authorization.service import my_access_view
+    from iris.shell.element_id import tab_panel_id
+
+    templates = request.app.state.templates
+    ctx = my_access_view(session.capabilities)
+    return templates.TemplateResponse(
+        request,
+        "authorization/my_access.html",
+        {
+            "user": session.user,
+            "panel_id": tab_panel_id(rec.id),
+            **ctx,
+        },
+    )
+
+
+RENDER_BY_INTENT: dict[str, IntentHandler] = {
+    "my_access": render_my_access,
+}

@@ -190,16 +190,6 @@ def install_routes(app: FastAPI) -> None:
             ),
         ])
 
-    @app.get("/feature/{feature}/{tab_id}/render")
-    async def render_tab(
-        session: Session,
-        feature: str,
-        tab_id: str,
-    ) -> Response:
-        rec = find_tab(session.data, tab_id)
-        if rec is None or rec.feature != feature:
-            raise HTTPException(status_code=404, detail="tab not found")
-        # Per-feature render endpoints take over by mounting their own router
-        # at /feature/<feature>; this stub returns 404 when no feature handler
-        # is registered (the case at this Phase 1 point).
-        raise HTTPException(status_code=404, detail="no feature handler")
+    # NOTE: /feature/{feature}/{tab_id}/render endpoints are owned by each
+    # feature module's APIRouter (mounted at /feature/<feature>). FastAPI
+    # naturally 404s when no feature has registered for the path.
