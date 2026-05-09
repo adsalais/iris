@@ -22,6 +22,12 @@ The project uses a `src/`-layout with hatchling as the build backend and `.pytho
 - `uv run ruff check` — must produce zero warnings.
 - `uv run basedpyright --level error` — gate. Must stay at zero errors.
 - `uv run basedpyright --level warning` — also at zero. The `[tool.basedpyright]` config in `pyproject.toml` disables a handful of noisy categories that fire on intentional FastAPI/pytest patterns (`reportUnusedCallResult`, `reportUnusedFunction`, `reportCallInDefaultInitializer`, `reportAny`, `reportExplicitAny`, `reportUnannotatedClassAttribute`). The `tests/` execution environment additionally relaxes the unknown-type checks (pytest fixtures and `TestClient` response objects are dynamically typed). `providers/ldap.py` carries file-level pyright suppressions for the same reason — ldap3 is inherently dynamic. New checks failing means a real issue worth investigating, not config drift.
+- **Don't use Python's implicit string concatenation.** `reportImplicitStringConcatenation` is on and gates merges. Adjacent string literals on consecutive lines (`f"foo " f"bar"` or `"foo " "bar"`) — including the common pattern of wrapping a long error message across lines — fail the warning gate. Pick one of:
+  - **Single string** with the line break in the source: `f"foo bar baz"` (or wrap a long literal in `(...)` parens with no operator).
+  - **Explicit `+`** between fragments: `f"foo {x} " + f"bar {y}"`.
+  - **Hoist to a variable**: `msg = f"…"; raise TypeError(msg)`.
+
+  Always run `uv run basedpyright --level warning` before committing — `--level error` alone misses this rule.
 
 ### Tests
 
