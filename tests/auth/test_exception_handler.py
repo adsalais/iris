@@ -10,8 +10,11 @@ from iris.auth.exceptions import (
 
 def _build_app() -> FastAPI:
     app = FastAPI()
-    from iris.app import TEMPLATES
-    app.state.templates = TEMPLATES
+    from pathlib import Path
+    import iris
+    from iris.templates import init_templates, register_template_dir
+    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
+    app.state.templates = init_templates()
 
     async def needs_auth():
         raise AuthRequired()

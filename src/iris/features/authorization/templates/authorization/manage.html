@@ -1,0 +1,14 @@
+<div class="iris-feature-page" id="{{ panel_id }}">
+  <header class="iris-manage-header">
+    <button class="iris-back"
+            data-on:click="@patch('/api/tabs/{{ tab_id }}?intent=my_access&amp;params=%7B%7D')">
+      &larr;
+    </button>
+    <h2>Manage {{ database }}</h2>
+  </header>
+
+  {% include "authorization/_members_section.html" %}
+  {% include "authorization/_row_policies.html" %}
+  {% include "authorization/_audit.html" %}
+  {% include "authorization/_danger.html" %}
+</div>

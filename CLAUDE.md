@@ -29,6 +29,11 @@ The project uses a `src/`-layout with hatchling as the build backend and `.pytho
 
   Always run `uv run basedpyright --level warning` before committing — `--level error` alone misses this rule.
 
+### implementation
+
+- ALWAYS use  2. *Inline Execution*  Execute tasks in this session using executing-plans, batch execution with checkpoints instead of  1. Subagent-Driven  dispatch a fresh subagent per task, review between tasks, fast iteration
+- ALWAYS Create a feature branch
+
 ### Tests
 
 Pytest is the test runner. Config lives under `[tool.pytest.ini_options]` in `pyproject.toml` (`testpaths = ["tests"]`, `--import-mode=importlib`).
@@ -51,7 +56,7 @@ Conventions for new tests:
 - Import the package as `from iris.app import build_app` (or `from iris import …`). FastAPI's `TestClient(app)` is the standard fixture; use `from fastapi.testclient import TestClient`.
 
 ## Conventions
-ALWAYS use  2. *Inline Execution*  Execute tasks in this session using executing-plans, batch execution with checkpoints instead of  1. Subagent-Driven  dispatch a fresh subagent per task, review between tasks, fast iteration
+
 
 Patterns an agent must follow that aren't obvious from reading code:
 
@@ -102,11 +107,14 @@ Routes then take `signals: Signals` and get a guaranteed dict — no None handli
 - When testing the SSE endpoint, requests must include `headers={"Datastar-Request": "true"}` and pass signals as `params={"datastar": json.dumps({...})}` for GET/DELETE — otherwise `read_signals` returns `None` and `Signals` resolves to `{}` (defaults kick in).
 - Always HTML-escape any signal value before interpolating it into a `patch_elements` payload (use `html.escape`); Datastar inserts the bytes as-is.
 
-### Examples currently in `index.html`
+### Live frontend example
 
-- **Counter** — `data-signals="{count: 0}"`, `data-on:click="$count++"`, `data-text="$count"`. Pure client.
-- **Greeting** — `<input data-bind="name">` two-way-bound to a `name` signal; the button calls `@get('/api/greet')`; the server returns an `id="greeting"` fragment that morphs into the placeholder `<div id="greeting">`.
-- **Server clock** — long-lived SSE stream demonstrating `async def` generators. The `_clock_stream` generator `yield`s a `SSE.patch_signals({"now": ...})` event every second; `clock()` wraps `_clock_stream()` in `DatastarResponse`. One HTTP request, infinite events. Note: TestClient (sync) deadlocks on infinite SSE responses, so the generator is unit-tested directly via `asyncio.run(_clock_stream().__anext__())` rather than through the route — verify the route end-to-end with `curl -N http://127.0.0.1:8000/api/clock`.
+The Authorization feature (`src/iris/features/authorization/`) is the
+canonical reference for feature modules. It exercises every defense-in-depth
+layer (nav filter / intent gate / per-route `Session*` guard), the tab
+system, capability-adaptive rendering, sub-tabs (admin_console), and the
+inline-error pattern (create_database). New features should mirror its
+shape. Full surface in `docs/frontend.md`.
 
 ### Datastar attribute cheatsheet (referenced from data-star.dev)
 
@@ -116,16 +124,75 @@ Routes then take `signals: Signals` and get a guaranteed dict — no None handli
 - `data-on:click="..."` (note the colon, not hyphen). Inside the expression, server actions are `@get('/url')`, `@post('/url')`, `@put`, `@delete`, `@patch`.
 - Server SSE events: `datastar-patch-elements` (HTML morph by id; `data: selector`, `data: mode`, `data: elements`) and `datastar-patch-signals` (`data: signals <JSON>`). The SDK's `SSE.patch_elements()` / `SSE.patch_signals()` formats these correctly.
 
+## Frontend architecture
+
+Iris's user-facing frontend is a two-panel shell (`src/iris/shell/`) that
+hosts feature modules under `src/iris/features/<name>/`. Full surface in
+`docs/frontend.md`.
+
+Conventions an agent must follow that aren't obvious from reading code:
+
+- **One feature = one directory** under `src/iris/features/<name>/`. Required
+  contents: `install.py` (with public `install(app)` re-exported from
+  `__init__.py`), `routes.py` (with `APIRouter(prefix="/feature/<name>")`),
+  `intents.py` (with `RENDER_BY_INTENT` mapping intent names to render
+  functions), `service.py` (read-side helpers, no FastAPI imports), and
+  `templates/<name>/` for Jinja templates. Optional: `static/`.
+- **Install order is fixed**: `build_app` calls auth → clickhouse → shell →
+  features → `init_templates()`. Features assume `app.state.contributions`
+  and `app.state.intent_dispatcher` exist; the shell creates them.
+- **Templates**: each subsystem / feature owns its templates dir, registered
+  via `iris.templates.register_template_dir(...)` from its `install`. The
+  process-wide loader is built once by `init_templates()` after all installs.
+  First-registered wins on path collisions; namespace by directory
+  (`shell/shell.html`, `auth/forbidden.html`, `authorization/my_access.html`).
+- **Tabs are server-side state.** Open tabs live in `session.data['tabs']`
+  (a list of `{id, feature, intent, params, title}` dicts). Mutations go
+  through `iris.shell.tabs.{append,remove,replace}_tab` then
+  `await session.persist_data()`. Refresh restores from `session.data` —
+  no localStorage.
+- **Per-tab signals** live under `$tabs.<tab_id>.*`. DOM ids inside a tab
+  fragment are derived from the tab id via `iris.shell.element_id.el(...)`.
+  Server-side only; never compute ids in JS.
+- **Datastar discipline.** Server is the source of truth for state. Signals
+  carry only ephemeral UI state (`$active`, `$nav_collapsed`, form input
+  bindings). All structural changes are SSE patches via
+  `DatastarResponse([SSE.patch_elements(...), SSE.patch_signals(...)])`.
+  `mode=` arguments use the `ElementPatchMode` enum from `datastar_py.consts`.
+  No JS in templates. Lazy-load fragments with `data-init="@get(...)"`
+  (NOT `data-on:load` — `load` doesn't fire on `<div>`).
+- **Defense in depth, three layers**:
+  1. Nav rendering (`render_nav` filters by `Capabilities`).
+  2. Intent gate (`POST /api/tabs` runs the intent's `required` predicate).
+  3. Per-route guard (every feature route uses `Annotated` `Session*` deps).
+  Only (3) enforces; (1) and (2) are UX. Always implement all three.
+- **Contribution registry discipline rule.** Do not add a new registry to
+  `iris.shell.contributions.Contributions` until at least one feature has a
+  concrete need to contribute and at least one feature has a concrete need
+  to consume. Every registry is permanent API surface.
+- **No cross-feature imports.** Features may import `iris.auth`,
+  `iris.clickhouse`, `iris.shell` — never another feature. Cross-feature
+  integration goes through the contribution registry. (Soft rule for now;
+  reconsider if a real exception appears.)
+- **CSRF on every state-changer.** Datastar `@post` / `@put` / `@patch` /
+  `@delete` routes use `Depends(verify_csrf_header)`. Form POSTs use
+  `verify_csrf_form`.
+- **Tab cap.** `MAX_TABS_PER_SESSION = 32`. Over the cap returns 409.
+
 ## Module map
 
 ```
 src/iris/
 ├── __init__.py        # main() + load_dotenv
-├── app.py             # build_app(), Datastar routes, /, /api/greet, /api/clock
+├── app.py             # build_app(): wires auth, ch, shell, features
 ├── middleware.py      # SecurityHeadersMiddleware (CSP)
-├── templates/         # Jinja2 — base.html + index.html
+├── templates.py       # register_template_dir / init_templates registry
 ├── auth/              # auth subsystem — full surface in docs/auth.md
-└── clickhouse/        # CH subsystem — full surface in docs/clickhouse.md
+├── clickhouse/        # CH subsystem — full surface in docs/clickhouse.md
+├── shell/             # frontend shell — full surface in docs/frontend.md
+├── features/          # feature modules — one dir per feature
+│   └── authorization/  # Authorization (my_access / manage / create_database / admin_console)
+└── static/            # global vendored assets (datastar.js)
 ```
 
 ## Env vars (quick reference)
@@ -150,4 +217,5 @@ Full descriptions, `.env` semantics, and operator runbooks live in `docs/operati
 
 - `docs/auth.md` — full auth surface (alias deps, Session hierarchy, providers, login flows, tests)
 - `docs/clickhouse.md` — full CH surface (tier roles, bootstrap, row policies, the bridge with auth)
+- `docs/frontend.md` — full frontend surface (shell, contributions, tabs, Datastar conventions)
 - `docs/operations.md` — deployment, env-var depth, security follow-ups, migration runbooks

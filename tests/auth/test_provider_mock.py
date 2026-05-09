@@ -19,8 +19,11 @@ def _provider() -> MockProvider:
 def test_begin_renders_login_form():
     provider = _provider()
     app = FastAPI()
-    from iris.app import TEMPLATES
-    app.state.templates = TEMPLATES
+    from pathlib import Path
+    import iris
+    from iris.templates import init_templates, register_template_dir
+    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
+    app.state.templates = init_templates()
 
     @app.get("/login")
     async def login(request: Request):
@@ -66,8 +69,11 @@ def test_complete_with_wrong_username_raises_auth_error():
 def test_begin_escapes_next_url_in_attribute():
     provider = _provider()
     app = FastAPI()
-    from iris.app import TEMPLATES
-    app.state.templates = TEMPLATES
+    from pathlib import Path
+    import iris
+    from iris.templates import init_templates, register_template_dir
+    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
+    app.state.templates = init_templates()
 
     @app.get("/login")
     async def login(request: Request):
@@ -82,8 +88,11 @@ def test_begin_escapes_next_url_in_attribute():
 def test_begin_escapes_error_in_body():
     provider = _provider()
     app = FastAPI()
-    from iris.app import TEMPLATES
-    app.state.templates = TEMPLATES
+    from pathlib import Path
+    import iris
+    from iris.templates import init_templates, register_template_dir
+    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
+    app.state.templates = init_templates()
 
     @app.get("/login")
     async def login(request: Request):
@@ -104,8 +113,11 @@ def test_begin_renders_next_and_error_when_safe():
     """Locks in that benign values still render unchanged (modulo escaping)."""
     provider = _provider()
     app = FastAPI()
-    from iris.app import TEMPLATES
-    app.state.templates = TEMPLATES
+    from pathlib import Path
+    import iris
+    from iris.templates import init_templates, register_template_dir
+    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
+    app.state.templates = init_templates()
 
     @app.get("/login")
     async def login(request: Request):
@@ -121,8 +133,11 @@ def test_begin_does_not_clobber_next_containing_placeholder():
     """Regression: a literal /PLACEHOLDER in next must not be replaced with the token."""
     provider = _provider()
     app = FastAPI()
-    from iris.app import TEMPLATES
-    app.state.templates = TEMPLATES
+    from pathlib import Path
+    import iris
+    from iris.templates import init_templates, register_template_dir
+    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
+    app.state.templates = init_templates()
 
     @app.get("/login")
     async def login(request: Request):

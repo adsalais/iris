@@ -1,0 +1,16 @@
+<section id="{{ panel_id }}-subtab">
+  <h3>Row policies (all databases)</h3>
+  <table>
+    <thead><tr><th>Database</th><th>Table</th><th>Name</th><th>Filter</th></tr></thead>
+    <tbody>
+      {% for p in policies %}
+      <tr>
+        <td>{{ p.database }}</td>
+        <td>{{ p.table }}</td>
+        <td>{{ p.name | default("?") }}</td>
+        <td><code>{{ p.select_filter | default("") }}</code></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

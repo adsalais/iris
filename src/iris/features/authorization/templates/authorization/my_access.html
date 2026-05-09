@@ -1,0 +1,81 @@
+<div class="iris-feature-page" id="{{ panel_id }}">
+  <h2>My access</h2>
+
+  <section class="iris-identity-card">
+    <strong>{{ user.username }}</strong>
+    {% if user.display_name and user.display_name != user.username %}
+      <span class="iris-display-name">({{ user.display_name }})</span>
+    {% endif %}
+    <div class="iris-account-groups">Groups: {{ user.groups | join(", ") }}</div>
+  </section>
+
+  {% if reader_dbs %}
+  <section>
+    <h3>Databases you can read</h3>
+    <ul class="iris-db-list">
+      {% for db in reader_dbs %}
+      <li>
+        <span class="iris-db-name">{{ db }}</span>
+        <button class="iris-action"
+                data-on:click="@post('/api/tabs?feature=workbench&amp;intent=open&amp;params=' + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))">
+          open in workbench
+        </button>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if writer_dbs %}
+  <section>
+    <h3>Databases you can write to</h3>
+    <ul class="iris-db-list">
+      {% for db in writer_dbs %}
+      <li>
+        <span class="iris-db-name">{{ db }}</span>
+        <button class="iris-action"
+                data-on:click="@post('/api/tabs?feature=workbench&amp;intent=open&amp;params=' + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))">
+          open in workbench
+        </button>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if admin_dbs %}
+  <section>
+    <h3>Databases you administer</h3>
+    <ul class="iris-db-list">
+      {% for db in admin_dbs %}
+      <li>
+        <span class="iris-db-name">{{ db }}</span>
+        <button class="iris-action"
+                data-on:click="@post('/api/tabs?feature=auth&amp;intent=manage&amp;params=' + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))">
+          manage
+        </button>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if can_create_database %}
+  <section class="iris-actions-row">
+    <button class="iris-action-primary"
+            data-on:click="@post('/api/tabs?feature=auth&amp;intent=create_database&amp;params=%7B%7D')">
+      + Create new database
+    </button>
+  </section>
+  {% endif %}
+
+  {% if is_admin %}
+  <section class="iris-actions-row">
+    <h3>Org administration</h3>
+    <button class="iris-action-primary"
+            data-on:click="@post('/api/tabs?feature=auth&amp;intent=admin_console&amp;params=%7B%7D')">
+      Open admin console
+    </button>
+  </section>
+  {% endif %}
+</div>

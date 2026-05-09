@@ -1,0 +1,7 @@
+<button id="tab-button-{{ tab.id }}"
+        data-on:click="$active = {{ tab.id | tojson }}"
+        data-class="{active: $active === {{ tab.id | tojson }}}">
+  {{ tab.title }}
+  <span class="iris-tab-close"
+        data-on:click.stop="@delete('/api/tabs/{{ tab.id }}')">&times;</span>
+</button>

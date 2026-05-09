@@ -1,0 +1,98 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  color: #1a1a1a;
+}
+body[data-nav-collapsed="true"] {
+  grid-template-columns: 56px 1fr;
+}
+
+/* Left panel */
+.iris-left-panel {
+  border-right: 1px solid #ddd;
+  padding: 0.5rem;
+  overflow-y: auto;
+}
+.iris-top-buttons {
+  display: flex;
+  gap: 0.25rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #eee;
+}
+.iris-top-btn {
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+}
+.iris-nav { padding-top: 0.5rem; }
+.iris-nav-group { margin-bottom: 1rem; }
+.iris-nav-group-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: #888;
+  margin: 0.5rem 0 0.25rem;
+}
+.iris-nav ul { list-style: none; padding: 0; margin: 0; }
+.iris-nav-entry { padding: 0.15rem 0; }
+.iris-nav-entry button,
+.iris-nav-entry-label {
+  background: none; border: none; cursor: pointer;
+  text-align: left; padding: 0.2rem 0.4rem; width: 100%;
+  border-radius: 4px;
+}
+.iris-nav-entry button:hover { background: #f4f4f4; }
+.iris-nav-badge {
+  display: inline-block;
+  background: #eee; border-radius: 999px;
+  padding: 0 0.4rem; font-size: 0.75rem;
+}
+.iris-nav-popover {
+  max-height: 12rem; overflow-y: auto;
+  border: 1px solid #eee; border-radius: 4px;
+  padding: 0.25rem;
+}
+
+/* Collapsed nav: hide labels, show only icons */
+body[data-nav-collapsed="true"] .iris-nav-group-label,
+body[data-nav-collapsed="true"] .iris-nav-entry button,
+body[data-nav-collapsed="true"] .iris-nav-entry-label,
+body[data-nav-collapsed="true"] .iris-nav-badge {
+  display: none;
+}
+
+/* Right panel */
+.iris-right-panel {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100vh;
+}
+.iris-tab-strip {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid #ddd;
+  overflow-x: auto;
+}
+.iris-tab-strip button {
+  border: 1px solid #ddd; border-radius: 4px 4px 0 0;
+  background: #fafafa; cursor: pointer;
+  padding: 0.4rem 0.75rem;
+}
+.iris-tab-strip button.active { background: #fff; font-weight: 600; }
+.iris-tab-close { margin-left: 0.5rem; opacity: 0.5; }
+.iris-tab-close:hover { opacity: 1; }
+.iris-tab-content { position: relative; overflow-y: auto; padding: 1rem; }
+
+/* Account popover */
+.iris-account-popover {
+  position: fixed; top: 1rem; left: 4rem;
+  background: #fff; border: 1px solid #ddd; border-radius: 4px;
+  padding: 0.75rem; box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  z-index: 100;
+}
+.iris-account-groups { color: #888; font-size: 0.85rem; margin: 0.25rem 0 0.5rem; }

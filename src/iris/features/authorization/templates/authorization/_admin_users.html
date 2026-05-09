@@ -1,0 +1,19 @@
+<section id="{{ panel_id }}-subtab">
+  <h3>Users</h3>
+  <table>
+    <thead><tr><th>Username</th><th>Groups</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td>{{ u.name }}</td>
+        <td>{{ u.groups | join(", ") }}</td>
+        <td>
+          <button data-on:click="@post('/feature/auth/{{ tab_id }}/admin/users/' + encodeURIComponent({{ u.name | tojson }}) + '/reprovision')">
+            reprovision
+          </button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

@@ -213,8 +213,9 @@ def install(app: FastAPI) -> None:
     app.state.shutdown_hooks.append(store.close)
     provider = build_provider(settings)
 
-    from iris.templates import TEMPLATES
-    app.state.templates = TEMPLATES
+    from pathlib import Path
+    from iris.templates import register_template_dir
+    register_template_dir(Path(__file__).parent / "templates")
 
     set_session_store(app, store)
     set_settings(
