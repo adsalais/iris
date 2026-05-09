@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import cast
 
+import httpx
 import pytest
 
 from iris.clickhouse.bootstrap import GLOBAL_ADMIN_ROLE
 from iris.clickhouse.grants import TIER_DBADMIN, tier_role_name
 from iris.clickhouse.identifiers import InvalidIdentifierError, policy_name
 from iris.clickhouse.policies import add_row_policy, revoke_row_policy
+from iris.clickhouse.queries import query_as_user
+from iris.clickhouse.users import USER_ROLE_SUFFIX, init_user_rights
 
 
 def _setup_table(ch_client, db, table, role):
@@ -447,3 +451,68 @@ def test_add_row_policy_unknown_column_raises(
             ch_client,
             database=db, table=table, column="missing", role=role, value="v",
         )
+
+
+# ---- end-to-end policy enforcement (Array(String) + query_as_user) -------
+
+
+def test_add_row_policy_array_string_filter_works_end_to_end(
+    ch_client, ch_settings, prefix
+):
+    """Wire up the full row-policy enforcement path:
+
+    1. Build a table ``(id UInt64, tags Array(String))``.
+    2. Insert two rows; only row id=1 has 'EU' in its tags.
+    3. Provision a CH user via ``init_user_rights`` (creates the user,
+       its per-user role, and the IMPERSONATE grant the connecting
+       service identity needs to ``EXECUTE AS`` it).
+    4. Grant the policy's role to the user's per-user role, and grant
+       SELECT on the table to that role.
+    5. Run ``add_row_policy(... value='EU')`` — emits ``has(tags, 'EU')``.
+    6. Query ``SELECT id ORDER BY id`` as the user via ``query_as_user``.
+    7. Assert exactly row id=1 comes back.
+    """
+    db = f"{prefix}_e2e"
+    table = "t"
+    role = f"{prefix}_role_e2e"
+    test_user = f"{prefix}_user_e2e"
+
+    # 1+2. Table + two rows, one with EU and one without.
+    _setup_typed_table(ch_client, db, table, role, "tags", "Array(String)")
+    ch_client.command(
+        f"INSERT INTO `{db}`.`{table}` VALUES (1, ['EU','UK']), (2, ['US','CA'])"
+    )
+
+    # 3. CH user + per-user role + IMPERSONATE grant for iris_svc.
+    init_user_rights(
+        ch_client, username=test_user, groups=[], settings=ch_settings,
+    )
+
+    # 4. Make the user inherit `role` and have SELECT on the table.
+    user_role = f"{test_user}{USER_ROLE_SUFFIX}"
+    ch_client.command(f"GRANT `{role}` TO `{user_role}`")
+    ch_client.command(f"GRANT SELECT ON `{db}`.`{table}` TO `{role}`")
+
+    # 5. Add the policy. has(tags, 'EU') should land in select_filter.
+    add_row_policy(
+        ch_client,
+        database=db, table=table, column="tags", role=role, value="EU",
+    )
+
+    # 6+7. Query as the test user; only row 1 is allowed by the policy.
+    base_url = f"http://{ch_settings.host}:{ch_settings.port}"
+
+    async def _run() -> list[dict[str, object]]:
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            auth=(ch_settings.user, ch_settings.password),
+            timeout=httpx.Timeout(30.0),
+        ) as http:
+            return await query_as_user(
+                http,
+                username=test_user,
+                sql=f"SELECT id FROM `{db}`.`{table}` ORDER BY id",
+            )
+
+    rows = asyncio.run(_run())
+    assert rows == [{"id": 1}], f"policy did not filter as expected: {rows}"
