@@ -52,10 +52,9 @@ def _render_entry(entry: NavEntry, caps: Capabilities) -> str:
     parts: list[str] = ['<li class="iris-nav-entry">']
     if entry.on_click is not None:
         action = _post_tab_action(entry.on_click)
-        parts.append(
-            f'<button data-on:click="{html.escape(action, quote=True)}">'
-            f'{html.escape(entry.label)}</button>'
-        )
+        action_attr = html.escape(action, quote=True)
+        label = html.escape(entry.label)
+        parts.append(f'<button data-on:click="{action_attr}">{label}</button>')
     else:
         parts.append(
             f'<span class="iris-nav-entry-label">{html.escape(entry.label)}</span>'

@@ -578,14 +578,17 @@ def test_callback_error_clears_state_cookie(provider):
     from iris.auth.providers.oauth import OAUTH_STATE_COOKIE
     from iris.auth.routes import build_auth_router
     from iris.auth.store import SessionStore
-    from iris.templates import TEMPLATES
+    from pathlib import Path
+    import iris
+    from iris.templates import init_templates, register_template_dir
 
+    register_template_dir(Path(iris.__file__).parent / "templates")
     app = FastAPI()
     app.state.shutdown_hooks = []
     app.state.auth_cookie_secure = False
     app.state.auth_cookie_name = "iris_session"
     app.state.post_login_hooks = []
-    app.state.templates = TEMPLATES
+    app.state.templates = init_templates()
     store = SessionStore(
         path=":memory:", ttl_seconds=3600, absolute_ttl_seconds=86400, max_per_user=10
     )

@@ -37,14 +37,17 @@ def test_init_templates_with_no_dirs_raises():
         t.init_templates()
 
 
-def test_register_template_dir_after_init_raises(tmp_path: Path):
+def test_register_template_dir_is_idempotent(tmp_path: Path):
     import iris.templates as t
     d = tmp_path / "d"
     d.mkdir()
     t.register_template_dir(d)
+    t.register_template_dir(d)
+    t.register_template_dir(d)
+    # Same path appears once; re-registration after init is a no-op.
+    assert t._dirs.count(d.resolve()) == 1
     t.init_templates()
-    with pytest.raises(RuntimeError, match="already initialized"):
-        t.register_template_dir(d)
+    t.register_template_dir(d)  # still a no-op, doesn't raise
 
 
 def test_first_match_wins_when_paths_collide(tmp_path: Path):
