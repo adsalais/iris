@@ -5,10 +5,10 @@ from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
-class Rights:
+class Capabilities:
     """Frozen view of a session's effective ClickHouse-derived authorization.
 
-    Computed once at login by ``iris.clickhouse.rights.derive_rights`` and
+    Computed once at login by ``iris.clickhouse.capabilities.derive_capabilities`` and
     persisted on the session row. Routes never re-derive mid-session; operator
     changes take effect on the user's next login.
     """
@@ -30,18 +30,18 @@ class Rights:
         return self.is_admin or database in self.db_admin
 
 
-def rights_to_dict(r: Rights) -> dict[str, Any]:
+def capabilities_to_dict(c: Capabilities) -> dict[str, Any]:
     return {
-        "is_admin": r.is_admin,
-        "can_create_database": r.can_create_database,
-        "db_admin": sorted(r.db_admin),
-        "db_writer": sorted(r.db_writer),
-        "db_reader": sorted(r.db_reader),
+        "is_admin": c.is_admin,
+        "can_create_database": c.can_create_database,
+        "db_admin": sorted(c.db_admin),
+        "db_writer": sorted(c.db_writer),
+        "db_reader": sorted(c.db_reader),
     }
 
 
-def rights_from_dict(d: dict[str, Any]) -> Rights:
-    return Rights(
+def capabilities_from_dict(d: dict[str, Any]) -> Capabilities:
+    return Capabilities(
         is_admin=bool(d.get("is_admin", False)),
         can_create_database=bool(d.get("can_create_database", False)),
         db_admin=frozenset(d.get("db_admin", [])),
@@ -50,7 +50,7 @@ def rights_from_dict(d: dict[str, Any]) -> Rights:
     )
 
 
-EMPTY_RIGHTS = Rights(
+EMPTY_CAPABILITIES = Capabilities(
     is_admin=False,
     can_create_database=False,
     db_admin=frozenset(),

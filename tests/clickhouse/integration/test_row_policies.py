@@ -5,7 +5,7 @@ import asyncio
 
 from fastapi.testclient import TestClient
 
-from iris.auth.identity import (
+from iris.auth.views import (
     AdminSession,
     DatabaseAdminSession,
     DatabaseCreatorSession,
@@ -14,7 +14,7 @@ from iris.auth.identity import (
 from tests.clickhouse.integration._helpers import (
     TABLE_DDL,
     login_as,
-    refresh_rights,
+    refresh_capabilities,
     session_for,
 )
 
@@ -53,7 +53,7 @@ def test_row_policy_filters_reader_but_not_admin(
             assert isinstance(creator, DatabaseCreatorSession)
             await creator.create_database(db)
             ch_client.command(TABLE_DDL.format(db=db))
-            await refresh_rights(iris_app, bob_sid)
+            await refresh_capabilities(iris_app, bob_sid)
             bob_admin = await session_for(
                 iris_app, bob_sid, kind="database_admin", database=db
             )

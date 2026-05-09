@@ -8,7 +8,7 @@ authorization to all routes.
 ```python
 from iris.auth import (
     AuthSession,                       # base session type
-    Rights, EMPTY_RIGHTS,              # the rights view + a useful default
+    Capabilities, EMPTY_CAPABILITIES,  # the capabilities view + a useful default
     Session, SessionOptional,          # auth-only aliases
     SessionAdmin,                      # global admin
     SessionDatabaseCreator,            # admin OR can_create_database
@@ -44,7 +44,7 @@ The choice of alias determines the access-control policy.
 |---|---|---|---|
 | `Session` | any logged-in user | 401 with no session | `AuthSession` |
 | `SessionOptional` | any caller | never | `AuthSession \| None` |
-| `SessionAdmin` | `session.rights.is_admin` | 401 / 403 | `AdminSession` |
+| `SessionAdmin` | `session.capabilities.is_admin` | 401 / 403 | `AdminSession` |
 | `SessionDatabaseCreator` | admin or `can_create_database` | 401 / 403 | `DatabaseCreatorSession` |
 | `SessionDatabaseAdmin` | admin or `db_admin[database]` | 401 / 403 | `DatabaseAdminSession` |
 | `SessionWrite` | admin or `db_admin[database]` or `db_writer[database]` | 401 / 403 | `DatabaseSession` |
@@ -53,7 +53,7 @@ The choice of alias determines the access-control policy.
 The three database-scoped aliases (`SessionRead`/`SessionWrite`/`SessionDatabaseAdmin`)
 read `database: str` from the calling route's path or query parameters via FastAPI's
 normal binding. A typo'd or missing role configuration is no longer a 500 case —
-rights come from CH at login, and any check compares against the cached `Rights` value.
+capabilities come from CH at login, and any check compares against the cached `Capabilities` value.
 
 A missing role name (the old `require_role("reder")` footgun) cannot happen here;
 there are no role names at all — only tier membership sets.
@@ -72,13 +72,13 @@ permits, enforced at type-check time.
 - `user` — a `User` (frozen+slots: `username`, `display_name`, `groups`, `subject`)
 - `created_at` / `expires_at` — datetime, UTC
 - `data` — mutable `dict[str, Any]` (per-session server-side bag; see next section)
-- `rights` — a frozen `Rights` view (derived from CH at login; see "Authorization" below)
+- `capabilities` — a frozen `Capabilities` view (derived from CH at login; see "Authorization" below)
 
 There is no `roles` field. Templates that want IdP groups read `session.user.groups`.
 
-The CH method implementations (`query_as_user`, `grant_reader_impl`, etc.) live in
-`iris.clickhouse.handle` as standalone async `*_impl` functions. `AuthSession`
-imports them at module top level in `iris.auth.identity` and delegates to them.
+The CH method implementations (`query_as_user`, `query_as_service`, etc.) live in
+`iris.clickhouse.queries`. The session subclasses in `iris.auth.views` import them at
+module top level and delegate via `asyncio.to_thread` for the sync helpers.
 
 ## Per-session server-side data
 
@@ -114,18 +114,18 @@ Key semantics:
 `data` is JSON-encoded into the SQLite row alongside the session and survives process
 restarts.
 
-## Authorization (CH-derived rights)
+## Authorization (CH-derived capabilities)
 
 ClickHouse is the **only source of truth** for authorization. There is no SQLite role
-mapping, no `authz_*` tables, no `RoleMappingStore`. Iris derives a frozen `Rights`
+mapping, no `authz_*` tables, no `RoleMappingStore`. Iris derives a frozen `Capabilities`
 view from CH grants once at login and caches it on the session row; alias deps
-inspect `session.rights`.
+inspect `session.capabilities`.
 
-**The `Rights` dataclass:**
+**The `Capabilities` dataclass:**
 
 ```python
 @dataclass(frozen=True, slots=True)
-class Rights:
+class Capabilities:
     is_admin: bool                          # global admin
     can_create_database: bool               # CREATE DATABASE on *.*
     db_admin: frozenset[str]                # databases with full delegation power
@@ -133,12 +133,12 @@ class Rights:
     db_reader: frozenset[str]               # databases with SELECT
 ```
 
-`Rights` exposes three helpers — `has_read(database)`, `has_write(database)`,
+`Capabilities` exposes three helpers — `has_read(database)`, `has_write(database)`,
 `has_admin(database)` — using the implied tier ordering
 (`is_admin` ⊇ `db_admin[X]` ⊇ `db_writer[X]` ⊇ `db_reader[X]`).
 
-**How `derive_rights` works.** At login,
-`iris.clickhouse.rights.derive_rights(client, username, groups)`:
+**How `derive_capabilities` works.** At login,
+`iris.clickhouse.capabilities.derive_capabilities(client, username, groups)`:
 
 1. Walks `system.role_grants` transitively to collect the user's effective role set
    (starting from `<username>_USER` plus each `<group>_GRP`).
@@ -200,7 +200,7 @@ IdP identity maps to CH roles via two naming conventions:
   - LDAP: the `username` substituted into `LDAP_BIND_DN_TEMPLATE`.
   - Mock: `MOCK_USERNAME`.
 
-Both role types are created lazily by `init_user_rights` on each login. They serve as
+Both role types are created lazily by `provision_user` on each login. They serve as
 recipients of tier-role grants: `session.grant_writer("bob")` runs
 `GRANT <X>_DBWRITER TO bob_USER`.
 
@@ -257,16 +257,16 @@ emits the claim regardless of requested scope.
 
 ```
 src/iris/auth/
-├── __init__.py        # public surface: AuthSession, Rights, EMPTY_RIGHTS,
+├── __init__.py        # public surface: AuthSession, Capabilities, EMPTY_CAPABILITIES,
 │                      #   Session, SessionOptional, SessionAdmin,
 │                      #   SessionDatabaseCreator, SessionDatabaseAdmin,
 │                      #   SessionWrite, SessionRead, User, install
-├── session.py         # Rights frozen dataclass + serialization helpers + EMPTY_RIGHTS
-├── identity.py        # User (frozen+slots), UserSession (mutable; internal),
-│                      #   AuthSession — top-level imports of iris.clickhouse.handle.*_impl
+├── rights.py          # Capabilities frozen dataclass + serialization helpers + EMPTY_CAPABILITIES
+├── identity.py        # User (frozen+slots), StoredSession (mutable; internal store-row type)
+├── views.py           # AuthSession + database-bound subclasses; CH-method delegation
 ├── config.py          # AuthSettings.from_env() — AUTH_METHOD, session TTLs, etc.
-├── sessions.py        # SessionStore (SQLite): create / get_and_refresh /
-│                      #   update_data / set_rights / delete / close
+├── store.py           # SessionStore (SQLite): create / get_and_refresh /
+│                      #   update_data / set_capabilities / delete / close
 ├── exceptions.py      # AuthRequired, AuthForbidden, AuthError +
 │                      #   install_exception_handlers
 ├── deps.py            # the seven Annotated alias deps + set_session_store /

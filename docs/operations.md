@@ -63,7 +63,7 @@ CLICKHOUSE_ADMIN_USER=               # IdP username of the bootstrap admin (e.g.
 CLICKHOUSE_ADMIN_GROUP=              # IdP group name of bootstrap admins (e.g. iris_admin)
 ```
 
-At boot, `bootstrap_admin` (in `iris.clickhouse.bootstrap`) always creates the `iris_global_admin` sentinel role. If `CLICKHOUSE_ADMIN_USER=alice` is set and no `_USER`-suffixed role currently holds the admin marker (ROLE ADMIN+WGO at global scope), iris creates `alice_USER` with `GRANT ALL ON *.* WITH GRANT OPTION` plus `iris_global_admin` granted to it. If `CLICKHOUSE_ADMIN_GROUP=iris_admin` is set and no `_GRP`-suffixed role currently holds admin, iris creates `iris_admin_GRP` the same way. Both channels are independently idempotent. See `docs/clickhouse.md` for the full bootstrap behavior and the `derive_rights` detection logic.
+At boot, `bootstrap_admin` (in `iris.clickhouse.bootstrap`) always creates the `iris_global_admin` sentinel role. If `CLICKHOUSE_ADMIN_USER=alice` is set and no `_USER`-suffixed role currently holds the admin marker (ROLE ADMIN+WGO at global scope), iris creates `alice_USER` with `GRANT ALL ON *.* WITH GRANT OPTION` plus `iris_global_admin` granted to it. If `CLICKHOUSE_ADMIN_GROUP=iris_admin` is set and no `_GRP`-suffixed role currently holds admin, iris creates `iris_admin_GRP` the same way. Both channels are independently idempotent. See `docs/clickhouse.md` for the full bootstrap behavior and the `derive_capabilities` detection logic.
 
 Set `CLICKHOUSE_ADMIN_USER` to whatever value iris derives as `username` from the configured auth provider — for OAuth that is the `preferred_username` claim (falling back to `sub`), for LDAP the value substituted into `LDAP_BIND_DN_TEMPLATE`, for mock `MOCK_USERNAME`. See `docs/auth.md` § Identity matching.
 
@@ -116,8 +116,8 @@ Accepted residual risks for the ≤20-user / `--workers 1` deploy profile. Revis
 - **Rate limiting behind a reverse proxy.** `POST /login` keys on `request.client.host`. Behind a proxy this is the proxy's IP — the bucket becomes effectively global. Mitigation: run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy>` so `request.client.host` reflects the `X-Forwarded-For` value.
 - **JWKS rotation cache.** `OAuthProvider` caches the IdP's JWKS once on first discovery. If the IdP rotates signing keys, all logins fail until iris is restarted. Tighten by re-fetching on `kid`-not-in-set if rotation matters.
 - **OIDC discovery latency.** Discovery is lazy: the first login attempt after restart pays the discovery latency. Acceptable for v1, but means a slow IdP shifts startup latency to a request boundary instead of failing loud at boot.
-- **`derive_rights` query cost.** At login, `derive_rights` runs a small handful of CH queries (role-grants walk + grants enumeration). Sub-millisecond at ≤20-user scale; for higher request volumes, consider caching the effective role set per user with a CH version-column invalidation.
-- **Out-of-band admin promotion.** A raw `GRANT ALL ON *.*` outside iris bootstrap grants the ROLE ADMIN+WGO marker, so `derive_rights` returns `is_admin=True`. However, wildcard row policies are keyed on the `iris_global_admin` sentinel role, not on ROLE ADMIN+WGO directly. An out-of-band admin can query tables but won't see rows on tables with restrictive policies unless `iris_global_admin` is also granted to their `_USER` role. Mitigation: after any manual `GRANT ALL`, also run `GRANT iris_global_admin TO <username>_USER`.
+- **`derive_capabilities` query cost.** At login, `derive_capabilities` runs a small handful of CH queries (role-grants walk + grants enumeration). Sub-millisecond at ≤20-user scale; for higher request volumes, consider caching the effective role set per user with a CH version-column invalidation.
+- **Out-of-band admin promotion.** A raw `GRANT ALL ON *.*` outside iris bootstrap grants the ROLE ADMIN+WGO marker, so `derive_capabilities` returns `is_admin=True`. However, wildcard row policies are keyed on the `iris_global_admin` sentinel role, not on ROLE ADMIN+WGO directly. An out-of-band admin can query tables but won't see rows on tables with restrictive policies unless `iris_global_admin` is also granted to their `_USER` role. Mitigation: after any manual `GRANT ALL`, also run `GRANT iris_global_admin TO <username>_USER`.
 
 ---
 
@@ -135,3 +135,13 @@ Recent migrations each shipped with operator runbooks in their respective specs:
 - `docs/superpowers/specs/2026-05-08-clickhouse-only-authz-design.md` — wiping `AUTH_DB_PATH` and replacing the old `IRIS_BOOTSTRAP_USER` env var with `CLICKHOUSE_ADMIN_USER`.
 - `docs/superpowers/specs/2026-05-08-session-as-handle-design.md` — no operator-facing change; pure internal refactor.
 - `docs/superpowers/specs/2026-05-08-bootstrap-rework-design.md` — replacing `IRIS_BOOTSTRAP_USER` and the old `CLICKHOUSE_SERVICE_ADMIN_*` env vars with `CLICKHOUSE_ADMIN_USER` and `CLICKHOUSE_ADMIN_GROUP`.
+
+### 0.1.x → next: auth module reshape
+
+The `Rights` type was renamed to `Capabilities` and the SQLite session-store column `rights_json` was renamed to `capabilities_json`. There is no in-code migration; operators upgrading must:
+
+1. Stop iris.
+2. Delete the SQLite file at `AUTH_DB_PATH` (default `./iris-auth.db`) plus its `.db-wal` and `.db-shm` sidecars.
+3. Start iris.
+
+In-flight sessions are invalidated; users re-login. The 12 h sliding TTL means most sessions would have expired anyway. Spec: `docs/superpowers/specs/2026-05-09-auth-module-reshape-design.md`.

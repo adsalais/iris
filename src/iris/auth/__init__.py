@@ -9,25 +9,25 @@ from iris.auth.deps import (
     SessionRead,
     SessionWrite,
 )
-from iris.auth.identity import (
+from iris.auth.identity import User
+from iris.auth.rights import EMPTY_CAPABILITIES, Capabilities
+from iris.auth.routes import install
+from iris.auth.views import (
     AdminSession,
     AuthSession,
     DatabaseAdminSession,
     DatabaseCreatorSession,
     DatabaseSession,
-    User,
 )
-from iris.auth.routes import install
-from iris.auth.session import EMPTY_RIGHTS, Rights
 
 __all__ = [
     "AdminSession",
     "AuthSession",
+    "Capabilities",
     "DatabaseAdminSession",
     "DatabaseCreatorSession",
     "DatabaseSession",
-    "EMPTY_RIGHTS",
-    "Rights",
+    "EMPTY_CAPABILITIES",
     "Session",
     "SessionAdmin",
     "SessionDatabaseAdmin",

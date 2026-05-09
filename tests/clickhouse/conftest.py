@@ -75,7 +75,7 @@ def ch_container():
             admin.command(
                 f"GRANT CREATE ROLE, ROLE ADMIN ON *.* TO {_SVC_USER}"
             )
-            # Allow the svc user to create SQL-managed users (needed by init_user_rights).
+            # Allow the svc user to create SQL-managed users (needed by provision_user).
             admin.command(
                 f"GRANT CREATE USER ON *.* TO {_SVC_USER}"
             )
@@ -100,7 +100,7 @@ def ch_container():
             # in ClickHouse 26.x (the container is pinned to "latest").  The
             # wildcard form gives iris_svc the right to later run
             # "GRANT IMPERSONATE ON <target_user> TO iris_svc" inside
-            # init_user_rights.  Note: when a wildcard IMPERSONATE grant already
+            # provision_user.  Note: when a wildcard IMPERSONATE grant already
             # exists, per-user grants are silently absorbed (no extra row in
             # system.grants); tests verify coverage via the wildcard row.
             admin.command(

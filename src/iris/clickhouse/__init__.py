@@ -1,7 +1,7 @@
 """ClickHouse provisioning, audit helpers, and per-tier ops.
 
 Public surface — see ``CLAUDE.md`` for usage. Session subclasses in
-``iris.auth.identity`` call into these helpers via ``asyncio.to_thread``.
+``iris.auth.views`` call into these helpers via ``asyncio.to_thread``.
 
 The ``install`` function lives in ``iris.clickhouse.install`` but is *not*
 re-exported from this package: callers (only ``iris.app:build_app``) do
@@ -20,6 +20,7 @@ from iris.clickhouse.audit import (
     user_row_policies,
 )
 from iris.clickhouse.bootstrap import GLOBAL_ADMIN_ROLE, bootstrap_admin
+from iris.clickhouse.capabilities import derive_capabilities
 from iris.clickhouse.client import build_client
 from iris.clickhouse.config import ClickHouseSettings
 from iris.clickhouse.grants import (
@@ -37,8 +38,7 @@ from iris.clickhouse.grants import (
     tier_role_name,
 )
 from iris.clickhouse.policies import add_row_policy, revoke_row_policy
-from iris.clickhouse.rights import derive_rights
-from iris.clickhouse.users import init_user_rights
+from iris.clickhouse.users import provision_user
 
 __all__ = [
     "ClickHouseSettings",
@@ -50,13 +50,13 @@ __all__ = [
     "bootstrap_admin",
     "build_client",
     "create_tier_roles",
-    "derive_rights",
+    "derive_capabilities",
     "drop_tier_roles",
     "grant_insert_update_to_table",
     "grant_select_to_database",
     "grant_tier_to_group",
     "grant_tier_to_user",
-    "init_user_rights",
+    "provision_user",
     "revoke_row_policy",
     "revoke_tier_from_group",
     "revoke_tier_from_user",

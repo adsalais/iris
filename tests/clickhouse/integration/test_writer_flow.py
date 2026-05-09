@@ -6,7 +6,7 @@ import asyncio
 from fastapi.testclient import TestClient
 
 from iris.auth.exceptions import AuthForbidden
-from iris.auth.identity import (
+from iris.auth.views import (
     DatabaseAdminSession,
     DatabaseCreatorSession,
     DatabaseSession,
@@ -14,7 +14,7 @@ from iris.auth.identity import (
 from tests.clickhouse.integration._helpers import (
     TABLE_DDL,
     login_as,
-    refresh_rights,
+    refresh_capabilities,
     session_for,
 )
 
@@ -52,7 +52,7 @@ def test_writer_session_can_select_inserted_rows(
             # bob's stored rights view (mirrors what the post-login hook
             # does) so a fresh DatabaseAdminSession can be constructed
             # without a second Keycloak round-trip.
-            await refresh_rights(iris_app, bob_sid)
+            await refresh_capabilities(iris_app, bob_sid)
             bob_admin = await session_for(
                 iris_app, bob_sid, kind="database_admin", database=db
             )
@@ -71,7 +71,7 @@ def test_writer_session_can_select_inserted_rows(
                 iris_app, carol_sid, kind="database_writer", database=db
             )
             assert isinstance(carol_writer, DatabaseSession)
-            assert db in carol_writer.rights.db_writer
+            assert db in carol_writer.capabilities.db_writer
 
             # SELECT works as carol; INSERT under EXECUTE AS is not
             # supported by ClickHouse (returns SYNTAX_ERROR right after
@@ -129,7 +129,7 @@ def test_reader_cannot_take_writer_session(iris_app, keycloak_http, prefix):
             assert isinstance(creator, DatabaseCreatorSession)
             await creator.create_database(db)
             # Refresh bob's rights so he picks up the freshly-granted DBADMIN.
-            await refresh_rights(iris_app, bob_sid)
+            await refresh_capabilities(iris_app, bob_sid)
             bob_admin = await session_for(
                 iris_app, bob_sid, kind="database_admin", database=db
             )

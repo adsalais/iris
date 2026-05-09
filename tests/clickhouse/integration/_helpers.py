@@ -5,9 +5,9 @@ Two helpers:
 - ``login_as``: drives Keycloak OAuth login through the iris HTTP layer
   and returns the iris_session sid.
 - ``session_for``: reconstitutes a typed Session subclass from the
-  stored ``UserSession``, mirroring what ``iris.auth.deps`` does inside
+  stored ``StoredSession``, mirroring what ``iris.auth.deps`` does inside
   an HTTP request. Raises ``AuthForbidden`` from the same code path the
-  real deps would raise from when a user lacks the required rights.
+  real deps would raise from when a user lacks the required capabilities.
 """
 from __future__ import annotations
 
@@ -18,14 +18,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from iris.auth.exceptions import AuthForbidden
-from iris.auth.identity import (
+from iris.auth.views import (
     AdminSession,
     AuthSession,
     DatabaseAdminSession,
     DatabaseCreatorSession,
     DatabaseSession,
 )
-from iris.clickhouse.rights import derive_rights
+from iris.clickhouse.capabilities import derive_capabilities
 from tests.auth.integration._keycloak_helpers import simulate_login
 
 SessionKind = Literal[
@@ -81,8 +81,8 @@ def login_as(
     return sid
 
 
-async def refresh_rights(app: FastAPI, sid: str) -> None:
-    """Re-derive the session's CH-side rights and persist them to the store.
+async def refresh_capabilities(app: FastAPI, sid: str) -> None:
+    """Re-derive the session's CH-side capabilities and persist them to the store.
 
     Mirrors what the post-login hook does. Use after CH-side state changes
     (e.g. a new tier grant) to refresh a logged-in user's view without
@@ -92,12 +92,12 @@ async def refresh_rights(app: FastAPI, sid: str) -> None:
     stored = await store.get_and_refresh(sid)
     assert stored is not None, f"session {sid!r} not in store"
     client = app.state.clickhouse_client
-    rights = derive_rights(
+    capabilities = derive_capabilities(
         client,
         username=stored.user.username,
         groups=list(stored.user.groups),
     )
-    await store.set_rights(sid, rights)
+    await store.set_capabilities(sid, capabilities)
 
 
 async def session_for(
@@ -107,11 +107,11 @@ async def session_for(
     kind: SessionKind,
     database: str | None = None,
 ) -> AuthSession:
-    """Reconstitute a typed Session subclass from the stored UserSession.
+    """Reconstitute a typed Session subclass from the stored StoredSession.
 
     Mirrors what iris.auth.deps does inside an HTTP request, but callable
     from test bodies. Raises AuthForbidden from the same code path the
-    real deps would raise from when the user lacks the required rights.
+    real deps would raise from when the user lacks the required capabilities.
     """
     store = app.state.auth_session_store
     stored = await store.get_and_refresh(sid)
@@ -120,74 +120,74 @@ async def session_for(
     client = getattr(app.state, "clickhouse_client", None)
     http_client = getattr(app.state, "clickhouse_http_client", None)
     settings = getattr(app.state, "clickhouse_settings", None)
-    rights = stored.rights
+    capabilities = stored.capabilities
 
     if kind == "auth":
         return AuthSession(
             id=stored.id, user=stored.user,
             created_at=stored.created_at, expires_at=stored.expires_at,
-            data=stored.data, rights=rights,
+            data=stored.data, capabilities=capabilities,
             client=client, http_client=http_client,
             settings=settings, store=store,
         )
     if kind == "admin":
-        if not rights.is_admin:
+        if not capabilities.is_admin:
             raise AuthForbidden(needed=("admin",), have=())
         return AdminSession(
             id=stored.id, user=stored.user,
             created_at=stored.created_at, expires_at=stored.expires_at,
-            data=stored.data, rights=rights,
+            data=stored.data, capabilities=capabilities,
             client=client, http_client=http_client,
             settings=settings, store=store,
         )
     if kind == "database_creator":
-        if not (rights.is_admin or rights.can_create_database):
+        if not (capabilities.is_admin or capabilities.can_create_database):
             raise AuthForbidden(
                 needed=("admin", "database_creator"), have=()
             )
         return DatabaseCreatorSession(
             id=stored.id, user=stored.user,
             created_at=stored.created_at, expires_at=stored.expires_at,
-            data=stored.data, rights=rights,
+            data=stored.data, capabilities=capabilities,
             client=client, http_client=http_client,
             settings=settings, store=store,
         )
     assert database is not None, f"kind={kind} requires database="
     if kind == "database_admin":
-        if not rights.has_admin(database):
+        if not capabilities.has_admin(database):
             raise AuthForbidden(
                 needed=(f"database_admin[{database}]",), have=()
             )
         return DatabaseAdminSession(
             id=stored.id, user=stored.user,
             created_at=stored.created_at, expires_at=stored.expires_at,
-            data=stored.data, rights=rights,
+            data=stored.data, capabilities=capabilities,
             client=client, http_client=http_client,
             settings=settings, store=store,
             database=database,
         )
     if kind == "database_writer":
-        if not rights.has_write(database):
+        if not capabilities.has_write(database):
             raise AuthForbidden(
                 needed=(f"database_writer[{database}]",), have=()
             )
         return DatabaseSession(
             id=stored.id, user=stored.user,
             created_at=stored.created_at, expires_at=stored.expires_at,
-            data=stored.data, rights=rights,
+            data=stored.data, capabilities=capabilities,
             client=client, http_client=http_client,
             settings=settings, store=store,
             database=database,
         )
     if kind == "database_reader":
-        if not rights.has_read(database):
+        if not capabilities.has_read(database):
             raise AuthForbidden(
                 needed=(f"database_reader[{database}]",), have=()
             )
         return DatabaseSession(
             id=stored.id, user=stored.user,
             created_at=stored.created_at, expires_at=stored.expires_at,
-            data=stored.data, rights=rights,
+            data=stored.data, capabilities=capabilities,
             client=client, http_client=http_client,
             settings=settings, store=store,
             database=database,

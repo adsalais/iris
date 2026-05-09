@@ -9,8 +9,9 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
-from iris.auth.identity import DatabaseCreatorSession, User
-from iris.auth.session import EMPTY_RIGHTS
+from iris.auth.identity import User
+from iris.auth.rights import EMPTY_CAPABILITIES
+from iris.auth.views import DatabaseCreatorSession
 
 
 def _stub_http() -> httpx.AsyncClient:
@@ -32,7 +33,7 @@ def _session_for(user: str, *, ch_client, ch_settings) -> DatabaseCreatorSession
         created_at=now,
         expires_at=now + timedelta(hours=1),
         data={},
-        rights=EMPTY_RIGHTS,
+        capabilities=EMPTY_CAPABILITIES,
         client=ch_client,
         http_client=_stub_http(),
         settings=ch_settings,

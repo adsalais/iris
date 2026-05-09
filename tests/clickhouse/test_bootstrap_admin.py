@@ -6,7 +6,7 @@ The session-scoped container shares state across tests, so tests that
 depend on "no admin exists" clear matching roles at setup.
 """
 from iris.clickhouse.bootstrap import GLOBAL_ADMIN_ROLE, bootstrap_admin
-from iris.clickhouse.rights import derive_rights
+from iris.clickhouse.capabilities import derive_capabilities
 
 
 def _drop_admin_roles_with_suffix(ch_client, suffix: str) -> None:
@@ -38,8 +38,8 @@ def test_bootstrap_user_channel_creates_admin_user_role(ch_client, prefix):
     user = f"{prefix}_first_admin"
     bootstrap_admin(ch_client, admin_user=user)
 
-    r = derive_rights(ch_client, username=user, groups=[])
-    assert r.is_admin is True
+    c = derive_capabilities(ch_client, username=user, groups=[])
+    assert c.is_admin is True
 
     granted = ch_client.query(
         """
@@ -97,8 +97,8 @@ def test_bootstrap_user_channel_seeds_each_distinct_admin_name(ch_client, prefix
     bootstrap_admin(ch_client, admin_user=a)
     bootstrap_admin(ch_client, admin_user=b)
     # Both admins are seeded under the new deterministic detection.
-    assert derive_rights(ch_client, username=a, groups=[]).is_admin is True
-    assert derive_rights(ch_client, username=b, groups=[]).is_admin is True
+    assert derive_capabilities(ch_client, username=a, groups=[]).is_admin is True
+    assert derive_capabilities(ch_client, username=b, groups=[]).is_admin is True
 
 
 def test_bootstrap_group_channel_seeds_each_distinct_admin_name(ch_client, prefix):
@@ -166,8 +166,8 @@ def test_bootstrap_both_channels_independent(ch_client, prefix):
     group = f"{prefix}_both_grp"
     bootstrap_admin(ch_client, admin_user=user, admin_group=group)
 
-    r = derive_rights(ch_client, username=user, groups=[])
-    assert r.is_admin is True
+    c = derive_capabilities(ch_client, username=user, groups=[])
+    assert c.is_admin is True
 
     rows = ch_client.query(
         """

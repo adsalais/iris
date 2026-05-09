@@ -1,6 +1,6 @@
 # ClickHouse
 
-`iris.clickhouse` provisions CH users/roles/grants/policies and provides standalone async `*_impl` functions called by Session subclasses in `iris.auth.identity`. The plain-data helpers (`audit.py`, `bootstrap.py`, `client.py`, `grants.py`, `policies.py`, `users.py`, `rights.py`) are independent of `iris.auth`. Only `install.py` imports from auth. Reference `CLAUDE.md` for project overview, `docs/auth.md` for the auth side.
+`iris.clickhouse` provisions CH users/roles/grants/policies and provides plain-data helpers called by the session views in `iris.auth.views`. The plain-data helpers (`audit.py`, `bootstrap.py`, `client.py`, `grants.py`, `policies.py`, `users.py`, `capabilities.py`, `queries.py`) are independent of `iris.auth`. Only `install.py` imports from auth. Reference `CLAUDE.md` for project overview, `docs/auth.md` for the auth side.
 
 ## Public surface
 
@@ -8,7 +8,7 @@
 
 - **Settings and client:** `ClickHouseSettings`, `build_client`
 - **Bootstrap:** `bootstrap_admin`, `GLOBAL_ADMIN_ROLE`
-- **User provisioning:** `init_user_rights`, `derive_rights`
+- **User provisioning:** `provision_user`, `derive_capabilities`
 - **Tier-role helpers:** `create_tier_roles`, `drop_tier_roles`, `tier_role_name`, `grant_tier_to_user`, `grant_tier_to_group`, `revoke_tier_from_user`, `revoke_tier_from_group`, `TIER_DBADMIN`, `TIER_DBWRITER`, `TIER_DBREADER`
 - **Row policies:** `add_row_policy`, `revoke_row_policy`
 - **Audit helpers:** `user_grants`, `role_grants`, `user_role_memberships`, `user_row_policies`, `role_row_policies`, `table_row_policies`
@@ -22,7 +22,7 @@
 settings = ClickHouseSettings.from_env()
 client = build_client(settings)
 bootstrap_admin(client, admin_user="alice", admin_group="iris_admin")  # idempotent startup
-init_user_rights(client, username="alice", groups=["sales"], settings=settings)
+provision_user(client, username="alice", groups=["sales"], settings=settings)
 add_row_policy(client, database="orders", table="lines",
                column="region", role="sales_GRP", value="EU")
 ```
@@ -35,7 +35,7 @@ add_row_policy(client, database="orders", table="lines",
 - Sentinel: `iris_global_admin` — carries no privileges of its own; wildcard row policies attach to it.
 - Restrictive row-policy name: `<database>_<table>_<role>_<slug>_<8charhash>` — slug strips non-`[a-zA-Z0-9_]` characters; the 8-character hash disambiguates collisions like `EU/UK` vs `EU UK`.
 - Wildcard row-policy names: `<database>_<table>_iris_global_admin` and `<database>_<table>_<database>_DBADMIN`.
-- All operations are idempotent: re-running is safe. `init_user_rights` reconciles group memberships (revokes `_GRP` roles no longer in the input, grants the new ones).
+- All operations are idempotent: re-running is safe. `provision_user` reconciles group memberships (revokes `_GRP` roles no longer in the input, grants the new ones).
 
 ## DDL safety
 
@@ -51,9 +51,9 @@ Routes import a Session alias from `iris.auth.deps` (not from `iris.clickhouse`)
 | `SessionOptional` | any caller (None if no session) | `AuthSession \| None` | same as `AuthSession`, or `None` |
 | `SessionRead` | user has read access to `database` (path param) | `DatabaseSession` | `query_as_user(sql)` auto-scoped to `self.database` |
 | `SessionWrite` | user has write access to `database` (path param) | `DatabaseSession` | `query_as_user(sql)` auto-scoped to `self.database` |
-| `SessionDatabaseCreator` | `rights.is_admin` or `rights.can_create_database` | `DatabaseCreatorSession` | `create_database(name)` |
+| `SessionDatabaseCreator` | `capabilities.is_admin` or `capabilities.can_create_database` | `DatabaseCreatorSession` | `create_database(name)` |
 | `SessionDatabaseAdmin` | user is admin of `database` (path param) | `DatabaseAdminSession` | `grant_reader/writer`, `add_admin_user`, `revoke_reader/writer`, `remove_admin_user`, `grant_reader_to_group/writer_to_group`, `add_admin_group`, `revoke_reader_from_group/writer_from_group`, `remove_admin_group`, `delete_database()`, `list_admin_members()`, `list_grants()`, `list_row_policies()` |
-| `SessionAdmin` | `rights.is_admin` | `AdminSession` | `query_as_service`, `reprovision_user`, `grant_select_to_database`, `grant_insert_update_to_table`, `add_row_policy`, `revoke_row_policy`, `user_grants`, `role_grants`, `user_role_memberships`, `user_row_policies`, `role_row_policies`, `table_row_policies` |
+| `SessionAdmin` | `capabilities.is_admin` | `AdminSession` | `query_as_service`, `reprovision_user`, `grant_select_to_database`, `grant_insert_update_to_table`, `add_row_policy`, `revoke_row_policy`, `user_grants`, `role_grants`, `user_role_memberships`, `user_row_policies`, `role_row_policies`, `table_row_policies` |
 
 `SessionRead` and `SessionWrite` bind `database` from the route's path parameter. `DatabaseSession.query_as_user` does not accept a `database=` kwarg — the bound `self.database` is the source of truth. To query a different database from a DB-scoped route, use a fully-qualified table name. For routes that need to query a specific database from a non-DB-scoped session (`Session` or `SessionAdmin`), `AuthSession.query_as_user` and `AdminSession.query_as_service` both accept a `database=` kwarg.
 
@@ -109,21 +109,21 @@ The wildcard policies persist after the last restrictive policy on the table is 
 
 ## Pre-create-on-grant
 
-Tier-grant helpers (`grant_tier_to_user`, `revoke_tier_from_user`, etc.) issue `CREATE ROLE IF NOT EXISTS <target>_USER` before granting. This closes a username enumeration channel: the CH error response is identical whether the target user has logged in or not. Once the target eventually authenticates, `init_user_rights` reuses the existing role and `derive_rights` picks up the tier membership.
+Tier-grant helpers (`grant_tier_to_user`, `revoke_tier_from_user`, etc.) issue `CREATE ROLE IF NOT EXISTS <target>_USER` before granting. This closes a username enumeration channel: the CH error response is identical whether the target user has logged in or not. Once the target eventually authenticates, `provision_user` reuses the existing role and `derive_capabilities` picks up the tier membership.
 
 ## Post-login hook chain
 
 `iris.clickhouse.install(app)` registers a hook on `app.state.post_login_hooks`. The hook fires on every successful login (form submit or OAuth callback) and does three things in order:
 
-1. `init_user_rights` — provisions the CH user/role/group memberships.
-2. `derive_rights` — computes the `Rights` view from CH state (transitive role walk + grant inspection).
-3. `store.set_rights(session_id, rights)` — persists the `Rights` to the SQLite session row.
+1. `provision_user` — provisions the CH user/role/group memberships.
+2. `derive_capabilities` — computes the `Capabilities` view from CH state (transitive role walk + grant inspection).
+3. `store.set_capabilities(session_id, capabilities)` — persists the `Capabilities` to the SQLite session row.
 
-Cookie-based session refreshes do NOT re-provision; the cached `Rights` is what every subsequent request sees. Group changes between two logins are reconciled on the next login.
+Cookie-based session refreshes do NOT re-provision; the cached `Capabilities` is what every subsequent request sees. Group changes between two logins are reconciled on the next login.
 
 **iris's liveness is tied to ClickHouse's.** This is intentional: iris is a thin layer in front of ClickHouse, and a logged-in user with no ability to reach the data backend can't accomplish anything useful. Rather than hide that with best-effort provisioning, login fails loud when CH is down — operators see the exact failure mode in the access logs, and users get a real error rather than a half-broken session that errors on every subsequent query.
 
-`build_app(install_clickhouse=False)` skips the bridge entirely — used by auth tests that don't need a CH testcontainer. With CH disabled, the post-login hook chain is empty, sessions land with `EMPTY_RIGHTS`, and `client=None`/`http_client=None`. Calling a CH method on such a session raises. Production launches via uvicorn factory mode (`uvicorn.run("iris.app:build_app", factory=True, ...)`), so importing `build_app` is side-effect-free for tests.
+`build_app(install_clickhouse=False)` skips the bridge entirely — used by auth tests that don't need a CH testcontainer. With CH disabled, the post-login hook chain is empty, sessions land with `EMPTY_CAPABILITIES`, and `client=None`/`http_client=None`. Calling a CH method on such a session raises. Production launches via uvicorn factory mode (`uvicorn.run("iris.app:build_app", factory=True, ...)`), so importing `build_app` is side-effect-free for tests.
 
 ## Tests
 
@@ -140,13 +140,13 @@ src/iris/clickhouse/
 ├── bootstrap.py     # bootstrap_admin, GLOBAL_ADMIN_ROLE
 ├── client.py        # build_client
 ├── config.py        # ClickHouseSettings.from_env()
+├── capabilities.py  # derive_capabilities (walks system.role_grants + system.grants)
 ├── grants.py        # tier constants, create/drop_tier_roles, grant/revoke_tier_*, tier_role_name
-├── handle.py        # standalone async *_impl functions called by identity.py Session methods
 ├── identifiers.py   # validate_identifier, quote_identifier, quote_string
 ├── install.py       # iris.clickhouse.install(app) — wires post-login hook; NOT re-exported
 ├── policies.py      # add_row_policy, revoke_row_policy
-├── rights.py        # derive_rights (walks system.role_grants + system.grants)
-└── users.py         # init_user_rights, USER_ROLE_SUFFIX, GROUP_ROLE_SUFFIX
+├── queries.py       # query_as_user (impersonated HTTP) + query_as_service (CH client)
+└── users.py         # provision_user, USER_ROLE_SUFFIX, GROUP_ROLE_SUFFIX
 ```
 
 ## Evolution

@@ -51,7 +51,7 @@ def keycloak_http(tls_paths):
 @pytest.fixture(scope="session", autouse=True)
 def provisioned_creators_grant(ch_container):
     """Once per session: pre-create ``creators_GRP`` and grant it
-    ``CREATE DATABASE`` so bob's ``derive_rights`` flags
+    ``CREATE DATABASE`` so bob's ``derive_capabilities`` flags
     ``can_create_database=True`` from his first login onward.
 
     Done as a session-scoped autouse fixture so each test file doesn't

@@ -5,8 +5,8 @@ from iris.auth import SessionAdmin
 
 def test_forbidden_html_renders_template(monkeypatch):
     # Bob is not bootstrapped as admin (only alice is in the conftest), and
-    # tests run with install_clickhouse=False so derive_rights never runs —
-    # bob's session has empty Rights. The SessionAdmin-gated route 403s.
+    # tests run with install_clickhouse=False so derive_capabilities never runs —
+    # bob's session has empty Capabilities. The SessionAdmin-gated route 403s.
     monkeypatch.setenv("MOCK_USERNAME", "bob")
     monkeypatch.setenv("MOCK_GROUPS", "users")
     from iris.app import build_app

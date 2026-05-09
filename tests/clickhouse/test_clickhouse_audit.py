@@ -15,13 +15,13 @@ from iris.clickhouse.audit import (
 from iris.clickhouse.grants import grant_select_to_database
 from iris.clickhouse.identifiers import InvalidIdentifierError
 from iris.clickhouse.policies import add_row_policy
-from iris.clickhouse.users import init_user_rights
+from iris.clickhouse.users import provision_user
 
 
 def test_user_grants_lists_user_grants(ch_client, ch_settings, prefix):
     username = f"{prefix}_aud_u"
     db = f"{prefix}_aud_u_db"
-    init_user_rights(ch_client, username=username, groups=[], settings=ch_settings)
+    provision_user(ch_client, username=username, groups=[], settings=ch_settings)
     ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
     ch_client.command(f"GRANT SELECT ON `{db}`.* TO `{username}`")
 
@@ -57,7 +57,7 @@ def test_audit_validates_inputs(ch_client):
 
 def test_user_role_memberships(ch_client, ch_settings, prefix):
     username = f"{prefix}_mem"
-    init_user_rights(
+    provision_user(
         ch_client,
         username=username,
         groups=["alpha", "beta"],

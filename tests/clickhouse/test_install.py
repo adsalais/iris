@@ -1,8 +1,8 @@
 """install(app) wires the ClickHouse client into the FastAPI app and registers
 a provisioning hook on the auth post-login list.
 
-The hook now does two things per login: init_user_rights (CH user/role
-provisioning) and derive_rights (cache the Rights view on the session row).
+The hook now does two things per login: provision_user (CH user/role
+provisioning) and derive_capabilities (cache the Capabilities view on the session row).
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI
 
 from iris.auth.identity import User
-from iris.auth.sessions import SessionStore
+from iris.auth.store import SessionStore
 from iris.clickhouse.install import install
 from iris.clickhouse.users import GROUP_ROLE_SUFFIX, USER_ROLE_SUFFIX
 
@@ -20,7 +20,7 @@ from iris.clickhouse.users import GROUP_ROLE_SUFFIX, USER_ROLE_SUFFIX
 def _make_app() -> FastAPI:
     """A fresh FastAPI with the bits install() expects from iris.auth.install:
     a post-login hook list, the auth bootstrap username (None disables seed),
-    and a SessionStore so the post-login hook can persist rights."""
+    and a SessionStore so the post-login hook can persist capabilities."""
     app = FastAPI()
     app.state.post_login_hooks = []
     app.state.auth_db_path = ":memory:"
@@ -78,9 +78,9 @@ def test_install_creates_post_login_hooks_list_if_missing(ch_settings) -> None:
     assert len(app.state.post_login_hooks) == 1
 
 
-def test_install_hook_provisions_user_and_persists_rights(ch_settings, prefix) -> None:
+def test_install_hook_provisions_user_and_persists_capabilities(ch_settings, prefix) -> None:
     """The provisioning hook creates the user/role/grants in CH and writes a
-    Rights row to the session store."""
+    Capabilities row to the session store."""
     app = _make_app()
     install(app)
 
@@ -118,11 +118,11 @@ def test_install_hook_provisions_user_and_persists_rights(ch_settings, prefix) -
 
     refreshed = asyncio.run(app.state.auth_session_store.get_and_refresh(sess.id))
     assert refreshed is not None
-    # No tier-role grants made for this user → empty tiers, but the rights
+    # No tier-role grants made for this user → empty tiers, but the capabilities
     # field is now populated (not None).
-    assert refreshed.rights.db_admin == frozenset()
-    assert refreshed.rights.db_writer == frozenset()
-    assert refreshed.rights.db_reader == frozenset()
+    assert refreshed.capabilities.db_admin == frozenset()
+    assert refreshed.capabilities.db_writer == frozenset()
+    assert refreshed.capabilities.db_reader == frozenset()
 
 
 def test_install_fails_loud_when_ensure_service_admin_fails(monkeypatch) -> None:

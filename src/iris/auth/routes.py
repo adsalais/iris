@@ -16,7 +16,7 @@ from iris.auth.providers.ldap import LDAPProvider
 from iris.auth.providers.mock import MockProvider
 from iris.auth.providers.oauth import OAUTH_STATE_COOKIE, OAuthProvider
 from iris.auth.rate_limit import TokenBucket
-from iris.auth.sessions import SessionStore
+from iris.auth.store import SessionStore
 
 logger = logging.getLogger("iris.auth")
 
@@ -159,17 +159,17 @@ def build_auth_router(
 
     @router.get("/api/whoami")
     async def whoami(session: Session) -> dict[str, Any]:
-        r = session.rights
+        c = session.capabilities
         return {
             "subject": session.user.subject,
             "display_name": session.user.display_name,
             "groups": list(session.user.groups),
-            "rights": {
-                "is_admin": r.is_admin,
-                "can_create_database": r.can_create_database,
-                "db_admin": sorted(r.db_admin),
-                "db_writer": sorted(r.db_writer),
-                "db_reader": sorted(r.db_reader),
+            "capabilities": {
+                "is_admin": c.is_admin,
+                "can_create_database": c.can_create_database,
+                "db_admin": sorted(c.db_admin),
+                "db_writer": sorted(c.db_writer),
+                "db_reader": sorted(c.db_reader),
             },
         }
 

@@ -13,7 +13,7 @@ USER_ROLE_SUFFIX = "_USER"
 GROUP_ROLE_SUFFIX = "_GRP"
 
 
-def init_user_rights(
+def provision_user(
     client: Client,
     *,
     username: str,

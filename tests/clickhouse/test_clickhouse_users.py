@@ -1,4 +1,4 @@
-"""Tests for init_user_rights — staged across Tasks 11/12/13."""
+"""Tests for provision_user — staged across Tasks 11/12/13."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from iris.clickhouse.identifiers import InvalidIdentifierError
 from iris.clickhouse.users import (
     GROUP_ROLE_SUFFIX,
     USER_ROLE_SUFFIX,
-    init_user_rights,
+    provision_user,
 )
 
 
-def test_init_user_rights_creates_user_and_per_user_role(ch_client, ch_settings, prefix):
+def test_provision_user_creates_user_and_per_user_role(ch_client, ch_settings, prefix):
     username = f"{prefix}_alice"
-    init_user_rights(ch_client, username=username, groups=[], settings=ch_settings)
+    provision_user(ch_client, username=username, groups=[], settings=ch_settings)
 
     users = list(
         ch_client.query(
@@ -42,10 +42,10 @@ def test_init_user_rights_creates_user_and_per_user_role(ch_client, ch_settings,
     assert role_grants == [{"granted_role_name": user_role}]
 
 
-def test_init_user_rights_is_idempotent(ch_client, ch_settings, prefix):
+def test_provision_user_is_idempotent(ch_client, ch_settings, prefix):
     username = f"{prefix}_idem"
-    init_user_rights(ch_client, username=username, groups=[], settings=ch_settings)
-    init_user_rights(ch_client, username=username, groups=[], settings=ch_settings)
+    provision_user(ch_client, username=username, groups=[], settings=ch_settings)
+    provision_user(ch_client, username=username, groups=[], settings=ch_settings)
 
     user_role = username + USER_ROLE_SUFFIX
     n = list(
@@ -57,14 +57,14 @@ def test_init_user_rights_is_idempotent(ch_client, ch_settings, prefix):
     assert n == [{"n": 1}]
 
 
-def test_init_user_rights_rejects_bad_username(ch_client, ch_settings):
+def test_provision_user_rejects_bad_username(ch_client, ch_settings):
     with pytest.raises(InvalidIdentifierError):
-        init_user_rights(ch_client, username="bad name", groups=[], settings=ch_settings)
+        provision_user(ch_client, username="bad name", groups=[], settings=ch_settings)
 
 
-def test_init_user_rights_rejects_bad_group(ch_client, ch_settings, prefix):
+def test_provision_user_rejects_bad_group(ch_client, ch_settings, prefix):
     with pytest.raises(InvalidIdentifierError):
-        init_user_rights(
+        provision_user(
             ch_client,
             username=f"{prefix}_u",
             groups=["good", "bad group"],
@@ -91,9 +91,9 @@ def _grp_roles_for(client, username):
     }
 
 
-def test_init_user_rights_grants_group_roles(ch_client, ch_settings, prefix):
+def test_provision_user_grants_group_roles(ch_client, ch_settings, prefix):
     username = f"{prefix}_g"
-    init_user_rights(
+    provision_user(
         ch_client,
         username=username,
         groups=["sales", "ops"],
@@ -102,9 +102,9 @@ def test_init_user_rights_grants_group_roles(ch_client, ch_settings, prefix):
     assert _grp_roles_for(ch_client, username) == {"sales_GRP", "ops_GRP"}
 
 
-def test_init_user_rights_revokes_groups_user_no_longer_has(ch_client, ch_settings, prefix):
+def test_provision_user_revokes_groups_user_no_longer_has(ch_client, ch_settings, prefix):
     username = f"{prefix}_r"
-    init_user_rights(
+    provision_user(
         ch_client,
         username=username,
         groups=["a", "b"],
@@ -112,7 +112,7 @@ def test_init_user_rights_revokes_groups_user_no_longer_has(ch_client, ch_settin
     )
     assert _grp_roles_for(ch_client, username) == {"a_GRP", "b_GRP"}
 
-    init_user_rights(
+    provision_user(
         ch_client,
         username=username,
         groups=["b", "c"],
@@ -121,18 +121,18 @@ def test_init_user_rights_revokes_groups_user_no_longer_has(ch_client, ch_settin
     assert _grp_roles_for(ch_client, username) == {"b_GRP", "c_GRP"}
 
 
-def test_init_user_rights_does_not_touch_user_role_during_reconcile(
+def test_provision_user_does_not_touch_user_role_during_reconcile(
     ch_client, ch_settings, prefix
 ):
     """The per-user `_USER` role must stay granted regardless of `groups` content."""
     username = f"{prefix}_keep"
-    init_user_rights(
+    provision_user(
         ch_client,
         username=username,
         groups=["x"],
         settings=ch_settings,
     )
-    init_user_rights(
+    provision_user(
         ch_client,
         username=username,
         groups=[],
@@ -148,11 +148,11 @@ def test_init_user_rights_does_not_touch_user_role_during_reconcile(
     assert rows == [{"granted_role_name": user_role}]
 
 
-def test_init_user_rights_grants_impersonate_to_connection_user(
+def test_provision_user_grants_impersonate_to_connection_user(
     ch_client, ch_settings, prefix
 ):
     username = f"{prefix}_imp"
-    init_user_rights(ch_client, username=username, groups=[], settings=ch_settings)
+    provision_user(ch_client, username=username, groups=[], settings=ch_settings)
 
     # Verify iris's connection user (settings.user) can impersonate the newly
     # provisioned user. Coverage is satisfied by:

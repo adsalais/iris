@@ -6,7 +6,7 @@ binary protocol, so user-scoped queries go through the HTTP endpoint
 directly), runs the CH-side bootstrap (creates iris_global_admin sentinel
 plus optional admin user/group roles from CLICKHOUSE_ADMIN_USER /
 CLICKHOUSE_ADMIN_GROUP), stashes everything on app.state, and registers a
-post-login provisioning hook so init_user_rights + derive_rights run once
+post-login provisioning hook so provision_user + derive_capabilities run once
 per real authentication.
 """
 
@@ -20,12 +20,12 @@ import httpx
 from fastapi import FastAPI
 
 from iris.auth.identity import User
-from iris.auth.sessions import SessionStore
+from iris.auth.store import SessionStore
 from iris.clickhouse.bootstrap import bootstrap_admin
+from iris.clickhouse.capabilities import derive_capabilities
 from iris.clickhouse.client import build_client
 from iris.clickhouse.config import ClickHouseSettings
-from iris.clickhouse.rights import derive_rights
-from iris.clickhouse.users import init_user_rights
+from iris.clickhouse.users import provision_user
 
 logger = logging.getLogger("iris.clickhouse")
 
@@ -61,32 +61,32 @@ def install(app: FastAPI) -> None:
 
     async def _provision_on_login(user: User, session_id: str) -> None:
         await asyncio.to_thread(
-            init_user_rights,
+            provision_user,
             client,
             username=user.username,
             groups=list(user.groups),
             settings=settings,
         )
-        rights = await asyncio.to_thread(
-            derive_rights,
+        capabilities = await asyncio.to_thread(
+            derive_capabilities,
             client,
             username=user.username,
             groups=list(user.groups),
         )
         store: SessionStore = app.state.auth_session_store
-        await store.set_rights(session_id, rights)
+        await store.set_capabilities(session_id, capabilities)
         logger.info(
             (
                 "clickhouse: provisioned username=%s groups=%s "
-                "rights=admin:%s creator:%s reader:%d writer:%d db_admin:%d"
+                "capabilities=admin:%s creator:%s reader:%d writer:%d db_admin:%d"
             ),
             user.username,
             list(user.groups),
-            rights.is_admin,
-            rights.can_create_database,
-            len(rights.db_reader),
-            len(rights.db_writer),
-            len(rights.db_admin),
+            capabilities.is_admin,
+            capabilities.can_create_database,
+            len(capabilities.db_reader),
+            len(capabilities.db_writer),
+            len(capabilities.db_admin),
         )
 
     if not hasattr(app.state, "post_login_hooks"):

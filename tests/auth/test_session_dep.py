@@ -16,15 +16,15 @@ from iris.auth.deps import (
     set_settings,
 )
 from iris.auth.exceptions import install_exception_handlers
-from iris.auth.identity import (
+from iris.auth.identity import User
+from iris.auth.rights import Capabilities
+from iris.auth.store import SessionStore
+from iris.auth.views import (
     AdminSession,
     DatabaseAdminSession,
     DatabaseCreatorSession,
     DatabaseSession,
-    User,
 )
-from iris.auth.session import Rights
-from iris.auth.sessions import SessionStore
 
 
 def _build_app(tmp_path: Path) -> tuple[FastAPI, SessionStore]:
@@ -51,12 +51,12 @@ def _build_app(tmp_path: Path) -> tuple[FastAPI, SessionStore]:
             "id": session.id,
             "subject": session.user.subject,
             "data_keys": sorted(session.data.keys()),
-            "rights": {
-                "is_admin": session.rights.is_admin,
-                "can_create_database": session.rights.can_create_database,
-                "db_admin": sorted(session.rights.db_admin),
-                "db_writer": sorted(session.rights.db_writer),
-                "db_reader": sorted(session.rights.db_reader),
+            "capabilities": {
+                "is_admin": session.capabilities.is_admin,
+                "can_create_database": session.capabilities.can_create_database,
+                "db_admin": sorted(session.capabilities.db_admin),
+                "db_writer": sorted(session.capabilities.db_writer),
+                "db_reader": sorted(session.capabilities.db_reader),
             },
         }
 
@@ -73,7 +73,7 @@ def _build_app(tmp_path: Path) -> tuple[FastAPI, SessionStore]:
     return app, sess_store
 
 
-def _seed(store: SessionStore, *, rights: Rights | None = None, **overrides) -> str:
+def _seed(store: SessionStore, *, capabilities: Capabilities | None = None, **overrides) -> str:
     user = User(
         subject=overrides.get("subject", "alice"),
         username=overrides.get("username", overrides.get("subject", "alice")),
@@ -81,8 +81,8 @@ def _seed(store: SessionStore, *, rights: Rights | None = None, **overrides) -> 
         groups=overrides.get("groups", ("admins",)),
     )
     session = asyncio.run(store.create(user))
-    if rights is not None:
-        asyncio.run(store.set_rights(session.id, rights))
+    if capabilities is not None:
+        asyncio.run(store.set_capabilities(session.id, capabilities))
     return session.id
 
 
@@ -208,15 +208,15 @@ def test_session_exposes_id_user_and_data(tmp_path):
         _close(sess_store)
 
 
-def test_rights_default_to_empty_when_not_set(tmp_path):
+def test_capabilities_default_to_empty_when_not_set(tmp_path):
     app, sess_store = _build_app(tmp_path)
     try:
-        sid = _seed(sess_store)  # no rights argument
+        sid = _seed(sess_store)  # no capabilities argument
         c = TestClient(app)
         c.cookies.set("iris_session", sid)
         r = c.get("/whoami-full", headers={"accept": "application/json"})
         assert r.status_code == 200
-        assert r.json()["rights"] == {
+        assert r.json()["capabilities"] == {
             "is_admin": False,
             "can_create_database": False,
             "db_admin": [],
@@ -227,22 +227,22 @@ def test_rights_default_to_empty_when_not_set(tmp_path):
         _close(sess_store)
 
 
-def test_rights_round_trip_through_set_rights(tmp_path):
+def test_capabilities_round_trip_through_set_capabilities(tmp_path):
     app, sess_store = _build_app(tmp_path)
     try:
-        rights = Rights(
+        capabilities = Capabilities(
             is_admin=False,
             can_create_database=True,
             db_admin=frozenset({"finance"}),
             db_writer=frozenset({"hr"}),
             db_reader=frozenset({"clickstream"}),
         )
-        sid = _seed(sess_store, subject="bob", rights=rights)
+        sid = _seed(sess_store, subject="bob", capabilities=capabilities)
         c = TestClient(app)
         c.cookies.set("iris_session", sid)
         r = c.get("/whoami-full", headers={"accept": "application/json"})
         assert r.status_code == 200
-        assert r.json()["rights"] == {
+        assert r.json()["capabilities"] == {
             "is_admin": False,
             "can_create_database": True,
             "db_admin": ["finance"],
@@ -265,7 +265,7 @@ def test_session_admin_alias_returns_admin_session(tmp_path):
     try:
         sid = _seed(
             sess_store,
-            rights=Rights(
+            capabilities=Capabilities(
                 is_admin=True,
                 can_create_database=False,
                 db_admin=frozenset(),
@@ -292,7 +292,7 @@ def test_session_database_admin_returns_database_admin_session(tmp_path):
     try:
         sid = _seed(
             sess_store,
-            rights=Rights(
+            capabilities=Capabilities(
                 is_admin=False,
                 can_create_database=False,
                 db_admin=frozenset({"finance"}),
@@ -322,7 +322,7 @@ def test_session_read_returns_database_session(tmp_path):
     try:
         sid = _seed(
             sess_store,
-            rights=Rights(
+            capabilities=Capabilities(
                 is_admin=False,
                 can_create_database=False,
                 db_admin=frozenset(),
@@ -352,7 +352,7 @@ def test_session_write_returns_database_session(tmp_path):
     try:
         sid = _seed(
             sess_store,
-            rights=Rights(
+            capabilities=Capabilities(
                 is_admin=False,
                 can_create_database=False,
                 db_admin=frozenset(),
@@ -379,7 +379,7 @@ def test_session_database_creator_returns_creator_session(tmp_path):
     try:
         sid = _seed(
             sess_store,
-            rights=Rights(
+            capabilities=Capabilities(
                 is_admin=False,
                 can_create_database=True,
                 db_admin=frozenset(),

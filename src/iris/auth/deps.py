@@ -19,15 +19,15 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, Request
 
 from iris.auth.exceptions import AuthForbidden, AuthRequired
-from iris.auth.identity import (
+from iris.auth.identity import StoredSession
+from iris.auth.store import SessionStore
+from iris.auth.views import (
     AdminSession,
     AuthSession,
     DatabaseAdminSession,
     DatabaseCreatorSession,
     DatabaseSession,
-    UserSession,
 )
-from iris.auth.sessions import SessionStore
 
 
 def set_session_store(app: FastAPI, store: SessionStore) -> None:
@@ -60,7 +60,7 @@ def _ch_refs(request: Request) -> tuple[Any, Any, Any]:
     )
 
 
-async def _resolve_stored(request: Request) -> UserSession | None:
+async def _resolve_stored(request: Request) -> StoredSession | None:
     cookie_name = _get_cookie_name(request)
     sid = request.cookies.get(cookie_name)
     if not sid:
@@ -69,10 +69,10 @@ async def _resolve_stored(request: Request) -> UserSession | None:
     return await store.get_and_refresh(sid)
 
 
-_StoredSession = Annotated[UserSession | None, Depends(_resolve_stored)]
+_StoredSessionDep = Annotated[StoredSession | None, Depends(_resolve_stored)]
 
 
-def _to_auth_session(stored: UserSession, request: Request) -> AuthSession:
+def _to_auth_session(stored: StoredSession, request: Request) -> AuthSession:
     client, http_client, settings = _ch_refs(request)
     return AuthSession(
         id=stored.id,
@@ -80,7 +80,7 @@ def _to_auth_session(stored: UserSession, request: Request) -> AuthSession:
         created_at=stored.created_at,
         expires_at=stored.expires_at,
         data=stored.data,
-        rights=stored.rights,
+        capabilities=stored.capabilities,
         client=client,
         http_client=http_client,
         settings=settings,
@@ -89,7 +89,7 @@ def _to_auth_session(stored: UserSession, request: Request) -> AuthSession:
 
 
 async def _optional_session(
-    request: Request, stored: _StoredSession
+    request: Request, stored: _StoredSessionDep
 ) -> AuthSession | None:
     if stored is None:
         return None
@@ -97,7 +97,7 @@ async def _optional_session(
 
 
 async def _require_session(
-    request: Request, stored: _StoredSession
+    request: Request, stored: _StoredSessionDep
 ) -> AuthSession:
     if stored is None:
         raise AuthRequired()
@@ -108,7 +108,7 @@ _RequiredAuth = Annotated[AuthSession, Depends(_require_session)]
 
 
 async def _require_admin(session: _RequiredAuth) -> AdminSession:
-    if not session.rights.is_admin:
+    if not session.capabilities.is_admin:
         raise AuthForbidden(needed=("admin",), have=())
     return AdminSession(
         id=session.id,
@@ -116,7 +116,7 @@ async def _require_admin(session: _RequiredAuth) -> AdminSession:
         created_at=session.created_at,
         expires_at=session.expires_at,
         data=session.data,
-        rights=session.rights,
+        capabilities=session.capabilities,
         client=session.client,
         http_client=session.http_client,
         settings=session.settings,
@@ -127,8 +127,8 @@ async def _require_admin(session: _RequiredAuth) -> AdminSession:
 async def _require_database_creator(
     session: _RequiredAuth,
 ) -> DatabaseCreatorSession:
-    r = session.rights
-    if not (r.is_admin or r.can_create_database):
+    c = session.capabilities
+    if not (c.is_admin or c.can_create_database):
         raise AuthForbidden(needed=("admin", "database_creator"), have=())
     return DatabaseCreatorSession(
         id=session.id,
@@ -136,7 +136,7 @@ async def _require_database_creator(
         created_at=session.created_at,
         expires_at=session.expires_at,
         data=session.data,
-        rights=session.rights,
+        capabilities=session.capabilities,
         client=session.client,
         http_client=session.http_client,
         settings=session.settings,
@@ -147,7 +147,7 @@ async def _require_database_creator(
 async def _require_database_admin(
     database: str, session: _RequiredAuth
 ) -> DatabaseAdminSession:
-    if not session.rights.has_admin(database):
+    if not session.capabilities.has_admin(database):
         raise AuthForbidden(needed=(f"database_admin[{database}]",), have=())
     return DatabaseAdminSession(
         id=session.id,
@@ -155,7 +155,7 @@ async def _require_database_admin(
         created_at=session.created_at,
         expires_at=session.expires_at,
         data=session.data,
-        rights=session.rights,
+        capabilities=session.capabilities,
         client=session.client,
         http_client=session.http_client,
         settings=session.settings,
@@ -167,7 +167,7 @@ async def _require_database_admin(
 async def _require_write(
     database: str, session: _RequiredAuth
 ) -> DatabaseSession:
-    if not session.rights.has_write(database):
+    if not session.capabilities.has_write(database):
         raise AuthForbidden(needed=(f"database_writer[{database}]",), have=())
     return DatabaseSession(
         id=session.id,
@@ -175,7 +175,7 @@ async def _require_write(
         created_at=session.created_at,
         expires_at=session.expires_at,
         data=session.data,
-        rights=session.rights,
+        capabilities=session.capabilities,
         client=session.client,
         http_client=session.http_client,
         settings=session.settings,
@@ -187,7 +187,7 @@ async def _require_write(
 async def _require_read(
     database: str, session: _RequiredAuth
 ) -> DatabaseSession:
-    if not session.rights.has_read(database):
+    if not session.capabilities.has_read(database):
         raise AuthForbidden(needed=(f"database_reader[{database}]",), have=())
     return DatabaseSession(
         id=session.id,
@@ -195,7 +195,7 @@ async def _require_read(
         created_at=session.created_at,
         expires_at=session.expires_at,
         data=session.data,
-        rights=session.rights,
+        capabilities=session.capabilities,
         client=session.client,
         http_client=session.http_client,
         settings=session.settings,

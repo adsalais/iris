@@ -1,4 +1,4 @@
-"""Bridge tests: form-login through TestClient triggers init_user_rights.
+"""Bridge tests: form-login through TestClient triggers provision_user.
 
 These build a real iris app with install_clickhouse=True and drive a form-login
 through TestClient against the testcontainer. They verify the post-login hook

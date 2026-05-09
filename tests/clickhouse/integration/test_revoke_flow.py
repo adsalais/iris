@@ -6,14 +6,14 @@ import asyncio
 from fastapi.testclient import TestClient
 
 from iris.auth.exceptions import AuthForbidden
-from iris.auth.identity import (
+from iris.auth.views import (
     DatabaseAdminSession,
     DatabaseCreatorSession,
 )
 from tests.clickhouse.integration._helpers import (
     TABLE_DDL,
     login_as,
-    refresh_rights,
+    refresh_capabilities,
     session_for,
 )
 
@@ -22,9 +22,9 @@ def test_revoke_writer_drops_writer_rights_on_next_login(
     iris_app, keycloak_http, ch_client, prefix
 ):
     """After bob revokes writer-tier from writers_GRP, carol's NEXT
-    refresh_rights derives an empty db_writer (no fresh Keycloak
+    refresh_capabilities derives an empty db_writer (no fresh Keycloak
     round-trip needed; the post-login hook semantics are reproduced
-    by refresh_rights). The session_for(database_writer) call then
+    by refresh_capabilities). The session_for(database_writer) call then
     raises AuthForbidden."""
     db = f"test_db_{prefix}"
 
@@ -42,7 +42,7 @@ def test_revoke_writer_drops_writer_rights_on_next_login(
             assert isinstance(creator, DatabaseCreatorSession)
             await creator.create_database(db)
             ch_client.command(TABLE_DDL.format(db=db))
-            await refresh_rights(iris_app, bob_sid)
+            await refresh_capabilities(iris_app, bob_sid)
             bob_admin = await session_for(
                 iris_app, bob_sid, kind="database_admin", database=db
             )
@@ -59,13 +59,13 @@ def test_revoke_writer_drops_writer_rights_on_next_login(
             carol_first = await session_for(
                 iris_app, carol_sid, kind="database_writer", database=db
             )
-            assert db in carol_first.rights.db_writer
+            assert db in carol_first.capabilities.db_writer
 
             # bob revokes writer; carol's stored rights are stale until
-            # the next login (or refresh_rights). Refresh and verify her
+            # the next login (or refresh_capabilities). Refresh and verify her
             # writer-session resolution now fails with AuthForbidden.
             await bob_admin.revoke_writer_from_group("writers")
-            await refresh_rights(iris_app, carol_sid)
+            await refresh_capabilities(iris_app, carol_sid)
             try:
                 await session_for(
                     iris_app, carol_sid, kind="database_writer", database=db
@@ -97,7 +97,7 @@ def test_delete_database_drops_db_and_tier_roles(
             )
             assert isinstance(creator, DatabaseCreatorSession)
             await creator.create_database(db)
-            await refresh_rights(iris_app, bob_sid)
+            await refresh_capabilities(iris_app, bob_sid)
             bob_admin = await session_for(
                 iris_app, bob_sid, kind="database_admin", database=db
             )

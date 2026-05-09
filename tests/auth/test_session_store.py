@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from iris.auth.identity import User
-from iris.auth.sessions import SessionStore
+from iris.auth.store import SessionStore
 
 
 @pytest.fixture

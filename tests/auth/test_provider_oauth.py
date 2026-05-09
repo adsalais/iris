@@ -577,7 +577,7 @@ def test_callback_error_clears_state_cookie(provider):
     from iris.auth.exceptions import install_exception_handlers
     from iris.auth.providers.oauth import OAUTH_STATE_COOKIE
     from iris.auth.routes import build_auth_router
-    from iris.auth.sessions import SessionStore
+    from iris.auth.store import SessionStore
     from iris.templates import TEMPLATES
 
     app = FastAPI()

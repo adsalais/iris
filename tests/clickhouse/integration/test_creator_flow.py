@@ -7,7 +7,7 @@ import asyncio
 from fastapi.testclient import TestClient
 
 from iris.auth.exceptions import AuthForbidden
-from iris.auth.identity import DatabaseCreatorSession
+from iris.auth.views import DatabaseCreatorSession
 from tests.clickhouse.integration._helpers import (
     TABLE_DDL,
     login_as,
@@ -37,7 +37,7 @@ def test_creator_can_create_database_and_table(
                 iris_app, sid, kind="database_creator"
             )
             assert isinstance(creator, DatabaseCreatorSession)
-            assert creator.rights.can_create_database is True
+            assert creator.capabilities.can_create_database is True
             await creator.create_database(db)
 
     asyncio.run(_run())

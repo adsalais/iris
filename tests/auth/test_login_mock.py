@@ -71,7 +71,7 @@ def test_whoami_returns_user_after_login(client):
         "subject": "mock:alice",
         "display_name": "Alice",
         "groups": ["admins", "users"],
-        "rights": {
+        "capabilities": {
             "is_admin": False,
             "can_create_database": False,
             "db_admin": [],

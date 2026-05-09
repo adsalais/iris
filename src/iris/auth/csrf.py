@@ -63,7 +63,7 @@ def issue_csrf_token(request: Request, response: Response) -> str:
     return token
 
 
-async def verify_csrf_form(
+def verify_csrf_form(
     request: Request,
     csrf_token: str = Form(default="", alias=CSRF_FORM_FIELD),
 ) -> None:

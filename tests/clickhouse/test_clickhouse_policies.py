@@ -13,7 +13,7 @@ from iris.clickhouse.grants import TIER_DBADMIN, tier_role_name
 from iris.clickhouse.identifiers import InvalidIdentifierError, policy_name
 from iris.clickhouse.policies import add_row_policy, revoke_row_policy
 from iris.clickhouse.queries import query_as_user
-from iris.clickhouse.users import USER_ROLE_SUFFIX, init_user_rights
+from iris.clickhouse.users import USER_ROLE_SUFFIX, provision_user
 
 
 def _setup_table(ch_client, db, table, role):
@@ -463,7 +463,7 @@ def test_add_row_policy_array_string_filter_works_end_to_end(
 
     1. Build a table ``(id UInt64, tags Array(String))``.
     2. Insert two rows; only row id=1 has 'EU' in its tags.
-    3. Provision a CH user via ``init_user_rights`` (creates the user,
+    3. Provision a CH user via ``provision_user`` (creates the user,
        its per-user role, and the IMPERSONATE grant the connecting
        service identity needs to ``EXECUTE AS`` it).
     4. Grant the policy's role to the user's per-user role, and grant
@@ -484,7 +484,7 @@ def test_add_row_policy_array_string_filter_works_end_to_end(
     )
 
     # 3. CH user + per-user role + IMPERSONATE grant for iris_svc.
-    init_user_rights(
+    provision_user(
         ch_client, username=test_user, groups=[], settings=ch_settings,
     )
 

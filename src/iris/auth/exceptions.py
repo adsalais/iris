@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import logging
-
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import RedirectResponse
-
-logger = logging.getLogger("iris.auth")
 
 
 class AuthRequired(Exception):

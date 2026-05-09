@@ -328,9 +328,9 @@ def test_route_oauth_alice_full_flow_creates_session(
     cookie set; whoami succeeds and surfaces the user's groups.
 
     With install_clickhouse=False these tests don't run the post-login
-    rights derivation — alice's session lands with EMPTY_RIGHTS. The
+    capabilities derivation — alice's session lands with EMPTY_CAPABILITIES. The
     Keycloak integration still validates the OAuth + session-creation
-    pipeline; rights derivation has its own dedicated tests under
+    pipeline; capabilities derivation has its own dedicated tests under
     tests/clickhouse/.
     """
     with TestClient(oauth_app) as test_client:
@@ -347,8 +347,8 @@ def test_route_oauth_alice_full_flow_creates_session(
         body = me.json()
         assert body["display_name"] == "Alice Example"
         assert set(body["groups"]) == {"admins", "users"}
-        # Rights default to empty when CH isn't installed.
-        assert body["rights"] == {
+        # Capabilities default to empty when CH isn't installed.
+        assert body["capabilities"] == {
             "is_admin": False,
             "can_create_database": False,
             "db_admin": [],
@@ -357,12 +357,12 @@ def test_route_oauth_alice_full_flow_creates_session(
         }
 
 
-def test_route_oauth_bob_full_flow_creates_session_with_empty_rights(
+def test_route_oauth_bob_full_flow_creates_session_with_empty_capabilities(
     oauth_app, keycloak_http
 ):
-    """Bob authenticates and gets a session with empty rights (CH not
+    """Bob authenticates and gets a session with empty capabilities (CH not
     installed for these tests). Authentication succeeds independently of
-    whether the user has any rights."""
+    whether the user has any capabilities."""
     with TestClient(oauth_app) as test_client:
         response = simulate_login(
             test_client=test_client, http=keycloak_http,
@@ -381,7 +381,7 @@ def test_route_oauth_bob_full_flow_creates_session_with_empty_rights(
         store = oauth_app.state.auth_session_store
         user_session = asyncio.run(store.get_and_refresh(sid))
         assert user_session is not None
-        assert user_session.rights.is_admin is False
+        assert user_session.capabilities.is_admin is False
 
 
 def test_provider_wrong_ca_bundle_raises_oauth_discovery(

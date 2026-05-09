@@ -4,9 +4,10 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
-from iris.auth.identity import DatabaseAdminSession, DatabaseCreatorSession, User
-from iris.auth.session import EMPTY_RIGHTS
-from iris.clickhouse.rights import derive_rights
+from iris.auth.identity import User
+from iris.auth.rights import EMPTY_CAPABILITIES
+from iris.auth.views import DatabaseAdminSession, DatabaseCreatorSession
+from iris.clickhouse.capabilities import derive_capabilities
 
 
 def _admin_session(
@@ -24,7 +25,7 @@ def _admin_session(
         created_at=now,
         expires_at=now + timedelta(hours=1),
         data={},
-        rights=EMPTY_RIGHTS,
+        capabilities=EMPTY_CAPABILITIES,
         client=ch_client,
         http_client=http_client,
         settings=ch_settings,
@@ -44,7 +45,7 @@ def _creator_session(
         created_at=now,
         expires_at=now + timedelta(hours=1),
         data={},
-        rights=EMPTY_RIGHTS,
+        capabilities=EMPTY_CAPABILITIES,
         client=ch_client,
         http_client=httpx.AsyncClient(
             base_url="http://stub",
@@ -55,7 +56,7 @@ def _creator_session(
     )
 
 
-def test_grant_reader_writer_admin_propagate_to_rights(ch_client, ch_settings, prefix):
+def test_grant_reader_writer_admin_propagate_to_capabilities(ch_client, ch_settings, prefix):
     creator = f"{prefix}_creator"
     target = f"{prefix}_target"
     db = f"{prefix}_admin_grants"
@@ -65,16 +66,16 @@ def test_grant_reader_writer_admin_propagate_to_rights(ch_client, ch_settings, p
     admin = _admin_session(ch_client, ch_settings, database=db, username=creator)
 
     asyncio.run(admin.grant_reader(target))
-    r = derive_rights(ch_client, username=target, groups=[])
-    assert db in r.db_reader
+    c = derive_capabilities(ch_client, username=target, groups=[])
+    assert db in c.db_reader
 
     asyncio.run(admin.grant_writer(target))
-    r = derive_rights(ch_client, username=target, groups=[])
-    assert db in r.db_writer
+    c = derive_capabilities(ch_client, username=target, groups=[])
+    assert db in c.db_writer
 
     asyncio.run(admin.add_admin_user(target))
-    r = derive_rights(ch_client, username=target, groups=[])
-    assert db in r.db_admin
+    c = derive_capabilities(ch_client, username=target, groups=[])
+    assert db in c.db_admin
 
 
 def test_revoke_clears_label(ch_client, ch_settings, prefix):
@@ -87,8 +88,8 @@ def test_revoke_clears_label(ch_client, ch_settings, prefix):
     admin = _admin_session(ch_client, ch_settings, database=db, username=creator)
     asyncio.run(admin.grant_reader(target))
     asyncio.run(admin.revoke_reader(target))
-    r = derive_rights(ch_client, username=target, groups=[])
-    assert db not in r.db_reader
+    c = derive_capabilities(ch_client, username=target, groups=[])
+    assert db not in c.db_reader
 
 
 def test_delete_database_drops_tier_roles_and_db(ch_client, ch_settings, prefix):

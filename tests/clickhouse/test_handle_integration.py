@@ -12,7 +12,7 @@ import asyncio
 import httpx
 
 from iris.clickhouse.queries import query_as_service, query_as_user
-from iris.clickhouse.users import init_user_rights
+from iris.clickhouse.users import provision_user
 
 
 def _http_client(ch_settings) -> httpx.AsyncClient:
@@ -26,7 +26,7 @@ def _http_client(ch_settings) -> httpx.AsyncClient:
 
 
 def _seed_user(ch_client, ch_settings, username: str) -> None:
-    init_user_rights(ch_client, username=username, groups=[], settings=ch_settings)
+    provision_user(ch_client, username=username, groups=[], settings=ch_settings)
     ch_client.command(f"GRANT SELECT ON *.* TO `{username}_USER`")
 
 

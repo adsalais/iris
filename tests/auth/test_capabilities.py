@@ -1,81 +1,81 @@
-from iris.auth.session import Rights, rights_from_dict, rights_to_dict
+from iris.auth.rights import Capabilities, capabilities_from_dict, capabilities_to_dict
 
 
-def test_empty_rights_admits_nothing():
-    r = Rights(
+def test_empty_capabilities_admits_nothing():
+    c = Capabilities(
         is_admin=False,
         can_create_database=False,
         db_admin=frozenset(),
         db_writer=frozenset(),
         db_reader=frozenset(),
     )
-    assert not r.has_read("finance")
-    assert not r.has_write("finance")
-    assert not r.has_admin("finance")
+    assert not c.has_read("finance")
+    assert not c.has_write("finance")
+    assert not c.has_admin("finance")
 
 
 def test_is_admin_implies_all():
-    r = Rights(
+    c = Capabilities(
         is_admin=True,
         can_create_database=False,
         db_admin=frozenset(),
         db_writer=frozenset(),
         db_reader=frozenset(),
     )
-    assert r.has_read("anything")
-    assert r.has_write("anything")
-    assert r.has_admin("anything")
+    assert c.has_read("anything")
+    assert c.has_write("anything")
+    assert c.has_admin("anything")
 
 
 def test_db_admin_implies_writer_and_reader():
-    r = Rights(
+    c = Capabilities(
         is_admin=False,
         can_create_database=False,
         db_admin=frozenset({"finance"}),
         db_writer=frozenset(),
         db_reader=frozenset(),
     )
-    assert r.has_read("finance")
-    assert r.has_write("finance")
-    assert r.has_admin("finance")
-    assert not r.has_read("hr")
+    assert c.has_read("finance")
+    assert c.has_write("finance")
+    assert c.has_admin("finance")
+    assert not c.has_read("hr")
 
 
 def test_db_writer_implies_reader_not_admin():
-    r = Rights(
+    c = Capabilities(
         is_admin=False,
         can_create_database=False,
         db_admin=frozenset(),
         db_writer=frozenset({"finance"}),
         db_reader=frozenset(),
     )
-    assert r.has_read("finance")
-    assert r.has_write("finance")
-    assert not r.has_admin("finance")
+    assert c.has_read("finance")
+    assert c.has_write("finance")
+    assert not c.has_admin("finance")
 
 
 def test_db_reader_only_reads():
-    r = Rights(
+    c = Capabilities(
         is_admin=False,
         can_create_database=False,
         db_admin=frozenset(),
         db_writer=frozenset(),
         db_reader=frozenset({"finance"}),
     )
-    assert r.has_read("finance")
-    assert not r.has_write("finance")
-    assert not r.has_admin("finance")
+    assert c.has_read("finance")
+    assert not c.has_write("finance")
+    assert not c.has_admin("finance")
 
 
 def test_serialization_roundtrip():
-    r = Rights(
+    c = Capabilities(
         is_admin=True,
         can_create_database=True,
         db_admin=frozenset({"finance"}),
         db_writer=frozenset({"hr", "logs"}),
         db_reader=frozenset({"clickstream"}),
     )
-    d = rights_to_dict(r)
+    d = capabilities_to_dict(c)
     assert d == {
         "is_admin": True,
         "can_create_database": True,
@@ -83,11 +83,11 @@ def test_serialization_roundtrip():
         "db_writer": ["hr", "logs"],
         "db_reader": ["clickstream"],
     }
-    assert rights_from_dict(d) == r
+    assert capabilities_from_dict(d) == c
 
 
 def test_deserialize_missing_field_defaults_false_or_empty():
-    r = rights_from_dict({"is_admin": False, "can_create_database": False})
-    assert r.db_admin == frozenset()
-    assert r.db_writer == frozenset()
-    assert r.db_reader == frozenset()
+    c = capabilities_from_dict({"is_admin": False, "can_create_database": False})
+    assert c.db_admin == frozenset()
+    assert c.db_writer == frozenset()
+    assert c.db_reader == frozenset()

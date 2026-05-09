@@ -1,8 +1,8 @@
-"""Derive a session's effective Rights from ClickHouse RBAC at login.
+"""Derive a session's effective Capabilities from ClickHouse RBAC at login.
 
 Walks ``system.role_grants`` transitively for the user's effective role set
 (``<username>_USER`` plus ``<group>_GRP`` for each group), then queries
-``system.grants`` for the global flags. Returns a frozen ``Rights`` value.
+``system.grants`` for the global flags. Returns a frozen ``Capabilities`` value.
 
 Called by the post-login hook in ``iris.clickhouse.install`` exactly once per
 real login. Operator changes to grants take effect on the user's next login.
@@ -13,7 +13,7 @@ from typing import cast
 
 from clickhouse_connect.driver.client import Client
 
-from iris.auth.session import Rights
+from iris.auth.rights import Capabilities
 from iris.clickhouse.grants import TIER_DBADMIN, TIER_DBREADER, TIER_DBWRITER
 from iris.clickhouse.users import GROUP_ROLE_SUFFIX, USER_ROLE_SUFFIX
 
@@ -53,13 +53,13 @@ def _effective_role_set(
     return closed
 
 
-def derive_rights(
+def derive_capabilities(
     client: Client, *, username: str, groups: list[str]
-) -> Rights:
-    """Compute the user's ``Rights`` view from CH state.
+) -> Capabilities:
+    """Compute the user's ``Capabilities`` view from CH state.
 
     Pre-conditions: the user's per-user role and per-group roles must already
-    exist in CH. Call after ``init_user_rights``.
+    exist in CH. Call after ``provision_user``.
     """
     effective = _effective_role_set(client, username=username, groups=groups)
 
@@ -93,19 +93,6 @@ def derive_rights(
         # CH condenses to a single `access_type='ALL'` row. So we accept
         # either the expanded ROLE ADMIN row or the condensed ALL row as
         # the admin marker.
-        #
-        # is_admin marker:
-        #   - access_type='ROLE ADMIN' at global scope with grant_option=1, OR
-        #   - access_type='ALL' at global scope with grant_option=1 (which
-        #     subsumes ROLE ADMIN).
-        #   ROLE ADMIN is one of the privileges expanded from ALL and is
-        #   only granted to genuine admins; operators don't grant ROLE
-        #   ADMIN selectively. WGO is required because the spec defines
-        #   admin as having delegation power.
-        #
-        # can_create_database marker:
-        #   - access_type='CREATE DATABASE' at global scope (any grant_option), OR
-        #   - access_type='ALL' at global scope (subsumes CREATE DATABASE).
         rows = client.query(
             """
             SELECT DISTINCT access_type, grant_option
@@ -128,7 +115,7 @@ def derive_rights(
             elif access_type == "CREATE DATABASE":
                 can_create_database = True
 
-    return Rights(
+    return Capabilities(
         is_admin=is_admin,
         can_create_database=can_create_database,
         db_admin=frozenset(db_admin),
