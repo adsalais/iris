@@ -386,7 +386,7 @@ def test_provider_wrong_ca_bundle_raises_oauth_discovery(
     import pytest
 
     from iris.auth.exceptions import AuthError
-    from tests.auth.integration._tls import generate_ca_and_leaf
+    from tests._tls import generate_ca_and_leaf
 
     bad_paths = generate_ca_and_leaf(tmp_path / "wrong-ca")
     settings = OIDCSettings(

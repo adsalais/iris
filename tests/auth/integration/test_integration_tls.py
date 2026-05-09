@@ -23,7 +23,7 @@ def test_collection_smoke():
 def test_tls_helper_generates_valid_chain(tmp_path):
     """generate_ca_and_leaf produces a leaf cert signed by the CA, with
     SANs covering localhost + 127.0.0.1, in PEM files we can load."""
-    from tests.auth.integration._tls import generate_ca_and_leaf
+    from tests._tls import generate_ca_and_leaf
 
     paths = generate_ca_and_leaf(tmp_path)
 
