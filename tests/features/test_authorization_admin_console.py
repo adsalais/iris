@@ -109,6 +109,40 @@ def test_subtab_get_policies_returns_policies_table(app, capability_session, mon
     assert "marketing" in r.text and "events" in r.text
 
 
+def test_reprovision_user_403_when_not_admin(app, capability_session):
+    client, sid = asyncio.run(capability_session())
+    _seed(app, sid)
+    r = client.post(
+        "/feature/auth/AC12CD34/admin/users/alice/reprovision",
+        headers=_csrf(client),
+    )
+    assert r.status_code == 403
+
+
+def test_reprovision_user_calls_admin_session_method(
+    app, capability_session, monkeypatch,
+):
+    calls = []
+    async def fake_reprov(self, *, username, groups):  # noqa: ARG001
+        calls.append(("reprov", username, list(groups)))
+    monkeypatch.setattr(
+        "iris.auth.views.AdminSession.reprovision_user", fake_reprov,
+    )
+    async def fake_users(_session):
+        return [{"name": "alice", "groups": []}]
+    monkeypatch.setattr(
+        "iris.features.authorization.service.list_all_users", fake_users,
+    )
+    client, sid = asyncio.run(capability_session(is_admin=True))
+    _seed(app, sid)
+    r = client.post(
+        "/feature/auth/AC12CD34/admin/users/alice/reprovision",
+        headers=_csrf(client),
+    )
+    assert r.status_code == 200
+    assert calls == [("reprov", "alice", [])]
+
+
 def test_subtab_get_audit_returns_grants_table(app, capability_session, monkeypatch):
     async def fake_audit(_session):
         return [{"user_name": "bob", "role_name": None,

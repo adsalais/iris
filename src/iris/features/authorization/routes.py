@@ -338,6 +338,27 @@ async def admin_policies(request: Request, session: Session, tab_id: str) -> Res
     ))
 
 
+@router.post("/{tab_id}/admin/users/{username}/reprovision")
+async def admin_reprovision_user(
+    request: Request, session: Session, tab_id: str, username: str,
+    _: None = Depends(verify_csrf_header),
+) -> Response:
+    from iris.features.authorization.service import list_all_users
+    admin = _promote_to_admin(session)
+    # IdP groups aren't accessible from this code path; reprovision_user
+    # rebuilds CH user identity + tier roles with empty groups.
+    await admin.reprovision_user(username=username, groups=[])
+    users = await list_all_users(admin)
+    panel_id = _admin_panel_id(tab_id)
+    templates = request.app.state.templates
+    html = templates.get_template("authorization/_admin_users.html").render(
+        panel_id=panel_id, tab_id=tab_id, users=users,
+    )
+    return DatastarResponse(SSE.patch_elements(
+        html, selector=f"#{panel_id}-subtab", mode=ElementPatchMode.OUTER,
+    ))
+
+
 @router.get("/{tab_id}/admin/audit")
 async def admin_audit(request: Request, session: Session, tab_id: str) -> Response:
     from iris.features.authorization.service import list_all_grants
