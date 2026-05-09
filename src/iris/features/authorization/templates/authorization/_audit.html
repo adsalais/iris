@@ -1,0 +1,22 @@
+<section id="{{ panel_id }}-audit" class="iris-audit-section">
+  <h3>Audit</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Grantee</th><th>Access</th><th>Database</th>
+        <th>Table</th><th>Column</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in audit %}
+      <tr>
+        <td>{{ row.user_name or ("role: " + row.role_name) if row.role_name else row.user_name }}</td>
+        <td>{{ row.access_type }}</td>
+        <td>{{ row.database or "—" }}</td>
+        <td>{{ row.table or "—" }}</td>
+        <td>{{ row.column or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

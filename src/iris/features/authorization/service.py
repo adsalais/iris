@@ -30,10 +30,11 @@ async def manage_view(session: "DatabaseAdminSession") -> dict[str, Any]:
     """Build the manage-page context."""
     members = await list_members(session)
     row_policies = await session.list_row_policies()
+    audit = await session.list_grants()
     return {
         "members": members,
         "row_policies": row_policies,
-        "audit": [],          # task 4.4
+        "audit": audit,
     }
 
 
