@@ -36,6 +36,9 @@ def build_app(*, install_clickhouse: bool = True) -> FastAPI:
     from iris.shell.install import install as install_shell
     install_shell(app)
 
+    from iris.features.authorization.install import install as install_authorization
+    install_authorization(app)
+
     # Build the templates loader once all subsystems have registered their dirs.
     app.state.templates = init_templates()
 
