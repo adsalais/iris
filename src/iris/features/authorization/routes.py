@@ -113,8 +113,7 @@ async def render_admin_console(
 async def _re_render_members(
     request: Request, db_session: DatabaseAdminSession, panel_id: str, tab_id: str,
 ) -> Response:
-    from iris.features.authorization.service import list_members
-    members = await list_members(db_session)
+    members = await db_session.list_members()
     templates = request.app.state.templates
     html = templates.get_template("authorization/_members_section.html").render(
         panel_id=panel_id, tab_id=tab_id, members=members,
@@ -322,8 +321,7 @@ async def revoke_policy(
 async def admin_users(
     request: Request, admin: SessionAdmin, tab_id: str,
 ) -> Response:
-    from iris.features.authorization.service import list_all_users
-    users = await list_all_users(admin)
+    users = await admin.list_users()
     panel_id = tab_panel_id(tab_id)
     templates = request.app.state.templates
     html = templates.get_template("authorization/_admin_users.html").render(
@@ -338,8 +336,7 @@ async def admin_users(
 async def admin_databases(
     request: Request, admin: SessionAdmin, tab_id: str,
 ) -> Response:
-    from iris.features.authorization.service import list_all_databases
-    databases = await list_all_databases(admin)
+    databases = await admin.list_databases()
     panel_id = tab_panel_id(tab_id)
     templates = request.app.state.templates
     html = templates.get_template("authorization/_admin_databases.html").render(
@@ -354,8 +351,7 @@ async def admin_databases(
 async def admin_policies(
     request: Request, admin: SessionAdmin, tab_id: str,
 ) -> Response:
-    from iris.features.authorization.service import list_all_row_policies
-    policies = await list_all_row_policies(admin)
+    policies = await admin.list_all_row_policies()
     panel_id = tab_panel_id(tab_id)
     templates = request.app.state.templates
     html = templates.get_template("authorization/_admin_policies.html").render(
@@ -371,11 +367,10 @@ async def admin_reprovision_user(
     request: Request, admin: SessionAdmin, tab_id: str, username: str,
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    from iris.features.authorization.service import list_all_users
     # IdP groups aren't accessible from this code path; reprovision_user
     # rebuilds CH user identity + tier roles with empty groups.
     await admin.reprovision_user(username=username, groups=[])
-    users = await list_all_users(admin)
+    users = await admin.list_users()
     panel_id = tab_panel_id(tab_id)
     templates = request.app.state.templates
     html = templates.get_template("authorization/_admin_users.html").render(
@@ -390,8 +385,7 @@ async def admin_reprovision_user(
 async def admin_audit(
     request: Request, admin: SessionAdmin, tab_id: str,
 ) -> Response:
-    from iris.features.authorization.service import list_all_grants
-    grants = await list_all_grants(admin)
+    grants = await admin.list_all_grants()
     panel_id = tab_panel_id(tab_id)
     templates = request.app.state.templates
     html = templates.get_template("authorization/_admin_audit.html").render(

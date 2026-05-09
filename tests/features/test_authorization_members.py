@@ -50,13 +50,12 @@ def test_grant_reader_user_calls_db_session_method(app, capability_session, monk
     async def fake_grant(self, username):
         calls.append(("grant_reader", username))
     async def fake_list(self):
-        return []
+        return {"admin": [], "reader": [], "writer": []}
     monkeypatch.setattr(
         "iris.auth.views.DatabaseAdminSession.grant_reader", fake_grant,
     )
     monkeypatch.setattr(
-        "iris.features.authorization.service.list_members",
-        lambda s: fake_list(s),  # noqa: ARG005
+        "iris.auth.views.DatabaseAdminSession.list_members", fake_list,
     )
 
     client, sid = asyncio.run(capability_session(db_admin={"marketing"}))
@@ -80,13 +79,12 @@ def test_revoke_admin_group_calls_remove_admin_group(
     async def fake_revoke(self, group):
         calls.append(("remove_admin_group", group))
     async def fake_list(self):
-        return []
+        return {"admin": [], "reader": [], "writer": []}
     monkeypatch.setattr(
         "iris.auth.views.DatabaseAdminSession.remove_admin_group", fake_revoke,
     )
     monkeypatch.setattr(
-        "iris.features.authorization.service.list_members",
-        lambda s: fake_list(s),  # noqa: ARG005
+        "iris.auth.views.DatabaseAdminSession.list_members", fake_list,
     )
 
     client, sid = asyncio.run(capability_session(db_admin={"marketing"}))

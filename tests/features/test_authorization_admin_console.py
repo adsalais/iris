@@ -70,10 +70,10 @@ def test_subtab_get_users_403_when_not_admin(app, capability_session):
 
 
 def test_subtab_get_users_returns_users_table(app, capability_session, monkeypatch):
-    async def fake_users(_session):
+    async def fake_users(self):  # noqa: ARG001
         return [{"name": "alice", "groups": ["data-team"]}]
     monkeypatch.setattr(
-        "iris.features.authorization.service.list_all_users", fake_users,
+        "iris.auth.views.AdminSession.list_users", fake_users,
     )
     client, sid = asyncio.run(capability_session(is_admin=True))
     _seed(app, sid)
@@ -83,10 +83,10 @@ def test_subtab_get_users_returns_users_table(app, capability_session, monkeypat
 
 
 def test_subtab_get_databases_returns_databases_table(app, capability_session, monkeypatch):
-    async def fake_dbs(_session):
+    async def fake_dbs(self):  # noqa: ARG001
         return [{"name": "marketing", "admin_count": 1, "writer_count": 0, "reader_count": 3}]
     monkeypatch.setattr(
-        "iris.features.authorization.service.list_all_databases", fake_dbs,
+        "iris.auth.views.AdminSession.list_databases", fake_dbs,
     )
     client, sid = asyncio.run(capability_session(is_admin=True))
     _seed(app, sid)
@@ -96,11 +96,11 @@ def test_subtab_get_databases_returns_databases_table(app, capability_session, m
 
 
 def test_subtab_get_policies_returns_policies_table(app, capability_session, monkeypatch):
-    async def fake_pol(_session):
+    async def fake_pol(self):  # noqa: ARG001
         return [{"database": "marketing", "table": "events",
                  "name": "p1", "select_filter": "user_id = $alice"}]
     monkeypatch.setattr(
-        "iris.features.authorization.service.list_all_row_policies", fake_pol,
+        "iris.auth.views.AdminSession.list_all_row_policies", fake_pol,
     )
     client, sid = asyncio.run(capability_session(is_admin=True))
     _seed(app, sid)
@@ -128,10 +128,10 @@ def test_reprovision_user_calls_admin_session_method(
     monkeypatch.setattr(
         "iris.auth.views.AdminSession.reprovision_user", fake_reprov,
     )
-    async def fake_users(_session):
+    async def fake_users(self):  # noqa: ARG001
         return [{"name": "alice", "groups": []}]
     monkeypatch.setattr(
-        "iris.features.authorization.service.list_all_users", fake_users,
+        "iris.auth.views.AdminSession.list_users", fake_users,
     )
     client, sid = asyncio.run(capability_session(is_admin=True))
     _seed(app, sid)
@@ -144,11 +144,11 @@ def test_reprovision_user_calls_admin_session_method(
 
 
 def test_subtab_get_audit_returns_grants_table(app, capability_session, monkeypatch):
-    async def fake_audit(_session):
+    async def fake_audit(self):  # noqa: ARG001
         return [{"user_name": "bob", "role_name": None,
                  "access_type": "INSERT", "database": "events"}]
     monkeypatch.setattr(
-        "iris.features.authorization.service.list_all_grants", fake_audit,
+        "iris.auth.views.AdminSession.list_all_grants", fake_audit,
     )
     client, sid = asyncio.run(capability_session(is_admin=True))
     _seed(app, sid)
