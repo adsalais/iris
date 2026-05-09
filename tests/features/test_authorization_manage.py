@@ -58,7 +58,7 @@ def test_manage_render_renders_database_name(app, capability_session, monkeypatc
     )
     client, sid = asyncio.run(capability_session(db_admin={"marketing"}))
     _seed_manage_tab(app, sid)
-    r = client.get("/feature/auth/MG12CD34/render")
+    r = client.get("/feature/auth/MG12CD34/manage?database=marketing")
     assert r.status_code == 200
     assert "Manage marketing" in r.text
 
@@ -66,5 +66,5 @@ def test_manage_render_renders_database_name(app, capability_session, monkeypatc
 def test_manage_render_returns_403_when_not_db_admin(app, capability_session):
     client, sid = asyncio.run(capability_session())
     _seed_manage_tab(app, sid)
-    r = client.get("/feature/auth/MG12CD34/render")
+    r = client.get("/feature/auth/MG12CD34/manage?database=marketing")
     assert r.status_code == 403

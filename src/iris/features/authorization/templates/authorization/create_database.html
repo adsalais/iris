@@ -1,7 +1,7 @@
 <div class="iris-feature-page" id="{{ panel_id }}">
   <h2>Create database</h2>
   <form id="{{ panel_id }}-form"
-        data-on:submit="@post('/feature/auth/{{ tab_id }}/submit?name=' + encodeURIComponent($tabs.{{ tab_id }}.new_db_name || ''))">
+        data-on:submit="@post('/feature/auth/{{ tab_id }}/create_database?name=' + encodeURIComponent($tabs.{{ tab_id }}.new_db_name || ''))">
     <label>
       Database name
       <input data-bind="tabs.{{ tab_id }}.new_db_name"

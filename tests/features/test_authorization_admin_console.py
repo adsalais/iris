@@ -45,7 +45,7 @@ def test_org_admin_nav_has_four_sub_entries(app):
 def test_render_admin_console_shows_subtabs(app, capability_session):
     client, sid = asyncio.run(capability_session(is_admin=True))
     _seed(app, sid)
-    r = client.get("/feature/auth/AC12CD34/render")
+    r = client.get("/feature/auth/AC12CD34/admin_console")
     assert r.status_code == 200
     # Sub-tab buttons: text appears between <button> tags (with whitespace)
     assert "Users" in r.text
@@ -58,7 +58,7 @@ def test_render_admin_console_shows_subtabs(app, capability_session):
 def test_render_admin_console_403_when_not_admin(app, capability_session):
     client, sid = asyncio.run(capability_session())
     _seed(app, sid)
-    r = client.get("/feature/auth/AC12CD34/render")
+    r = client.get("/feature/auth/AC12CD34/admin_console")
     assert r.status_code == 403
 
 

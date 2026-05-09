@@ -29,7 +29,7 @@ def test_audit_section_renders_grants_list(app, capability_session, monkeypatch)
         {"id": "AU12CD34", "feature": "auth", "intent": "manage",
          "params": {"database": "marketing"}, "title": "Manage marketing"},
     ]}))
-    r = client.get("/feature/auth/AU12CD34/render")
+    r = client.get("/feature/auth/AU12CD34/manage?database=marketing")
     assert r.status_code == 200
     assert "Audit" in r.text
     assert "alice" in r.text
