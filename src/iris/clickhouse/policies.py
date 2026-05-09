@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from typing import cast
+
 from clickhouse_connect.driver.client import Client
 
 from iris.clickhouse.bootstrap import GLOBAL_ADMIN_ROLE
@@ -14,6 +17,9 @@ from iris.clickhouse.identifiers import (
 )
 
 
+_FIXED_STRING_RE = re.compile(r"^FixedString\(\d+\)$")
+
+
 def add_row_policy(
     client: Client,
     *,
@@ -23,7 +29,19 @@ def add_row_policy(
     role: str,
     value: str,
 ) -> None:
-    """Create a row policy ``<column> = <value>`` for ``<role>`` on ``<database>.<table>``.
+    """Create a restrictive row policy for ``<role>`` on ``<database>.<table>``.
+
+    The USING clause depends on the column's CH type:
+
+    - Scalar columns (``String`` etc.): ``<column> = <value>``.
+    - ``Array(String)`` and the ``Nullable`` / ``FixedString(N)`` variants:
+      ``has(<column>, <value>)`` so a row matches when ``<value>`` is
+      contained in the array.
+
+    Other Array element types (``Array(Int32)``, ``Array(DateTime)``, etc.)
+    raise ``TypeError`` — extend ``_build_policy_filter`` if you need them.
+    A column that doesn't exist on ``<database>.<table>`` raises
+    ``ValueError``.
 
     Also ensures two ``USING 1`` wildcard policies exist on the same table:
 
@@ -34,6 +52,9 @@ def add_row_policy(
     via ``CREATE ROW POLICY IF NOT EXISTS``. The wildcards persist after the
     last restrictive policy is revoked — this matches the prior service-admin
     wildcard behavior.
+
+    Note: ``FixedString(N)`` values must be right-padded to N bytes by the
+    caller (CH stores them that way and ``has`` does not auto-pad).
     """
     validate_identifier(database, kind="database")
     validate_identifier(table, kind="table")
@@ -45,13 +66,19 @@ def add_row_policy(
     column_q = quote_identifier(column, kind="column")
     role_q = quote_identifier(role, kind="role")
 
-    # 1. The restrictive policy the caller asked for.
+    # 1. The restrictive policy the caller asked for. Inspect the column's
+    # CH type so the USING clause is correct for both scalar and Array
+    # columns.
+    col_type = _column_type(
+        client, database=database, table=table, column=column
+    )
+    clause = _build_policy_filter(column_q, col_type, value)
     name = policy_name(database, table, role, value)
     name_q = quote_identifier(name, kind="policy")
     client.command(
         " ".join((
             f"CREATE ROW POLICY IF NOT EXISTS {name_q} ON {db_q}.{table_q}",
-            f"FOR SELECT USING {column_q} = {quote_string(value)} TO {role_q}",
+            f"FOR SELECT USING {clause} TO {role_q}",
         ))
     )
 
@@ -101,3 +128,52 @@ def revoke_row_policy(
     table_q = quote_identifier(table, kind="table")
     name_q = quote_identifier(policy_name(database, table, role, value), kind="policy")
     client.command(f"DROP ROW POLICY IF EXISTS {name_q} ON {db_q}.{table_q}")
+
+
+def _column_type(
+    client: Client, *, database: str, table: str, column: str
+) -> str:
+    """Return the CH type string of ``<database>.<table>.<column>``.
+
+    Reads ``system.columns``; raises ``ValueError`` if the column does
+    not exist on that table. Used by ``add_row_policy`` to decide
+    between ``<col> = <val>`` and ``has(<col>, <val>)``.
+    """
+    rows = client.query(
+        "SELECT type FROM system.columns WHERE database = {d:String} AND table = {t:String} AND name = {c:String}",
+        parameters={"d": database, "t": table, "c": column},
+    ).result_rows
+    if not rows:
+        raise ValueError(
+            f"column {database}.{table}.{column} does not exist"
+        )
+    return cast(str, rows[0][0])
+
+
+def _build_policy_filter(
+    col_q: str, col_type: str, value: str
+) -> str:
+    """Build the row-policy USING clause for ``col_q`` of CH type ``col_type``.
+
+    For scalar columns: ``<col_q> = <quoted value>``.
+    For ``Array(String)`` and the ``Nullable`` / ``FixedString(N)``
+    variants: ``has(<col_q>, <quoted value>)``.
+
+    Raises ``TypeError`` for Array element types other than String /
+    Nullable(String) / FixedString(N) / Nullable(FixedString(N)).
+
+    ``col_q`` is the already-backtick-quoted identifier (validated by
+    ``add_row_policy``'s caller path); ``value`` is quoted into a SQL
+    string literal here via ``quote_string`` (regardless of branch,
+    since both branches need a quoted literal).
+    """
+    if col_type.startswith("Array(") and col_type.endswith(")"):
+        inner = col_type[len("Array(") : -1].strip()
+        if inner.startswith("Nullable(") and inner.endswith(")"):
+            inner = inner[len("Nullable(") : -1].strip()
+        if inner != "String" and not _FIXED_STRING_RE.match(inner):
+            raise TypeError(
+                f"add_row_policy supports Array(String) variants only; got {col_type}. Extend add_row_policy or pass non-array columns directly."
+            )
+        return f"has({col_q}, {quote_string(value)})"
+    return f"{col_q} = {quote_string(value)}"
