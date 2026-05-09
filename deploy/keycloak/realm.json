@@ -1,0 +1,83 @@
+{
+  "realm": "iris",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "alice@example.local",
+      "firstName": "Alice",
+      "lastName": "Example",
+      "credentials": [
+        {"type": "password", "value": "alice-pw", "temporary": false}
+      ],
+      "groups": ["/iris_admins"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "bob@example.local",
+      "firstName": "Bob",
+      "lastName": "Example",
+      "credentials": [
+        {"type": "password", "value": "bob-pw", "temporary": false}
+      ],
+      "groups": ["/db_creators"]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "carol@example.local",
+      "firstName": "Carol",
+      "lastName": "Example",
+      "credentials": [
+        {"type": "password", "value": "carol-pw", "temporary": false}
+      ],
+      "groups": ["/data_team"]
+    }
+  ],
+
+  "groups": [
+    {"name": "iris_admins"},
+    {"name": "db_creators"},
+    {"name": "data_team"}
+  ],
+
+  "clients": [
+    {
+      "clientId": "iris",
+      "secret": "iris-dev-secret",
+      "redirectUris": [
+        "http://localhost:8000/login/callback",
+        "http://127.0.0.1:8000/login/callback"
+      ],
+      "publicClient": false,
+      "directAccessGrantsEnabled": false,
+      "standardFlowEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

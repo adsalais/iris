@@ -1,0 +1,59 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: iris-keycloak
+    command: start-dev --import-realm
+    environment:
+      # Bootstrap admin for the Keycloak admin console (http://localhost:8080/admin).
+      # On first boot Keycloak creates this user with all admin rights.
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-admin}
+      # Allow HTTP (no TLS) and run as if served at http://localhost:8080.
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME: localhost
+      KC_HOSTNAME_STRICT: "false"
+    ports:
+      - "8080:8080"
+    volumes:
+      # Realm definition: imported on first boot. Subsequent edits in the
+      # admin console persist to the data volume below, NOT to this file —
+      # treat realm.json as the seed, not the source of truth after first run.
+      - ./keycloak/realm.json:/opt/keycloak/data/import/iris-realm.json:ro
+      # Persistent storage: H2 database with users, groups, clients, sessions.
+      # Survives container restarts and `docker compose down`.
+      - ${DATA_DIR:-${HOME}/.iris-data}/keycloak:/opt/keycloak/data
+    # No healthcheck: the Keycloak image lacks curl/wget, and probing
+    # /dev/tcp via bash isn't portable across Quarkus image revisions.
+    # Realm import takes ~20-30s on first boot — watch the logs:
+    #   docker compose logs -f keycloak
+    # Ready when you see: "Listening on: http://0.0.0.0:8080".
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3
+    container_name: iris-clickhouse
+    environment:
+      # Creates an XML-defined user that iris connects as. CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      # gives this user nearly every privilege, enough to run iris's bootstrap (CREATE ROLE,
+      # GRANT ALL, IMPERSONATE, …). The users.d overlay below adds NAMED COLLECTION ADMIN,
+      # which CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT does not include but iris bootstrap requires.
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-iris_admin}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-change-me}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "8123:8123"   # HTTP
+      - "9000:9000"   # native protocol (clickhouse-client)
+    volumes:
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+      - ${DATA_DIR:-${HOME}/.iris-data}/clickhouse/data:/var/lib/clickhouse
+      - ${DATA_DIR:-${HOME}/.iris-data}/clickhouse/logs:/var/log/clickhouse-server
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      # clickhouse-client is always present in the official image.
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s

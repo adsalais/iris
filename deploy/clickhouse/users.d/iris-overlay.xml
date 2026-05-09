@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<!--
+  Grants NAMED COLLECTION ADMIN to the CLICKHOUSE_USER service account.
+
+  CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 grants nearly every privilege EXCEPT
+  NAMED COLLECTION ADMIN. Without that one privilege, the service user cannot
+  run the GRANT ALL that iris's bootstrap_admin issues to the per-user/group
+  admin roles, and bootstrap fails.
+
+  ClickHouse merges /etc/clickhouse-server/users.d/*.xml into the user
+  definitions at startup. The placeholder ${CLICKHOUSE_USER} is NOT expanded
+  by CH — you must keep the username here in sync with the value in your
+  deploy/.env file. (For the default `iris_admin` it is already correct.)
+
+  If you change CLICKHOUSE_USER in deploy/.env, edit the <iris_admin> tag
+  below to match.
+-->
+<clickhouse>
+  <users>
+    <iris_admin>
+      <named_collection_control>1</named_collection_control>
+      <show_named_collections_secrets>1</show_named_collections_secrets>
+    </iris_admin>
+  </users>
+</clickhouse>
