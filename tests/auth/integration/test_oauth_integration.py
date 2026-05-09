@@ -212,7 +212,11 @@ def test_provider_exchange_code_returns_bob_with_users_group(
     )
 
     assert user.username == "bob"
-    assert set(user.groups) == {"users"}
+    # bob's seed groups now include 'creators' (used by the clickhouse
+    # integration suite). 'users' must still be present; the earlier
+    # exact-equality assertion was unnecessarily strict.
+    assert "users" in set(user.groups)
+    assert "admins" not in set(user.groups)
 
 
 def test_provider_wrong_client_secret_raises_oauth_exchange(
@@ -370,7 +374,9 @@ def test_route_oauth_bob_full_flow_creates_session_with_empty_rights(
 
         me = test_client.get("/api/whoami")
         assert me.status_code == 200
-        assert set(me.json()["groups"]) == {"users"}
+        groups = set(me.json()["groups"])
+        assert "users" in groups
+        assert "admins" not in groups
 
         store = oauth_app.state.auth_session_store
         user_session = asyncio.run(store.get_and_refresh(sid))
@@ -386,7 +392,7 @@ def test_provider_wrong_ca_bundle_raises_oauth_discovery(
     import pytest
 
     from iris.auth.exceptions import AuthError
-    from tests.auth.integration._tls import generate_ca_and_leaf
+    from tests._tls import generate_ca_and_leaf
 
     bad_paths = generate_ca_and_leaf(tmp_path / "wrong-ca")
     settings = OIDCSettings(

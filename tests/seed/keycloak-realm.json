@@ -25,12 +25,39 @@
       "credentials": [
         {"type": "password", "value": "hunter2", "temporary": false}
       ],
-      "groups": ["/users"]
+      "groups": ["/users", "/creators"]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "carol@example.test",
+      "firstName": "Carol",
+      "lastName": "Example",
+      "credentials": [
+        {"type": "password", "value": "carol-pw", "temporary": false}
+      ],
+      "groups": ["/users", "/writers"]
+    },
+    {
+      "username": "dave",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "dave@example.test",
+      "firstName": "Dave",
+      "lastName": "Example",
+      "credentials": [
+        {"type": "password", "value": "dave-pw", "temporary": false}
+      ],
+      "groups": ["/users", "/readers"]
     }
   ],
   "groups": [
     {"name": "admins"},
-    {"name": "users"}
+    {"name": "users"},
+    {"name": "creators"},
+    {"name": "writers"},
+    {"name": "readers"}
   ],
   "clients": [
     {

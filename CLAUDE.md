@@ -32,6 +32,11 @@ Pytest is the test runner. Config lives under `[tool.pytest.ini_options]` in `py
 - Run a single test by node id: `uv run pytest tests/test_app.py::test_index_renders`
 - Filter by name: `uv run pytest -k <substring>`
 - Stop at first failure with verbose tracebacks: `uv run pytest -x -vv`
+- Skip both Docker-backed integration suites during dev (Keycloak + ClickHouse boot):
+  ```
+  uv run pytest --ignore=tests/auth/integration --ignore=tests/clickhouse/integration
+  ```
+  The auth-integration suite drives Keycloak; the clickhouse-integration suite chains Keycloak + ClickHouse for end-to-end role/policy testing.
 
 
 Conventions for new tests:
