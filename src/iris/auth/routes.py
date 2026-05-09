@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, FastAPI, Form, Request, Response
 from fastapi.responses import RedirectResponse
 
+from iris.auth.client_ip import client_ip
 from iris.auth.csrf import delete_csrf_cookie, verify_csrf_form
 from iris.auth.deps import Session
 from iris.auth.exceptions import AuthError
@@ -36,12 +37,25 @@ def _set_session_cookie(
 
 
 def _safe_next(next_url: str) -> str:
-    """Return next_url only if it's a same-origin relative path; else /."""
+    """Return next_url only if it's a same-origin relative path; else /.
+
+    Defends against open-redirect attacks via a crafted `next` query param.
+    Rejects: empty input, CRLF (header injection), backslash (browser
+    normalization), absolute URLs, protocol-relative URLs (`//evil`).
+    Logs every rewrite at INFO so operators tracing client misconfiguration
+    or attempted attacks can see the rejected value (truncated to 128 chars
+    to defend against log injection via giant payloads).
+    """
     if not next_url:
         return "/"
+    if "\r" in next_url or "\n" in next_url:
+        logger.info("auth: safe_next_rejected reason=crlf next=%r", next_url[:128])
+        return "/"
     if "\\" in next_url:
+        logger.info("auth: safe_next_rejected reason=backslash next=%r", next_url[:128])
         return "/"
     if not next_url.startswith("/") or next_url.startswith("//"):
+        logger.info("auth: safe_next_rejected reason=non_relative next=%r", next_url[:128])
         return "/"
     return next_url
 
@@ -94,7 +108,9 @@ def build_auth_router(
         next: str = Form(default="/", max_length=2048),
         _: None = Depends(verify_csrf_form),
     ) -> Response:
-        client_host = request.client.host if request.client else "unknown"
+        client_host = client_ip(
+            request, trust_forwarded=request.app.state.trust_forwarded_for
+        )
         wait = login_bucket.take(f"login:{client_host}")
         if wait is not None:
             logger.info(
@@ -202,7 +218,10 @@ def install(app: FastAPI) -> None:
 
     set_session_store(app, store)
     set_settings(
-        app, cookie_name=settings.cookie_name, cookie_secure=settings.cookie_secure
+        app,
+        cookie_name=settings.cookie_name,
+        cookie_secure=settings.cookie_secure,
+        trust_forwarded_for=settings.trust_forwarded_for,
     )
     install_exception_handlers(app, cookie_name=settings.cookie_name)
 

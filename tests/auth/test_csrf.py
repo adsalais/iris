@@ -127,3 +127,44 @@ def test_mint_csrf_token_reuses_well_formed_cookie():
     client.cookies.set(CSRF_COOKIE_NAME, fixed)
     response = client.get("/echo")
     assert response.json()["token"] == fixed
+
+
+def _build_header_app(*, cookie_secure: bool = False) -> FastAPI:
+    from iris.auth.csrf import verify_csrf_header
+
+    app = FastAPI()
+    set_settings(app, cookie_name="iris_session", cookie_secure=cookie_secure)
+
+    @app.post("/json-submit")
+    def submit_json(_: None = Depends(verify_csrf_header)) -> dict[str, bool]:
+        return {"ok": True}
+
+    return app
+
+
+def test_verify_csrf_header_passes_when_cookie_matches_header():
+    client = TestClient(_build_header_app())
+    client.cookies.set(CSRF_COOKIE_NAME, "AAAA" * 8)  # 32 chars urlsafe-base64
+    r = client.post("/json-submit", headers={"X-CSRF-Token": "AAAA" * 8})
+    assert r.status_code == 200
+
+
+def test_verify_csrf_header_rejects_missing_cookie():
+    client = TestClient(_build_header_app())
+    # No cookie set
+    r = client.post("/json-submit", headers={"X-CSRF-Token": "anything"})
+    assert r.status_code == 400
+
+
+def test_verify_csrf_header_rejects_missing_header():
+    client = TestClient(_build_header_app())
+    client.cookies.set(CSRF_COOKIE_NAME, "AAAA" * 8)
+    r = client.post("/json-submit")  # no header
+    assert r.status_code == 400
+
+
+def test_verify_csrf_header_rejects_mismatch():
+    client = TestClient(_build_header_app())
+    client.cookies.set(CSRF_COOKIE_NAME, "AAAA" * 8)
+    r = client.post("/json-submit", headers={"X-CSRF-Token": "BBBB" * 8})
+    assert r.status_code == 400

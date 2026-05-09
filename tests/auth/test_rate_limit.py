@@ -54,3 +54,54 @@ def test_token_bucket_keys_are_isolated():
     assert bucket.take("a") is None
     assert bucket.take("a") is not None  # exhausted
     assert bucket.take("b") is None  # fresh bucket
+
+
+def test_lru_evicts_oldest_when_capacity_exceeded():
+    """Inserting _MAX_BUCKETS + 1 distinct keys evicts key #0."""
+    from iris.auth.rate_limit import TokenBucket, _MAX_BUCKETS
+
+    bucket = TokenBucket(capacity=10, refill_per_second=1.0)
+    for i in range(_MAX_BUCKETS + 1):
+        bucket.take(f"k{i}")
+
+    assert "k0" not in bucket._buckets, "oldest key should have been evicted"
+    assert f"k{_MAX_BUCKETS}" in bucket._buckets, "newest key should be present"
+    assert len(bucket._buckets) == _MAX_BUCKETS, "size capped at _MAX_BUCKETS"
+
+
+def test_returning_key_is_promoted_to_mru():
+    """Re-taking a key bumps it to MRU; a subsequent overflow evicts the
+    next-oldest, not the original key."""
+    from iris.auth.rate_limit import TokenBucket, _MAX_BUCKETS
+
+    bucket = TokenBucket(capacity=10, refill_per_second=1.0)
+    for i in range(_MAX_BUCKETS):
+        bucket.take(f"k{i}")
+    # k0 is currently the LRU. Re-take it to promote.
+    bucket.take("k0")
+    # Now insert one more key, forcing one eviction.
+    bucket.take(f"k{_MAX_BUCKETS}")
+
+    assert "k0" in bucket._buckets, "k0 was promoted to MRU and must survive"
+    assert "k1" not in bucket._buckets, "k1 was the new LRU and should be evicted"
+
+
+def test_evicted_key_starts_with_full_bucket_on_re_insert():
+    """An evicted key, on re-insert, gets a fresh full-capacity bucket."""
+    from iris.auth.rate_limit import TokenBucket, _MAX_BUCKETS
+
+    # refill_per_second is tiny but non-zero so the wait-time math doesn't
+    # divide by zero; effectively no refill within the test's runtime.
+    bucket = TokenBucket(capacity=10, refill_per_second=0.001)
+    # Drain k0
+    for _ in range(10):
+        assert bucket.take("k0") is None
+    assert bucket.take("k0") is not None  # exhausted
+
+    # Spam other keys until k0 is evicted
+    for i in range(1, _MAX_BUCKETS + 1):
+        bucket.take(f"k{i}")
+    assert "k0" not in bucket._buckets
+
+    # Re-insert k0 — should get a fresh full bucket
+    assert bucket.take("k0") is None  # capacity-many fresh tokens available

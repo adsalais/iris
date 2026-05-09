@@ -77,6 +77,7 @@ class AuthSettings:
     max_per_user: int
     cookie_secure: bool
     auth_db_path: str
+    trust_forwarded_for: bool
     oidc: OIDCSettings | None
     ldap: LDAPSettings | None
     mock: MockSettings | None
@@ -94,6 +95,7 @@ class AuthSettings:
         absolute_ttl_seconds = _get_int("SESSION_ABSOLUTE_TTL_SECONDS", 2_592_000)  # 30 days
         max_per_user = _get_int("SESSION_MAX_PER_USER", 10)
         cookie_secure = _get_bool("COOKIE_SECURE", True)
+        trust_forwarded_for = _get_bool("IRIS_TRUST_FORWARDED_FOR", False)
         auth_db_path = (
             os.environ.get("AUTH_DB_PATH", "").strip() or "./iris-auth.db"
         )
@@ -140,6 +142,7 @@ class AuthSettings:
             max_per_user=max_per_user,
             cookie_secure=cookie_secure,
             auth_db_path=auth_db_path,
+            trust_forwarded_for=trust_forwarded_for,
             oidc=oidc,
             ldap=ldap,
             mock=mock,

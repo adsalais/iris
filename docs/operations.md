@@ -18,6 +18,9 @@ SESSION_ABSOLUTE_TTL_SECONDS=2592000 # 30d, hard cap on top of sliding TTL
 SESSION_MAX_PER_USER=10              # cap concurrent sessions per user (oldest evicted)
 AUTH_DB_PATH=./iris-auth.db          # SQLite file backing the session store; :memory: for tests
 COOKIE_SECURE=true                   # set false for local dev over http
+IRIS_TRUST_FORWARDED_FOR=false       # when true, rate-limit + audit log key on the leftmost
+                                     # X-Forwarded-For IP. Requires a trusted upstream proxy
+                                     # that strips client-supplied X-Forwarded-For.
 
 # OAuth (OIDC discovery)
 OIDC_ISSUER_URL=https://keycloak.example.com/realms/iris
@@ -113,7 +116,8 @@ Applied at `POST /login` and `GET /login/callback`. Failure-redirect URLs are co
 
 Accepted residual risks for the ≤20-user / `--workers 1` deploy profile. Revisit when scaling out or relocating behind a load balancer.
 
-- **Rate limiting behind a reverse proxy.** `POST /login` keys on `request.client.host`. Behind a proxy this is the proxy's IP — the bucket becomes effectively global. Mitigation: run uvicorn with `--proxy-headers --forwarded-allow-ips=<proxy>` so `request.client.host` reflects the `X-Forwarded-For` value.
+- **Rate limiting behind a reverse proxy.** Closed by `IRIS_TRUST_FORWARDED_FOR=true`, which makes `iris.auth.client_ip.client_ip` resolve the bucket key from the leftmost X-Forwarded-For entry. The trusted proxy MUST strip any client-supplied X-Forwarded-For before adding its own; otherwise an attacker can spoof the leftmost value and bypass per-IP rate limits. Spec: `docs/superpowers/specs/2026-05-09-security-hardening-design.md`.
+- **Rate-limiter memory bound.** `TokenBucket` is now LRU-capped at 10 000 entries (~0.4 MB). Past that threshold, eviction is best-effort: an attacker controlling >10K unique IPs evicts legitimate users' buckets, giving themselves fresh capacity per IP rotation. Acceptable for ≤20-user single-host deployments; a real DDoS demands an upstream WAF.
 - **JWKS rotation cache.** `OAuthProvider` caches the IdP's JWKS once on first discovery. If the IdP rotates signing keys, all logins fail until iris is restarted. Tighten by re-fetching on `kid`-not-in-set if rotation matters.
 - **OIDC discovery latency.** Discovery is lazy: the first login attempt after restart pays the discovery latency. Acceptable for v1, but means a slow IdP shifts startup latency to a request boundary instead of failing loud at boot.
 - **`derive_capabilities` query cost.** At login, `derive_capabilities` runs a small handful of CH queries (role-grants walk + grants enumeration). Sub-millisecond at ≤20-user scale; for higher request volumes, consider caching the effective role set per user with a CH version-column invalidation.
@@ -125,6 +129,7 @@ Accepted residual risks for the ≤20-user / `--workers 1` deploy profile. Revis
 
 - **Connection pooling.** `clickhouse-connect`'s `Client` is per-process today. Multi-worker deploys would benefit from a shared connection pool rather than one client per worker.
 - **Streaming `query_as_user`.** For routes that need to stream large result sets back through Datastar SSE without buffering the whole response in memory.
+- **Datastar version refresh.** The bundle is vendored at `src/iris/static/datastar.js`. Bumping the Datastar version is a manual two-step: re-download `https://cdn.jsdelivr.net/gh/starfederation/datastar@<version>/bundles/datastar.js` over the vendored file, then commit. There is no automated check that the vendored bytes match a known-good upstream hash — review carefully on bump.
 
 ---
 

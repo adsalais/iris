@@ -34,9 +34,16 @@ def set_session_store(app: FastAPI, store: SessionStore) -> None:
     app.state.auth_session_store = store
 
 
-def set_settings(app: FastAPI, *, cookie_name: str, cookie_secure: bool = True) -> None:
+def set_settings(
+    app: FastAPI,
+    *,
+    cookie_name: str,
+    cookie_secure: bool = True,
+    trust_forwarded_for: bool = False,
+) -> None:
     app.state.auth_cookie_name = cookie_name
     app.state.auth_cookie_secure = cookie_secure
+    app.state.trust_forwarded_for = trust_forwarded_for
 
 
 def _get_store(request: Request) -> SessionStore:

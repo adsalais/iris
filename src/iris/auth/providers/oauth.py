@@ -141,6 +141,7 @@ class OAuthProvider:
             httponly=True,
             secure=secure,
             samesite="lax",
+            path="/",
         )
         return response
 

@@ -6,8 +6,12 @@ def test_html_responses_have_security_headers(authed_client):
     assert r.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
     csp = r.headers.get("Content-Security-Policy", "")
     assert "default-src 'self'" in csp
-    assert "cdn.jsdelivr.net" in csp  # Datastar
-    assert "'unsafe-eval'" in csp  # Datastar uses new Function() for reactive expressions
+    assert "cdn.jsdelivr.net" not in csp, (
+        "Datastar is now vendored at /static/datastar.js; CSP should not allow the CDN"
+    )
+    assert "script-src 'self' 'unsafe-eval'" in csp, (
+        "Datastar uses new Function() for reactive expressions"
+    )
     assert "frame-ancestors 'none'" in csp
 
 

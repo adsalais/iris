@@ -1,3 +1,18 @@
+"""Double-submit CSRF helpers.
+
+Two verifier deps are provided depending on the request body type:
+
+- ``verify_csrf_form`` — reads the token from a form field
+  (``CSRF_FORM_FIELD``). Use on ``application/x-www-form-urlencoded`` or
+  ``multipart/form-data`` POSTs.
+- ``verify_csrf_header`` — reads the token from the ``X-CSRF-Token`` HTTP
+  header. Use on JSON / Datastar @post / @put / @patch / @delete routes
+  where the body is not form-encoded.
+
+Both compare the submitted token against the ``CSRF_COOKIE_NAME`` cookie
+via constant-time comparison and raise HTTP 400 ``csrf_mismatch`` on any
+discrepancy.
+"""
 from __future__ import annotations
 
 import hmac
@@ -69,6 +84,25 @@ def verify_csrf_form(
 ) -> None:
     cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
     if not cookie or not csrf_token or not hmac.compare_digest(cookie, csrf_token):
+        raise HTTPException(status_code=400, detail="csrf_mismatch")
+
+
+def verify_csrf_header(request: Request) -> None:
+    """Verify CSRF for non-form requests via the X-CSRF-Token header.
+
+    Use ``Depends(verify_csrf_header)`` on JSON / Datastar @post / @put /
+    @patch / @delete routes. The token transmission is still double-submit:
+    the server compares the cookie value with the header value via
+    ``hmac.compare_digest``. Client-side code reads ``CSRF_COOKIE_NAME``
+    (which is JS-readable) and copies it into the request header.
+
+    Use ``verify_csrf_form`` instead for traditional
+    ``application/x-www-form-urlencoded`` or ``multipart/form-data`` POSTs
+    that carry the token in the body.
+    """
+    cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
+    header = request.headers.get("x-csrf-token", "")
+    if not cookie or not header or not hmac.compare_digest(cookie, header):
         raise HTTPException(status_code=400, detail="csrf_mismatch")
 
 

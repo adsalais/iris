@@ -221,6 +221,7 @@ def test_build_provider_raises_runtime_error_when_method_mock_but_settings_missi
         max_per_user=10,
         cookie_secure=False,
         auth_db_path=":memory:",
+        trust_forwarded_for=False,
         oidc=None,
         ldap=None,
         mock=None,  # invariant violation
@@ -241,6 +242,7 @@ def test_build_provider_raises_runtime_error_when_method_ldap_but_settings_missi
         max_per_user=10,
         cookie_secure=False,
         auth_db_path=":memory:",
+        trust_forwarded_for=False,
         oidc=None,
         ldap=None,  # invariant violation
         mock=None,
@@ -261,6 +263,7 @@ def test_build_provider_raises_runtime_error_when_method_oauth_but_settings_miss
         max_per_user=10,
         cookie_secure=False,
         auth_db_path=":memory:",
+        trust_forwarded_for=False,
         oidc=None,  # invariant violation
         ldap=None,
         mock=None,

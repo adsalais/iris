@@ -13,11 +13,13 @@ from starlette.responses import Response
 # the same as eval() by CSP and is blocked without 'unsafe-eval'.
 # Trade-off accepted: Datastar is a first-class dependency of the UI;
 # without 'unsafe-eval' every reactive expression in every template fails.
+# Datastar itself is vendored at /static/datastar.js (see src/iris/static/),
+# so 'self' is sufficient for the script source — no CDN allowlist required.
 # 'unsafe-inline' on style-src is similarly relaxed for inline style
 # attributes that templates and Datastar generate.
 _CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-eval' https://cdn.jsdelivr.net; "
+    "script-src 'self' 'unsafe-eval'; "
     "style-src 'self' 'unsafe-inline'; "
     "connect-src 'self'; "
     "img-src 'self' data:; "

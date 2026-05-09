@@ -7,10 +7,13 @@ from datetime import UTC, datetime
 from html import escape
 from typing import Annotated, Any
 
+from pathlib import Path
+
 from datastar_py.fastapi import DatastarResponse, read_signals
 from datastar_py.fastapi import ServerSentEventGenerator as SSE
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from iris.auth import Session
 from iris.auth.csrf import attach_csrf_cookie, mint_csrf_token
@@ -57,6 +60,12 @@ def build_app(*, install_clickhouse: bool = True) -> FastAPI:
         install_clickhouse_fn(app)
 
     app.add_middleware(SecurityHeadersMiddleware)
+
+    app.mount(
+        "/static",
+        StaticFiles(directory=Path(__file__).parent / "static"),
+        name="static",
+    )
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request, session: Session):
