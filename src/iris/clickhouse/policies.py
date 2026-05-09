@@ -9,7 +9,7 @@ from clickhouse_connect.driver.client import Client
 from iris.clickhouse.bootstrap import GLOBAL_ADMIN_ROLE
 from iris.clickhouse.grants import TIER_DBADMIN, tier_role_name
 from iris.clickhouse.identifiers import (
-    _FIXED_STRING_RE,  # pyright: ignore[reportPrivateUsage]
+    is_fixed_string_type,
     policy_name,
     quote_identifier,
     quote_sql_literal,
@@ -168,7 +168,7 @@ def _build_policy_filter(
         inner = col_type[len("Array(") : -1].strip()
         if inner.startswith("Nullable(") and inner.endswith(")"):
             inner = inner[len("Nullable(") : -1].strip()
-        if inner != "String" and not _FIXED_STRING_RE.match(inner):
+        if inner != "String" and not is_fixed_string_type(inner):
             raise TypeError(
                 f"add_row_policy supports Array(String) variants only; got {col_type}. Extend add_row_policy or pass non-array columns directly."
             )

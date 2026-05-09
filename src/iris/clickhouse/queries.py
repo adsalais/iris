@@ -25,7 +25,7 @@ from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.query import QueryResult
 
 from iris.clickhouse.identifiers import (
-    _FIXED_STRING_RE,  # pyright: ignore[reportPrivateUsage]
+    is_fixed_string_type,
     quote_identifier,
     quote_sql_array_element,
 )
@@ -129,7 +129,7 @@ def _marshal_array_element(v: object, ch_type: str) -> str:
         if v is None:
             return "NULL"
         return _marshal_array_element(v, ch_type[len("Nullable(") : -1])
-    if ch_type == "String" or _FIXED_STRING_RE.match(ch_type):
+    if ch_type == "String" or is_fixed_string_type(ch_type):
         if not isinstance(v, str):
             raise TypeError(f"{ch_type} expects str, got {type(v).__name__}")
         return quote_sql_array_element(v)
@@ -184,7 +184,7 @@ def _marshal_param(v: object, ch_type: str) -> str:
         return str(v)
 
     # String / FixedString(N): bare passthrough; quoting only happens inside arrays.
-    if ch_type == "String" or _FIXED_STRING_RE.match(ch_type):
+    if ch_type == "String" or is_fixed_string_type(ch_type):
         if not isinstance(v, str):
             raise TypeError(f"{ch_type} expects str, got {type(v).__name__}")
         return v

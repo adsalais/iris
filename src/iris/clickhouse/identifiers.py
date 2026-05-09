@@ -9,11 +9,23 @@ from typing import Final
 _IDENT_RE = re.compile(r"^[a-zA-Z0-9_]+$")
 _SLUG_RE = re.compile(r"[^a-zA-Z0-9_]+")
 
-# CH's FixedString(N) type marker. Used by row-policy filter construction
-# and the typed param marshaller to detect FixedString variants of
-# (Array of) string-like types. Hoisted from policies.py + queries.py so
-# both consumers share one source of truth.
+# CH's FixedString(N) type marker. Module-private; consumers go through
+# `is_fixed_string_type` below — that's the only public surface.
 _FIXED_STRING_RE: Final = re.compile(r"^FixedString\(\d+\)$")
+
+
+def is_fixed_string_type(ch_type: str) -> bool:
+    """Return True iff ``ch_type`` is a CH ``FixedString(N)`` literal type
+    string (e.g. ``"FixedString(16)"``).
+
+    Used by row-policy filter construction (``iris.clickhouse.policies``)
+    and the typed param marshaller (``iris.clickhouse.queries``) to detect
+    FixedString variants of (Array of) string-like types. The regex itself
+    is module-private; callers consume this predicate so the implementation
+    can change (e.g. adding ``LowCardinality(FixedString(N))``) without
+    touching every call site.
+    """
+    return _FIXED_STRING_RE.match(ch_type) is not None
 
 # Suffixes iris synthesizes for role names: `<username>_USER`, `<group>_GRP`,
 # `<database>_DBADMIN/_DBWRITER/_DBREADER`. External-input identifiers must

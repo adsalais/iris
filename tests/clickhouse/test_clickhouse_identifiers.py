@@ -133,17 +133,18 @@ def test_validate_identifier_error_message_mentions_offending_suffix():
         pytest.fail("expected InvalidIdentifierError")
 
 
-def test_fixed_string_re_matches_expected_forms():
-    """The hoisted _FIXED_STRING_RE matches `FixedString(N)` and rejects
-    plain `String`, `Nullable(...)`, etc."""
-    from iris.clickhouse.identifiers import _FIXED_STRING_RE
+def test_is_fixed_string_type_matches_expected_forms():
+    """``is_fixed_string_type`` is the public predicate consumers go through.
+    Matches `FixedString(N)` for any digit N, rejects everything else."""
+    from iris.clickhouse.identifiers import is_fixed_string_type
 
-    assert _FIXED_STRING_RE.match("FixedString(16)") is not None
-    assert _FIXED_STRING_RE.match("FixedString(1)") is not None
-    assert _FIXED_STRING_RE.match("String") is None
-    assert _FIXED_STRING_RE.match("Nullable(String)") is None
-    assert _FIXED_STRING_RE.match("FixedString(N)") is None  # not a digit
-    assert _FIXED_STRING_RE.match("FixedString()") is None  # missing arg
+    assert is_fixed_string_type("FixedString(16)") is True
+    assert is_fixed_string_type("FixedString(1)") is True
+    assert is_fixed_string_type("String") is False
+    assert is_fixed_string_type("Nullable(String)") is False
+    assert is_fixed_string_type("FixedString(N)") is False  # not a digit
+    assert is_fixed_string_type("FixedString()") is False  # missing arg
+    assert is_fixed_string_type("") is False
 
 
 def test_policy_name_basic_shape():
