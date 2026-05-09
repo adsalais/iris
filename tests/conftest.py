@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +12,8 @@ from fastapi.testclient import TestClient
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
+from iris.auth.identity import User
+from iris.auth.rights import Capabilities
 from tests._tls import TLSPaths, generate_ca_and_leaf
 
 # Test fixtures that the auth layer needs at import time. setdefault means
@@ -134,3 +137,84 @@ def keycloak_container(tls_paths):
             host=host,
             https_port=int(c.get_exposed_port(8443)),
         )
+
+
+# ---------------------------------------------------------------------------
+# SSE helpers
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SSEEvent:
+    event: str
+    data: str
+
+
+def _parse_sse_text(raw: str) -> list[SSEEvent]:
+    """Split a text/event-stream body into SSEEvents. Tolerates trailing newlines."""
+    events: list[SSEEvent] = []
+    cur_event = ""
+    cur_data: list[str] = []
+    for line in raw.split("\n"):
+        if line == "":
+            if cur_event or cur_data:
+                events.append(SSEEvent(event=cur_event, data="\n".join(cur_data)))
+            cur_event = ""
+            cur_data = []
+            continue
+        if line.startswith("event:"):
+            cur_event = line[len("event:"):].strip()
+        elif line.startswith("data:"):
+            cur_data.append(line[len("data:"):].lstrip())
+    if cur_event or cur_data:
+        events.append(SSEEvent(event=cur_event, data="\n".join(cur_data)))
+    return events
+
+
+@pytest.fixture
+def parse_sse():
+    """Return a function that parses an SSE response body into [SSEEvent]."""
+    return _parse_sse_text
+
+
+# ---------------------------------------------------------------------------
+# Capability-controlled session minting
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def capability_session(app):
+    """Return an async function: build a session with given Capabilities,
+    return (TestClient with cookie set, session_id)."""
+    async def _make(
+        *,
+        is_admin: bool = False,
+        can_create_database: bool = False,
+        db_admin: Iterable[str] = (),
+        db_writer: Iterable[str] = (),
+        db_reader: Iterable[str] = (),
+        username: str = "alice",
+        display_name: str = "Alice",
+        groups: tuple[str, ...] = ("users",),
+        subject: str | None = None,
+    ) -> tuple[TestClient, str]:
+        store = app.state.auth_session_store
+        user = User(
+            subject=subject or f"mock:{username}",
+            username=username,
+            display_name=display_name,
+            groups=groups,
+        )
+        session = await store.create(user)
+        caps = Capabilities(
+            is_admin=is_admin,
+            can_create_database=can_create_database,
+            db_admin=frozenset(db_admin),
+            db_writer=frozenset(db_writer),
+            db_reader=frozenset(db_reader),
+        )
+        await store.set_capabilities(session.id, caps)
+        client = TestClient(app)
+        client.cookies.set("iris_session", session.id)
+        return client, session.id
+    return _make
