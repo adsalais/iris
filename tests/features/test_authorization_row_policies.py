@@ -21,8 +21,8 @@ def test_add_policy_403_when_not_db_admin(app, capability_session):
     _seed(app, sid)
     r = client.post(
         "/feature/auth/MG12CD34/policies",
-        params={"table": "events", "column": "user_id",
-                "role": "r1", "value": "alice"},
+        params={"database": "marketing", "table": "events",
+                "column": "user_id", "role": "r1", "value": "alice"},
         headers=_csrf(client),
     )
     assert r.status_code == 403
@@ -44,8 +44,8 @@ def test_add_policy_calls_db_session_method(app, capability_session, monkeypatch
     _seed(app, sid)
     r = client.post(
         "/feature/auth/MG12CD34/policies",
-        params={"table": "events", "column": "user_id",
-                "role": "r1", "value": "alice"},
+        params={"database": "marketing", "table": "events",
+                "column": "user_id", "role": "r1", "value": "alice"},
         headers=_csrf(client),
     )
     assert r.status_code == 200
@@ -69,7 +69,8 @@ def test_revoke_policy_calls_db_session_method(app, capability_session, monkeypa
     _seed(app, sid)
     r = client.delete(
         "/feature/auth/MG12CD34/policies",
-        params={"table": "events", "role": "r1", "value": "alice"},
+        params={"database": "marketing", "table": "events",
+                "role": "r1", "value": "alice"},
         headers=_csrf(client),
     )
     assert r.status_code == 200

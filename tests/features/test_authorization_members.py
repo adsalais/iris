@@ -23,7 +23,7 @@ def test_grant_reader_user_returns_403_when_not_db_admin(app, capability_session
     headers = _csrf_headers(client)
     r = client.post(
         "/feature/auth/MG12CD34/members/reader/user",
-        params={"username": "bob"},
+        params={"database": "marketing", "username": "bob"},
         headers=headers,
     )
     assert r.status_code == 403
@@ -39,7 +39,7 @@ def test_grant_reader_user_returns_422_on_empty_username(app, capability_session
     headers = _csrf_headers(client)
     r = client.post(
         "/feature/auth/MG12CD34/members/reader/user",
-        params={"username": ""},
+        params={"database": "marketing", "username": ""},
         headers=headers,
     )
     assert r.status_code == 422
@@ -64,7 +64,7 @@ def test_grant_reader_user_calls_db_session_method(app, capability_session, monk
     headers = _csrf_headers(client)
     r = client.post(
         "/feature/auth/MG12CD34/members/reader/user",
-        params={"username": "bob"},
+        params={"database": "marketing", "username": "bob"},
         headers=headers,
     )
     assert r.status_code == 200
@@ -94,7 +94,7 @@ def test_revoke_admin_group_calls_remove_admin_group(
     headers = _csrf_headers(client)
     r = client.delete(
         "/feature/auth/MG12CD34/members/admin/group",
-        params={"group": "data-team"},
+        params={"database": "marketing", "group": "data-team"},
         headers=headers,
     )
     assert r.status_code == 200
@@ -107,7 +107,7 @@ def test_grant_routes_csrf_required(app, capability_session):
     client.get("/")
     r = client.post(
         "/feature/auth/MG12CD34/members/reader/user",
-        params={"username": "bob"},
+        params={"database": "marketing", "username": "bob"},
         headers={"Datastar-Request": "true"},
     )
     assert r.status_code == 400

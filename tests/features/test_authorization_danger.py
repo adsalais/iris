@@ -21,7 +21,7 @@ def test_delete_database_403_when_not_db_admin(app, capability_session):
     _seed(app, sid)
     r = client.delete(
         "/feature/auth/DG12CD34/database",
-        params={"confirm": "marketing"},
+        params={"database": "marketing", "confirm": "marketing"},
         headers=_csrf(client),
     )
     assert r.status_code == 403
@@ -38,7 +38,7 @@ def test_delete_database_400_when_confirm_mismatches(app, capability_session, mo
     _seed(app, sid)
     r = client.delete(
         "/feature/auth/DG12CD34/database",
-        params={"confirm": "wrong-name"},
+        params={"database": "marketing", "confirm": "wrong-name"},
         headers=_csrf(client),
     )
     assert r.status_code == 400
@@ -55,7 +55,7 @@ def test_delete_database_calls_method_and_closes_tab(app, capability_session, mo
     _seed(app, sid)
     r = client.delete(
         "/feature/auth/DG12CD34/database",
-        params={"confirm": "marketing"},
+        params={"database": "marketing", "confirm": "marketing"},
         headers=_csrf(client),
     )
     assert r.status_code == 200
