@@ -13,7 +13,7 @@ def _build_app() -> FastAPI:
     from pathlib import Path
     import iris
     from iris.templates import init_templates, register_template_dir
-    register_template_dir(Path(iris.__file__).parent / "auth" / "templates")
+    register_template_dir("auth", Path(iris.__file__).parent / "auth" / "templates")
     app.state.templates = init_templates()
 
     async def needs_auth():

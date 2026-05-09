@@ -215,7 +215,7 @@ def install(app: FastAPI) -> None:
 
     from pathlib import Path
     from iris.templates import register_template_dir
-    register_template_dir(Path(__file__).parent / "templates")
+    register_template_dir("auth", Path(__file__).parent / "templates")
 
     set_session_store(app, store)
     set_settings(

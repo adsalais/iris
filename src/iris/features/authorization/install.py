@@ -26,7 +26,7 @@ def install(app: FastAPI) -> None:
     contribs: Contributions = app.state.contributions
     dispatcher: IntentDispatcher = app.state.intent_dispatcher
 
-    register_template_dir(Path(__file__).parent / "templates")
+    register_template_dir("authorization", Path(__file__).parent / "templates")
 
     _register_intents(dispatcher)
     _register_nav(contribs)

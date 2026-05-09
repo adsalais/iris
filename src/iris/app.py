@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 
 from iris.middleware import SecurityHeadersMiddleware
 from iris.templates import init_templates
@@ -50,11 +48,5 @@ def build_app(*, install_clickhouse: bool = True) -> FastAPI:
     app.state.templates.env.globals["tab_render_url"] = tab_render_url  # pyright: ignore[reportArgumentType]
 
     app.add_middleware(SecurityHeadersMiddleware)
-
-    app.mount(
-        "/static",
-        StaticFiles(directory=Path(__file__).parent / "static"),
-        name="static",
-    )
 
     return app

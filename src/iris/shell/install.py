@@ -21,7 +21,7 @@ def install(app: FastAPI) -> None:
     app.state.contributions = Contributions()
     app.state.intent_dispatcher = IntentDispatcher()
 
-    register_template_dir(Path(__file__).parent / "templates")
+    register_template_dir("shell", Path(__file__).parent / "templates")
 
     app.mount(
         "/static/shell",
