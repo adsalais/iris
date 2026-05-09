@@ -1,0 +1,11 @@
+<section id="{{ panel_id }}-members" class="iris-members-section">
+  <h3>Members</h3>
+  <div class="iris-members-tier">
+    <h4>Admins</h4>
+    <ul>
+      {% for m in members.admin %}
+      <li>{{ "group: " if m.kind == "role" else "" }}{{ m.name }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>

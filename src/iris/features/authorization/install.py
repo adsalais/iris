@@ -1,8 +1,6 @@
 """Install the Authorization feature into a FastAPI app.
 
-Registers nav contributions (Authorization + Org admin groups), intent
-specs (my_access at this Phase 3 point; manage / create_database /
-admin_console land in subsequent phases), the per-feature templates dir,
+Registers nav contributions, intent specs, the per-feature templates dir,
 and mounts the feature's APIRouter at /feature/auth.
 
 Depends on app.state.contributions and app.state.intent_dispatcher
@@ -44,6 +42,12 @@ def _register_intents(dispatcher: IntentDispatcher) -> None:
         title=lambda _params: "My access",
         required=lambda _c: True,
     ))
+    dispatcher.register(IntentSpec(
+        feature="auth",
+        intent="manage",
+        title=lambda params: f"Manage {params.get('database', '')}",
+        required=lambda c: c.is_admin or bool(c.db_admin),
+    ))
 
 
 def _register_nav(contribs: Contributions) -> None:
@@ -51,8 +55,18 @@ def _register_nav(contribs: Contributions) -> None:
         label="Authorization",
         entries=(
             NavEntry("My access", on_click=TabIntent("auth", "my_access")),
-            # Databases I admin / Create database land in Phase 4 / Phase 5
-            # alongside the manage / create_database intents.
+            NavEntry(
+                "Databases I admin",
+                visible=lambda c: bool(c.db_admin),
+                badge=lambda c: str(len(c.db_admin)) if c.db_admin else None,
+                children=lambda c: [
+                    NavEntry(
+                        db,
+                        on_click=TabIntent("auth", "manage", {"database": db}),
+                    )
+                    for db in sorted(c.db_admin)
+                ],
+            ),
         ),
     ))
     contribs.nav.add(NavGroup(
