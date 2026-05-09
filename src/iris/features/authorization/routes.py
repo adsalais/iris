@@ -270,3 +270,45 @@ async def revoke_policy(
     db, panel_id = await _members_route_common(session, tab_id)
     await db.revoke_row_policy(table=table, role=role, value=value)
     return await _re_render_policies(request, db, panel_id, tab_id)
+
+
+# ---------------------------------------------------------------------------
+# danger zone — delete database
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/{tab_id}/database")
+async def delete_database(
+    session: Session, tab_id: str,
+    confirm: Annotated[str, Query(min_length=0, max_length=255)],
+    _: None = Depends(verify_csrf_header),
+) -> Response:
+    from iris.shell.tabs import remove_tab
+
+    rec = find_tab(session.data, tab_id)
+    if rec is None or rec.feature != "auth" or rec.intent != "manage":
+        raise HTTPException(status_code=404, detail="tab not found")
+    database = rec.params.get("database", "")
+    if not database:
+        raise HTTPException(status_code=400, detail="database missing")
+
+    db_session = _promote_to_db_admin(session, database)
+
+    if confirm != database:
+        raise HTTPException(
+            status_code=400,
+            detail="confirmation does not match the database name",
+        )
+
+    await db_session.delete_database()
+
+    remove_tab(session.data, tab_id)
+    await session.persist_data()
+    return DatastarResponse([
+        SSE.patch_elements(
+            selector=f"#tab-button-{tab_id}", mode=ElementPatchMode.REMOVE,
+        ),
+        SSE.patch_elements(
+            selector=f"#tab-content-{tab_id}", mode=ElementPatchMode.REMOVE,
+        ),
+    ])
