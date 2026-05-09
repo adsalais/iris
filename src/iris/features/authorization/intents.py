@@ -97,8 +97,31 @@ async def render_create_database(
     )
 
 
+async def render_admin_console(
+    request: Request,
+    session: "AuthSession",
+    rec: "TabRecord",
+) -> Response:
+    from iris.shell.element_id import tab_panel_id
+
+    if not session.capabilities.is_admin:
+        raise HTTPException(status_code=403, detail="admin only")
+    templates = request.app.state.templates
+    initial_subtab = rec.params.get("subtab", "users")
+    return templates.TemplateResponse(
+        request,
+        "authorization/admin_console.html",
+        {
+            "panel_id": tab_panel_id(rec.id),
+            "tab_id": rec.id,
+            "initial_subtab": initial_subtab,
+        },
+    )
+
+
 RENDER_BY_INTENT: dict[str, IntentHandler] = {
     "my_access": render_my_access,
     "manage": render_manage,
     "create_database": render_create_database,
+    "admin_console": render_admin_console,
 }

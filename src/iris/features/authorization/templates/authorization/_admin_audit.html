@@ -1,0 +1,16 @@
+<section id="{{ panel_id }}-subtab">
+  <h3>Audit (system.grants)</h3>
+  <table>
+    <thead><tr><th>Grantee</th><th>Access</th><th>Database</th><th>Table</th></tr></thead>
+    <tbody>
+      {% for row in grants %}
+      <tr>
+        <td>{{ row.user_name or ("role: " + (row.role_name or "?")) }}</td>
+        <td>{{ row.access_type }}</td>
+        <td>{{ row.database or "—" }}</td>
+        <td>{{ row.table or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>

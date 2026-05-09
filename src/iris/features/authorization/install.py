@@ -54,6 +54,12 @@ def _register_intents(dispatcher: IntentDispatcher) -> None:
         title=lambda _params: "Create database",
         required=lambda c: c.is_admin or c.can_create_database,
     ))
+    dispatcher.register(IntentSpec(
+        feature="auth",
+        intent="admin_console",
+        title=lambda _params: "Org admin console",
+        required=lambda c: c.is_admin,
+    ))
 
 
 def _register_nav(contribs: Contributions) -> None:
@@ -83,5 +89,14 @@ def _register_nav(contribs: Contributions) -> None:
     contribs.nav.add(NavGroup(
         label="Org admin",
         visible=lambda c: c.is_admin,
-        entries=(),
+        entries=(
+            NavEntry("All users",
+                     on_click=TabIntent("auth", "admin_console", {"subtab": "users"})),
+            NavEntry("All databases",
+                     on_click=TabIntent("auth", "admin_console", {"subtab": "databases"})),
+            NavEntry("Row policies",
+                     on_click=TabIntent("auth", "admin_console", {"subtab": "policies"})),
+            NavEntry("Audit",
+                     on_click=TabIntent("auth", "admin_console", {"subtab": "audit"})),
+        ),
     ))
