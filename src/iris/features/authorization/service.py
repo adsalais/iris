@@ -29,9 +29,10 @@ def my_access_view(caps: Capabilities) -> dict[str, Any]:
 async def manage_view(session: "DatabaseAdminSession") -> dict[str, Any]:
     """Build the manage-page context."""
     members = await list_members(session)
+    row_policies = await session.list_row_policies()
     return {
         "members": members,
-        "row_policies": [],   # task 4.3
+        "row_policies": row_policies,
         "audit": [],          # task 4.4
     }
 

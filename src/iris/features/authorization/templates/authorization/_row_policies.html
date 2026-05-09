@@ -1,0 +1,21 @@
+<section id="{{ panel_id }}-policies" class="iris-policies-section">
+  <h3>Row policies</h3>
+  <ul>
+    {% for p in row_policies %}
+    <li>
+      {{ p.table | default("?") }} ON role {{ p.short_name | default(p.name) | default("?") }}: {{ p.select_filter | default("?") }}
+      <button data-on:click="@delete('/feature/auth/{{ tab_id }}/policies?table=' + encodeURIComponent({{ (p.table or '') | tojson }}) + '&amp;role=' + encodeURIComponent({{ (p.short_name or p.name or '') | tojson }}) + '&amp;value=' + encodeURIComponent({{ (p.select_filter or '') | tojson }}))">
+        &times;
+      </button>
+    </li>
+    {% endfor %}
+  </ul>
+  <form data-on:submit="@post('/feature/auth/{{ tab_id }}/policies?table=' + encodeURIComponent($tabs.{{ tab_id }}.policy_table || '') + '&amp;column=' + encodeURIComponent($tabs.{{ tab_id }}.policy_column || '') + '&amp;role=' + encodeURIComponent($tabs.{{ tab_id }}.policy_role || '') + '&amp;value=' + encodeURIComponent($tabs.{{ tab_id }}.policy_value || ''))"
+        class="iris-add-policy">
+    <input placeholder="table" data-bind="tabs.{{ tab_id }}.policy_table">
+    <input placeholder="column" data-bind="tabs.{{ tab_id }}.policy_column">
+    <input placeholder="role" data-bind="tabs.{{ tab_id }}.policy_role">
+    <input placeholder="value" data-bind="tabs.{{ tab_id }}.policy_value">
+    <button type="submit">+ add row policy</button>
+  </form>
+</section>

@@ -314,6 +314,25 @@ class DatabaseAdminSession(DatabaseSession):
 
         return await asyncio.to_thread(_sync)
 
+    async def add_row_policy(
+        self, *, table: str, column: str, role: str, value: str,
+    ) -> None:
+        client, _, _ = self._ch()
+        await asyncio.to_thread(
+            policies.add_row_policy, client,
+            database=self.database, table=table, column=column,
+            role=role, value=value,
+        )
+
+    async def revoke_row_policy(
+        self, *, table: str, role: str, value: str,
+    ) -> None:
+        client, _, _ = self._ch()
+        await asyncio.to_thread(
+            policies.revoke_row_policy, client,
+            database=self.database, table=table, role=role, value=value,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class DatabaseCreatorSession(AuthSession):

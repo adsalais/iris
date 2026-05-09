@@ -223,3 +223,50 @@ async def revoke_admin_group(
     db, panel_id = await _members_route_common(session, tab_id)
     await db.remove_admin_group(group)
     return await _re_render_members(request, db, panel_id, tab_id)
+
+
+# ---------------------------------------------------------------------------
+# manage row policies
+# ---------------------------------------------------------------------------
+
+
+async def _re_render_policies(
+    request: Request, db_session: DatabaseAdminSession, panel_id: str, tab_id: str,
+) -> Response:
+    row_policies = await db_session.list_row_policies()
+    templates = request.app.state.templates
+    html = templates.get_template("authorization/_row_policies.html").render(
+        panel_id=panel_id, tab_id=tab_id, row_policies=row_policies,
+    )
+    return DatastarResponse(
+        SSE.patch_elements(
+            html, selector=f"#{panel_id}-policies", mode=ElementPatchMode.OUTER,
+        ),
+    )
+
+
+@router.post("/{tab_id}/policies")
+async def add_policy(
+    request: Request, session: Session, tab_id: str,
+    table: Annotated[str, Query(min_length=1, max_length=64)],
+    column: Annotated[str, Query(min_length=1, max_length=64)],
+    role: Annotated[str, Query(min_length=1, max_length=64)],
+    value: Annotated[str, Query(min_length=0, max_length=4096)],
+    _: None = Depends(verify_csrf_header),
+) -> Response:
+    db, panel_id = await _members_route_common(session, tab_id)
+    await db.add_row_policy(table=table, column=column, role=role, value=value)
+    return await _re_render_policies(request, db, panel_id, tab_id)
+
+
+@router.delete("/{tab_id}/policies")
+async def revoke_policy(
+    request: Request, session: Session, tab_id: str,
+    table: Annotated[str, Query(min_length=1, max_length=64)],
+    role: Annotated[str, Query(min_length=1, max_length=64)],
+    value: Annotated[str, Query(min_length=0, max_length=4096)],
+    _: None = Depends(verify_csrf_header),
+) -> Response:
+    db, panel_id = await _members_route_common(session, tab_id)
+    await db.revoke_row_policy(table=table, role=role, value=value)
+    return await _re_render_policies(request, db, panel_id, tab_id)
