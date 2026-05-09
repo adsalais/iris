@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, cast
 
 from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.exceptions import DatabaseError
@@ -155,3 +155,35 @@ def grant_insert_update_to_table(
     role_q = quote_identifier(role, kind="role")
     client.command(f"GRANT INSERT ON {db_q}.{table_q} TO {role_q}")
     client.command(f"GRANT ALTER UPDATE ON {db_q}.{table_q} TO {role_q}")
+
+
+def list_tier_members(
+    client: Client, *, database: str,
+) -> dict[str, list[dict[str, str]]]:
+    """Return tier-role members for ``database``, keyed by tier.
+
+    Result shape: ``{"admin": [...], "reader": [...], "writer": [...]}``.
+    Each entry is ``{"kind": "user" | "role", "name": <str>}`` — derived from
+    ``system.role_grants`` rows that target the per-database tier role
+    (``<database>_DBADMIN``, ``<database>_DBWRITER``, ``<database>_DBREADER``).
+    """
+    out: dict[str, list[dict[str, str]]] = {"admin": [], "reader": [], "writer": []}
+    for tier_const, tier_key in (
+        (TIER_DBADMIN, "admin"),
+        (TIER_DBREADER, "reader"),
+        (TIER_DBWRITER, "writer"),
+    ):
+        role = tier_role_name(database, tier_const)
+        rows = client.query(
+            "SELECT user_name, role_name FROM system.role_grants "
+            + "WHERE granted_role_name = {r:String}",
+            parameters={"r": role},
+        )
+        for row in rows.named_results():
+            u = row.get("user_name")
+            r2 = row.get("role_name")
+            if u:
+                out[tier_key].append({"kind": "user", "name": cast(str, u)})
+            elif r2:
+                out[tier_key].append({"kind": "role", "name": cast(str, r2)})
+    return out

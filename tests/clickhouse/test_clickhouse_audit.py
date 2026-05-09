@@ -119,3 +119,83 @@ def test_table_row_policies(ch_client, ch_settings, prefix):
 
     rows = table_row_policies(ch_client, database=db, table="t")
     assert any(r["database"] == db and r["table"] == "t" for r in rows), rows
+
+
+def test_list_all_users_returns_users_with_role_lists(ch_client, ch_settings, prefix):
+    """Each user row carries the names of granted roles."""
+    from iris.clickhouse.audit import list_all_users
+
+    user = f"{prefix}_listusr"
+    role = f"{prefix}_listrole"
+    ch_client.command(f"CREATE USER `{user}` IDENTIFIED BY 'pw'")
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{role}`")
+    ch_client.command(f"GRANT `{role}` TO `{user}`")
+
+    result = list_all_users(ch_client)
+    by_name = {row["name"]: row for row in result}
+    assert user in by_name
+    assert role in by_name[user]["groups"]
+
+
+def test_list_all_databases_returns_tier_counts(ch_client, ch_settings, prefix):
+    """Each database row carries admin_count, writer_count, reader_count
+    derived from system.role_grants."""
+    from iris.clickhouse.audit import list_all_databases
+    from iris.clickhouse.bootstrap import GLOBAL_ADMIN_ROLE
+    from iris.clickhouse.grants import (
+        TIER_DBADMIN,
+        TIER_DBWRITER,
+        create_tier_roles,
+        grant_tier_to_user,
+    )
+
+    db = f"{prefix}_listdb"
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    ch_client.command(f"CREATE ROLE IF NOT EXISTS `{GLOBAL_ADMIN_ROLE}`")
+    create_tier_roles(ch_client, database=db)
+    grant_tier_to_user(
+        ch_client, database=db, tier=TIER_DBADMIN,
+        username=f"{prefix}_listdb_alice",
+    )
+    grant_tier_to_user(
+        ch_client, database=db, tier=TIER_DBWRITER,
+        username=f"{prefix}_listdb_bob",
+    )
+
+    result = list_all_databases(ch_client)
+    by_name = {row["name"]: row for row in result}
+    assert db in by_name
+    assert by_name[db]["admin_count"] >= 1
+    assert by_name[db]["writer_count"] >= 1
+    assert by_name[db]["reader_count"] == 0
+
+
+def test_list_all_row_policies_includes_seeded_policy(ch_client, ch_settings, prefix):
+    """Returns full system.row_policies rows; seeded policy must appear."""
+    from iris.clickhouse.audit import list_all_row_policies
+
+    db = f"{prefix}_listpol_db"
+    role = f"{prefix}_listpol_role"
+    _setup_policy_for_role(ch_client, ch_settings, db, role)
+
+    result = list_all_row_policies(ch_client)
+    seen = {(row["database"], row["table"]) for row in result}
+    assert (db, "t") in seen
+
+
+def test_list_all_grants_includes_seeded_grant(ch_client, ch_settings, prefix):
+    """Returns full system.grants rows; seeded grant must appear."""
+    from iris.clickhouse.audit import list_all_grants
+
+    db = f"{prefix}_listgrants"
+    user = f"{prefix}_listgrants_alice"
+    ch_client.command(f"CREATE DATABASE IF NOT EXISTS `{db}`")
+    ch_client.command(f"CREATE USER `{user}` IDENTIFIED BY 'pw'")
+    ch_client.command(f"GRANT SELECT ON `{db}`.* TO `{user}`")
+
+    result = list_all_grants(ch_client)
+    seen = {
+        (row.get("user_name"), row.get("database"), row.get("access_type"))
+        for row in result
+    }
+    assert (user, db, "SELECT") in seen

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from clickhouse_connect.driver.client import Client
 
@@ -94,3 +94,74 @@ def table_row_policies(
             parameters={"d": database, "t": table},
         ).named_results()
     )
+
+
+def list_all_users(client: Client) -> list[dict[str, Any]]:
+    """All CH users with their granted role names.
+
+    Returns ``[{"name": <username>, "groups": [<role_name>, ...]}]``.
+    The ``groups`` key is the list of role names granted to the user
+    (group is iris's terminology in the auth feature; CH calls them roles).
+    """
+    rows = client.query("SELECT name FROM system.users ORDER BY name")
+    users: list[dict[str, Any]] = []
+    for row in rows.named_results():
+        uname = cast(str, row["name"])
+        role_rows = client.query(
+            "SELECT granted_role_name FROM system.role_grants "
+            + "WHERE user_name = {u:String}",
+            parameters={"u": uname},
+        )
+        roles = [cast(str, r["granted_role_name"]) for r in role_rows.named_results()]
+        users.append({"name": uname, "groups": roles})
+    return users
+
+
+def list_all_databases(client: Client) -> list[dict[str, Any]]:
+    """All databases with admin / writer / reader counts derived from
+    ``system.role_grants`` against the per-database tier roles.
+
+    Returns ``[{"name": <db>, "admin_count": int, "writer_count": int,
+    "reader_count": int}]``.
+    """
+    from iris.clickhouse.grants import (
+        TIER_DBADMIN,
+        TIER_DBREADER,
+        TIER_DBWRITER,
+        tier_role_name,
+    )
+    db_rows = client.query("SELECT name FROM system.databases ORDER BY name")
+    out: list[dict[str, Any]] = []
+    for row in db_rows.named_results():
+        db = cast(str, row["name"])
+        counts: dict[str, int] = {}
+        for tier_const, key in (
+            (TIER_DBADMIN, "admin_count"),
+            (TIER_DBWRITER, "writer_count"),
+            (TIER_DBREADER, "reader_count"),
+        ):
+            role = tier_role_name(db, tier_const)
+            count_rows = client.query(
+                "SELECT count() AS c FROM system.role_grants "
+                + "WHERE granted_role_name = {r:String}",
+                parameters={"r": role},
+            )
+            counts[key] = cast(int, next(count_rows.named_results())["c"])
+        out.append({"name": db, **counts})
+    return out
+
+
+def list_all_row_policies(client: Client) -> list[dict[str, Any]]:
+    """All rows from ``system.row_policies``, ordered by (database, table)."""
+    rows = client.query(
+        "SELECT * FROM system.row_policies ORDER BY database, table",
+    )
+    return list(rows.named_results())
+
+
+def list_all_grants(client: Client) -> list[dict[str, Any]]:
+    """All rows from ``system.grants``, ordered by (database, user_name, role_name)."""
+    rows = client.query(
+        "SELECT * FROM system.grants ORDER BY database, user_name, role_name",
+    )
+    return list(rows.named_results())
