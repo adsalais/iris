@@ -14,7 +14,7 @@ from datastar_py.fastapi import ServerSentEventGenerator as SSE
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from iris.auth.csrf import verify_csrf_header
-from iris.auth.deps import Session
+from iris.auth.deps import Session, SessionDatabaseAdmin
 from iris.auth.views import AdminSession, AuthSession, DatabaseAdminSession
 from iris.shell.element_id import tab_panel_id
 from iris.shell.tabs import find_tab
@@ -44,33 +44,6 @@ async def render(
 # ---------------------------------------------------------------------------
 
 
-def _promote_to_db_admin(session: AuthSession, database: str) -> DatabaseAdminSession:
-    if not session.capabilities.has_admin(database):
-        raise HTTPException(status_code=403, detail="not a database admin")
-    return DatabaseAdminSession(
-        id=session.id, user=session.user,
-        created_at=session.created_at, expires_at=session.expires_at,
-        data=session.data, capabilities=session.capabilities,
-        client=session.client, http_client=session.http_client,
-        settings=session.settings, store=session.store,
-        database=database,
-    )
-
-
-async def _members_route_common(
-    session: AuthSession, tab_id: str,
-) -> tuple[DatabaseAdminSession, str]:
-    """Resolve tab → database → DatabaseAdminSession + panel_id."""
-    rec = find_tab(session.data, tab_id)
-    if rec is None or rec.feature != "auth" or rec.intent != "manage":
-        raise HTTPException(status_code=404, detail="tab not found")
-    database = rec.params.get("database", "")
-    if not database:
-        raise HTTPException(status_code=400, detail="database missing")
-    db_session = _promote_to_db_admin(session, database)
-    return db_session, tab_panel_id(rec.id)
-
-
 async def _re_render_members(
     request: Request, db_session: DatabaseAdminSession, panel_id: str, tab_id: str,
 ) -> Response:
@@ -79,6 +52,7 @@ async def _re_render_members(
     templates = request.app.state.templates
     html = templates.get_template("authorization/_members_section.html").render(
         panel_id=panel_id, tab_id=tab_id, members=members,
+        database=db_session.database,
     )
     return DatastarResponse(
         SSE.patch_elements(
@@ -90,139 +64,139 @@ async def _re_render_members(
 # Reader user
 @router.post("/{tab_id}/members/reader/user")
 async def grant_reader_user(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     username: Annotated[str, Query(min_length=1, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.grant_reader(username)
-    return await _re_render_members(request, db, panel_id, tab_id)
+    return await _re_render_members(request, db, tab_panel_id(tab_id), tab_id)
 
 
 @router.delete("/{tab_id}/members/reader/user")
 async def revoke_reader_user(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     username: Annotated[str, Query(min_length=1, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.revoke_reader(username)
-    return await _re_render_members(request, db, panel_id, tab_id)
+    return await _re_render_members(request, db, tab_panel_id(tab_id), tab_id)
 
 
 # Reader group
 @router.post("/{tab_id}/members/reader/group")
 async def grant_reader_group(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     group: Annotated[str, Query(min_length=1, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.grant_reader_to_group(group)
-    return await _re_render_members(request, db, panel_id, tab_id)
+    return await _re_render_members(request, db, tab_panel_id(tab_id), tab_id)
 
 
 @router.delete("/{tab_id}/members/reader/group")
 async def revoke_reader_group(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     group: Annotated[str, Query(min_length=1, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.revoke_reader_from_group(group)
-    return await _re_render_members(request, db, panel_id, tab_id)
+    return await _re_render_members(request, db, tab_panel_id(tab_id), tab_id)
 
 
 # Writer user
 @router.post("/{tab_id}/members/writer/user")
 async def grant_writer_user(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     username: Annotated[str, Query(min_length=1, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.grant_writer(username)
-    return await _re_render_members(request, db, panel_id, tab_id)
+    return await _re_render_members(request, db, tab_panel_id(tab_id), tab_id)
 
 
 @router.delete("/{tab_id}/members/writer/user")
 async def revoke_writer_user(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     username: Annotated[str, Query(min_length=1, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.revoke_writer(username)
-    return await _re_render_members(request, db, panel_id, tab_id)
+    return await _re_render_members(request, db, tab_panel_id(tab_id), tab_id)
 
 
 # Writer group
 @router.post("/{tab_id}/members/writer/group")
 async def grant_writer_group(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     group: Annotated[str, Query(min_length=1, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.grant_writer_to_group(group)
-    return await _re_render_members(request, db, panel_id, tab_id)
+    return await _re_render_members(request, db, tab_panel_id(tab_id), tab_id)
 
 
 @router.delete("/{tab_id}/members/writer/group")
 async def revoke_writer_group(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     group: Annotated[str, Query(min_length=1, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.revoke_writer_from_group(group)
-    return await _re_render_members(request, db, panel_id, tab_id)
+    return await _re_render_members(request, db, tab_panel_id(tab_id), tab_id)
 
 
 # Admin user
 @router.post("/{tab_id}/members/admin/user")
 async def grant_admin_user(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     username: Annotated[str, Query(min_length=1, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.add_admin_user(username)
-    return await _re_render_members(request, db, panel_id, tab_id)
+    return await _re_render_members(request, db, tab_panel_id(tab_id), tab_id)
 
 
 @router.delete("/{tab_id}/members/admin/user")
 async def revoke_admin_user(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     username: Annotated[str, Query(min_length=1, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.remove_admin_user(username)
-    return await _re_render_members(request, db, panel_id, tab_id)
+    return await _re_render_members(request, db, tab_panel_id(tab_id), tab_id)
 
 
 # Admin group
 @router.post("/{tab_id}/members/admin/group")
 async def grant_admin_group(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     group: Annotated[str, Query(min_length=1, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.add_admin_group(group)
-    return await _re_render_members(request, db, panel_id, tab_id)
+    return await _re_render_members(request, db, tab_panel_id(tab_id), tab_id)
 
 
 @router.delete("/{tab_id}/members/admin/group")
 async def revoke_admin_group(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     group: Annotated[str, Query(min_length=1, max_length=64)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.remove_admin_group(group)
-    return await _re_render_members(request, db, panel_id, tab_id)
+    return await _re_render_members(request, db, tab_panel_id(tab_id), tab_id)
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +211,7 @@ async def _re_render_policies(
     templates = request.app.state.templates
     html = templates.get_template("authorization/_row_policies.html").render(
         panel_id=panel_id, tab_id=tab_id, row_policies=row_policies,
+        database=db_session.database,
     )
     return DatastarResponse(
         SSE.patch_elements(
@@ -247,29 +222,29 @@ async def _re_render_policies(
 
 @router.post("/{tab_id}/policies")
 async def add_policy(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     table: Annotated[str, Query(min_length=1, max_length=64)],
     column: Annotated[str, Query(min_length=1, max_length=64)],
     role: Annotated[str, Query(min_length=1, max_length=64)],
     value: Annotated[str, Query(min_length=0, max_length=4096)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.add_row_policy(table=table, column=column, role=role, value=value)
-    return await _re_render_policies(request, db, panel_id, tab_id)
+    return await _re_render_policies(request, db, tab_panel_id(tab_id), tab_id)
 
 
 @router.delete("/{tab_id}/policies")
 async def revoke_policy(
-    request: Request, session: Session, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     table: Annotated[str, Query(min_length=1, max_length=64)],
     role: Annotated[str, Query(min_length=1, max_length=64)],
     value: Annotated[str, Query(min_length=0, max_length=4096)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
-    db, panel_id = await _members_route_common(session, tab_id)
     await db.revoke_row_policy(table=table, role=role, value=value)
-    return await _re_render_policies(request, db, panel_id, tab_id)
+    return await _re_render_policies(request, db, tab_panel_id(tab_id), tab_id)
 
 
 # ---------------------------------------------------------------------------
@@ -447,20 +422,12 @@ async def submit_create_database(
 
 @router.delete("/{tab_id}/database")
 async def delete_database(
-    session: Session, tab_id: str,
+    db: SessionDatabaseAdmin, tab_id: str,
+    database: Annotated[str, Query(min_length=1, max_length=64)],
     confirm: Annotated[str, Query(min_length=0, max_length=255)],
     _: None = Depends(verify_csrf_header),
 ) -> Response:
     from iris.shell.tabs import remove_tab
-
-    rec = find_tab(session.data, tab_id)
-    if rec is None or rec.feature != "auth" or rec.intent != "manage":
-        raise HTTPException(status_code=404, detail="tab not found")
-    database = rec.params.get("database", "")
-    if not database:
-        raise HTTPException(status_code=400, detail="database missing")
-
-    db_session = _promote_to_db_admin(session, database)
 
     if confirm != database:
         raise HTTPException(
@@ -468,10 +435,10 @@ async def delete_database(
             detail="confirmation does not match the database name",
         )
 
-    await db_session.delete_database()
+    await db.delete_database()
 
-    remove_tab(session.data, tab_id)
-    await session.persist_data()
+    remove_tab(db.data, tab_id)  # no-op if tab_id doesn't match an open tab
+    await db.persist_data()
     return DatastarResponse([
         SSE.patch_elements(
             selector=f"#tab-button-{tab_id}", mode=ElementPatchMode.REMOVE,

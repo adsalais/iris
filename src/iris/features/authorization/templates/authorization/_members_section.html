@@ -3,13 +3,13 @@
   {% for tier_label, tier_key in [("Readers", "reader"), ("Writers", "writer"), ("Admins", "admin")] %}
   <div class="iris-members-tier">
     <h4>{{ tier_label }}</h4>
-    <form data-on:submit="@post('/feature/auth/{{ tab_id }}/members/{{ tier_key }}/user?username=' + encodeURIComponent($tabs.{{ tab_id }}.{{ tier_key }}_user_input || ''))"
+    <form data-on:submit="@post('/feature/auth/{{ tab_id }}/members/{{ tier_key }}/user?database={{ database | urlencode }}&amp;username=' + encodeURIComponent($tabs.{{ tab_id }}.{{ tier_key }}_user_input || ''))"
           class="iris-grant-form">
       <input type="text" placeholder="Add user…"
              data-bind="tabs.{{ tab_id }}.{{ tier_key }}_user_input">
       <button type="submit">+ add user</button>
     </form>
-    <form data-on:submit="@post('/feature/auth/{{ tab_id }}/members/{{ tier_key }}/group?group=' + encodeURIComponent($tabs.{{ tab_id }}.{{ tier_key }}_group_input || ''))"
+    <form data-on:submit="@post('/feature/auth/{{ tab_id }}/members/{{ tier_key }}/group?database={{ database | urlencode }}&amp;group=' + encodeURIComponent($tabs.{{ tab_id }}.{{ tier_key }}_group_input || ''))"
           class="iris-grant-form">
       <input type="text" placeholder="Add group…"
              data-bind="tabs.{{ tab_id }}.{{ tier_key }}_group_input">
@@ -20,7 +20,7 @@
       <li>
         {% if m.kind == "role" %}group: {% endif %}{{ m.name }}
         <button class="iris-revoke"
-                data-on:click="@delete('/feature/auth/{{ tab_id }}/members/{{ tier_key }}/{{ 'group' if m.kind == 'role' else 'user' }}?{{ 'group' if m.kind == 'role' else 'username' }}=' + encodeURIComponent({{ m.name | tojson }}))">
+                data-on:click="@delete('/feature/auth/{{ tab_id }}/members/{{ tier_key }}/{{ 'group' if m.kind == 'role' else 'user' }}?database={{ database | urlencode }}&amp;{{ 'group' if m.kind == 'role' else 'username' }}=' + encodeURIComponent({{ m.name | tojson }}))">
           revoke
         </button>
       </li>

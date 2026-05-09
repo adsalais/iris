@@ -2,7 +2,7 @@
   <h3>Danger</h3>
   <details>
     <summary class="iris-danger-toggle">delete database</summary>
-    <form data-on:submit="@delete('/feature/auth/{{ tab_id }}/database?confirm=' + encodeURIComponent($tabs.{{ tab_id }}.delete_confirm || ''))">
+    <form data-on:submit="@delete('/feature/auth/{{ tab_id }}/database?database={{ database | urlencode }}&amp;confirm=' + encodeURIComponent($tabs.{{ tab_id }}.delete_confirm || ''))">
       <p>Type <code>{{ database }}</code> to confirm. This action is irreversible.</p>
       <input placeholder="confirm db name"
              data-bind="tabs.{{ tab_id }}.delete_confirm">
