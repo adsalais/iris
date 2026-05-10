@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import os
+
 from dotenv import load_dotenv
 
-load_dotenv()  # populate os.environ from .env if present; existing vars win
+# Tests set IRIS_SKIP_DOTENV=1 (in tests/conftest.py, before importing iris)
+# so the developer's .env can never bleed into a pytest process. Production
+# and dev runs leave the var unset and get the usual .env overlay.
+if os.environ.get("IRIS_SKIP_DOTENV") != "1":
+    load_dotenv()  # populate os.environ from .env if present; existing vars win
 
 __all__ = ["main"]
 

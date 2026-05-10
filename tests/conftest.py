@@ -1,7 +1,31 @@
 from __future__ import annotations
 
-import asyncio
 import os
+
+# Hermetic test environment — must run BEFORE any `iris` import.
+#
+# Importing `iris` triggers `iris/__init__.py:load_dotenv()`, which would
+# overlay the developer's `.env` on top of the process env. `.env` is for
+# manual app runs (where AUTH_METHOD=oauth, real CH host, etc.); tests must
+# not see it. Setting IRIS_SKIP_DOTENV=1 before the first iris import causes
+# load_dotenv() to no-op.
+#
+# The setdefault calls below pin the auth-layer vars the mock provider
+# needs. setdefault preserves the "developer shell env still wins" intent
+# (e.g. `MOCK_USERNAME=charlie uv run pytest`); .env is bypassed entirely.
+os.environ["IRIS_SKIP_DOTENV"] = "1"
+os.environ.setdefault("AUTH_METHOD", "mock")
+os.environ.setdefault("MOCK_USERNAME", "alice")
+os.environ.setdefault("MOCK_PASSWORD", "secret")
+os.environ.setdefault("MOCK_GROUPS", "admins,users")
+os.environ.setdefault("MOCK_DISPLAY_NAME", "Alice")
+os.environ.setdefault("COOKIE_SECURE", "false")
+# Sessions live in SQLite (the only thing left in AUTH_DB_PATH). One connection
+# per process means :memory: works for single-process tests; multi-process
+# tests use a tempfile.
+os.environ.setdefault("AUTH_DB_PATH", ":memory:")
+
+import asyncio
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -15,19 +39,6 @@ from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 from iris.auth.identity import User
 from iris.auth.rights import Capabilities
 from tests._tls import TLSPaths, generate_ca_and_leaf
-
-# Test fixtures that the auth layer needs at import time. setdefault means
-# a developer's real .env / shell env can still override these.
-os.environ.setdefault("AUTH_METHOD", "mock")
-os.environ.setdefault("MOCK_USERNAME", "alice")
-os.environ.setdefault("MOCK_PASSWORD", "secret")
-os.environ.setdefault("MOCK_GROUPS", "admins,users")
-os.environ.setdefault("MOCK_DISPLAY_NAME", "Alice")
-os.environ.setdefault("COOKIE_SECURE", "false")
-# Sessions live in SQLite (the only thing left in AUTH_DB_PATH). One connection
-# per process means :memory: works for single-process tests; multi-process
-# tests use a tempfile.
-os.environ.setdefault("AUTH_DB_PATH", ":memory:")
 
 
 @pytest.fixture
