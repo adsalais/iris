@@ -5,7 +5,7 @@ import asyncio
 
 def _seed(app, sid: str, tab_id="CR12CD34"):
     asyncio.run(app.state.auth_session_store.update_data(sid, {"tabs": [
-        {"id": tab_id, "feature": "auth", "intent": "create_database",
+        {"id": tab_id, "feature": "authorization", "intent": "create_database",
          "params": {}, "title": "Create database"},
     ]}))
 
@@ -17,13 +17,13 @@ def _csrf(client):
 
 
 def test_create_database_intent_registered(app):
-    spec = app.state.intent_dispatcher.resolve("auth", "create_database")
+    spec = app.state.intent_dispatcher.resolve("authorization", "create_database")
     assert spec.title({}) == "Create database"
 
 
 def test_create_database_required_predicate(app):
     from iris.auth.rights import EMPTY_CAPABILITIES, Capabilities
-    spec = app.state.intent_dispatcher.resolve("auth", "create_database")
+    spec = app.state.intent_dispatcher.resolve("authorization", "create_database")
     assert spec.required(EMPTY_CAPABILITIES) is False
     assert spec.required(Capabilities(
         is_admin=False, can_create_database=True,
@@ -55,7 +55,7 @@ def test_create_database_nav_entry_visible_when_can_create(app):
 def test_render_create_database_shows_form(app, capability_session):
     client, sid = asyncio.run(capability_session(can_create_database=True))
     _seed(app, sid)
-    r = client.get("/feature/auth/CR12CD34/create_database")
+    r = client.get("/feature/authorization/CR12CD34/create_database")
     assert r.status_code == 200
     assert "Create database" in r.text
     assert "data-bind=\"tabs.CR12CD34.new_db_name\"" in r.text
@@ -65,7 +65,7 @@ def test_submit_create_database_403_when_not_creator(app, capability_session):
     client, sid = asyncio.run(capability_session())
     _seed(app, sid)
     r = client.post(
-        "/feature/auth/CR12CD34/create_database",
+        "/feature/authorization/CR12CD34/create_database",
         params={"name": "marketing"},
         headers=_csrf(client),
     )
@@ -84,7 +84,7 @@ def test_submit_create_database_calls_method_and_retargets_tab(
     client, sid = asyncio.run(capability_session(can_create_database=True))
     _seed(app, sid)
     r = client.post(
-        "/feature/auth/CR12CD34/create_database",
+        "/feature/authorization/CR12CD34/create_database",
         params={"name": "shiny_new_db"},
         headers=_csrf(client),
     )
@@ -113,7 +113,7 @@ def test_submit_create_database_renders_inline_error_on_invalid_name(
     client, sid = asyncio.run(capability_session(can_create_database=True))
     _seed(app, sid)
     r = client.post(
-        "/feature/auth/CR12CD34/create_database",
+        "/feature/authorization/CR12CD34/create_database",
         params={"name": "bad-name"},
         headers=_csrf(client),
     )

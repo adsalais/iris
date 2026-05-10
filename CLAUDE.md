@@ -5,7 +5,7 @@ It is a navigator — deep details live in `docs/`.
 
 ## Project state
 
-Python web app scaffolded with `uv` / hatchling: **FastAPI + Jinja2** server, **Datastar** (https://data-star.dev/) on the frontend. `src/iris/__init__.py:main()` boots a uvicorn dev server. The home page demonstrates two end-to-end Datastar patterns (see "Examples" below). Pytest is wired up; ruff is configured for lint; basedpyright for typecheck (see Lint & type-check section below).
+Python web app scaffolded with `uv` / hatchling: **FastAPI + Jinja2** server, **Datastar** (https://data-star.dev/) on the frontend. `src/iris/__init__.py:main()` boots a uvicorn dev server (factory mode). The home page is the shell at `/`; concrete UI lives in feature modules under `src/iris/features/` (the Authorization feature is the canonical reference). Pytest is wired up; ruff is configured for lint; basedpyright for typecheck (see Lint & type-check section below).
 
 `requires-python` is currently `>=3.13` — bumped down from 3.14 because the only 3.14 build `uv` could fetch was `3.14.0a6`, on which `pydantic-core` (a FastAPI dep) segfaults. Re-evaluate when a stable 3.14 build is reachable AND pydantic publishes 3.14 wheels.
 
@@ -85,39 +85,27 @@ These are NOT done by iris — call them out for operators wiring up new feature
 
 ### Layout
 
-- `src/iris/__init__.py` — calls `load_dotenv()` and defines `main()` (uvicorn factory-mode launcher for the `iris` script).
-- `src/iris/app.py` — `build_app()`, Datastar routes, `/`, `/api/greet`, `/api/clock`, and `Jinja2Templates` initialization.
-- `src/iris/middleware.py` — `SecurityHeadersMiddleware` (CSP).
-- `src/iris/templates/` — Jinja2 templates packaged with the wheel; `base.html` includes the Datastar CDN script and shared CSS, `index.html` extends it.
+- `src/iris/__init__.py` — calls `load_dotenv()` (skipped under `IRIS_SKIP_DOTENV=1` so pytest is hermetic) and defines `main()` (uvicorn factory-mode launcher for the `iris` script).
+- `src/iris/app.py` — `build_app()`: wires the security middleware, lifespan, and the subsystem installs (`auth` → `clickhouse` → `shell` → `features` → `init_templates()`). No HTTP routes are defined here; all routing lives in subsystems.
+- `src/iris/middleware.py` — `SecurityHeadersMiddleware` (CSP + clickjacking + nosniff + referrer + form-action / base-uri / object-src).
+- `src/iris/templates.py` — process-wide Jinja2 loader registry; each subsystem registers its own `templates/` dir from its `install`.
 - `src/iris/auth/` — session-based auth + tier-based authz subsystem. Full surface in `docs/auth.md`.
 - `src/iris/clickhouse/` — ClickHouse provisioning + bridge. Full surface in `docs/clickhouse.md`.
+- `src/iris/shell/` — two-panel app shell + tab system; owns `static/` (Datastar runtime + `csrf.js`) and the shell templates. Full surface in `docs/frontend.md`.
+- `src/iris/features/` — feature modules, one directory per feature; each contributes routes, intents, and nav entries. The Authorization feature is the canonical reference.
 
 ### How Datastar talks to the backend
 
 Datastar is hypermedia-first with reactive *signals*. Two flavors of interaction in this repo:
 
 1. **Pure-client reactivity.** A section declares signals via `data-signals="{count: 0}"` and references them with `$count` inside `data-on:click`, `data-text`, `data-show`, etc. No round-trip; the browser handles it.
-2. **Server-driven via SSE.** A `data-on:click="@get('/api/greet')"` triggers a fetch. Datastar attaches a `Datastar-Request: true` header and serializes signals into a `datastar` query param (for GET/DELETE) or JSON body (for POST/PUT/PATCH). The server consumes them via the `Signals` annotated dep (see below) and returns a `text/event-stream` response carrying `datastar-patch-elements` events that morph into the DOM by element id.
+2. **Server-driven via SSE.** A `data-on:click="@post('/api/tabs/{tab.id}/activate')"` triggers a fetch. Datastar attaches a `Datastar-Request: true` header and serializes signals into a `datastar` query param (for GET/DELETE) or JSON body (for POST/PUT/PATCH). The server reads them via `datastar_py.fastapi.read_signals(request)` and returns a `text/event-stream` carrying `datastar-patch-elements` events that morph the DOM by element id.
 
-#### The `Signals` dependency
-
-The SDK's `read_signals(request)` returns `dict | None` (None when the `Datastar-Request` header is absent or the payload is empty). To avoid `or {}` boilerplate in every route, `app.py` defines a thin wrapper and a reusable annotated alias:
-
-```python
-async def _signals(request: Request) -> dict[str, Any]:
-    return await read_signals(request) or {}
-
-Signals = Annotated[dict[str, Any], Depends(_signals)]
-```
-
-Routes then take `signals: Signals` and get a guaranteed dict — no None handling. Use this for any new signal-consuming route. The SDK also ships its own `ReadSignals` annotated alias, but it preserves the `dict | None` type, which is why we shadow it with our own.
-
-### SDK gotchas (already worked around in `app.py`)
+### SDK gotchas
 
 - Imports that compose correctly: `from datastar_py.fastapi import DatastarResponse, read_signals, ServerSentEventGenerator as SSE`. Construct responses as `return DatastarResponse(SSE.patch_elements("<div id='x'>...</div>"))`.
-- **Avoid `@datastar_response` on FastAPI routes.** FastAPI 0.136's generator-detection mis-classifies the wrapper and routes it through the JSONL streamer, raising `'async for' requires an object with __aiter__ method, got coroutine`. Returning `DatastarResponse(...)` directly sidesteps this.
-- Consume signals via the project's `Signals` annotated dep, not by calling `read_signals` inline (see "The `Signals` dependency" above for the why).
-- When testing the SSE endpoint, requests must include `headers={"Datastar-Request": "true"}` and pass signals as `params={"datastar": json.dumps({...})}` for GET/DELETE — otherwise `read_signals` returns `None` and `Signals` resolves to `{}` (defaults kick in).
+- **Avoid `@datastar_response` on FastAPI routes.** FastAPI's generator-detection mis-classifies the wrapper and routes it through the JSONL streamer, raising `'async for' requires an object with __aiter__ method, got coroutine`. Returning `DatastarResponse(...)` directly sidesteps this.
+- When testing the SSE endpoint, requests must include `headers={"Datastar-Request": "true"}` and pass signals as `params={"datastar": json.dumps({...})}` for GET/DELETE — otherwise `read_signals` returns `None` (treat as empty).
 - Always HTML-escape any signal value before interpolating it into a `patch_elements` payload (use `html.escape`); Datastar inserts the bytes as-is.
 
 ### Live frontend example
@@ -147,10 +135,11 @@ Conventions an agent must follow that aren't obvious from reading code:
 
 - **One feature = one directory** under `src/iris/features/<name>/`. Required
   contents: `install.py` (with public `install(app)` re-exported from
-  `__init__.py`), `routes.py` (with `APIRouter(prefix="/feature/<name>")`),
-  `intents.py` (with `RENDER_BY_INTENT` mapping intent names to render
-  functions), `service.py` (read-side helpers, no FastAPI imports), and
-  `templates/<name>/` for Jinja templates. Optional: `static/`.
+  `__init__.py`; registers intents via `IntentDispatcher.register(...)` and
+  nav via `Contributions.nav.add(...)`), `routes.py` (with
+  `APIRouter(prefix="/feature/<name>")` — `<name>` must match the
+  `IntentSpec.feature` string), `service.py` (read-side helpers, no FastAPI
+  imports), and `templates/<name>/` for Jinja templates. Optional: `static/`.
 - **Install order is fixed**: `build_app` calls auth → clickhouse → shell →
   features → `init_templates()`. Features assume `app.state.contributions`
   and `app.state.intent_dispatcher` exist; the shell creates them.
@@ -196,16 +185,18 @@ Conventions an agent must follow that aren't obvious from reading code:
 
 ```
 src/iris/
-├── __init__.py        # main() + load_dotenv
+├── __init__.py        # main() + gated load_dotenv (IRIS_SKIP_DOTENV)
 ├── app.py             # build_app(): wires auth, ch, shell, features
-├── middleware.py      # SecurityHeadersMiddleware (CSP)
+├── middleware.py      # SecurityHeadersMiddleware (CSP + friends)
 ├── templates.py       # register_template_dir / init_templates registry
 ├── auth/              # auth subsystem — full surface in docs/auth.md
 ├── clickhouse/        # CH subsystem — full surface in docs/clickhouse.md
-├── shell/             # frontend shell — full surface in docs/frontend.md
-├── features/          # feature modules — one dir per feature
-│   └── authorization/  # Authorization (my_access / manage / create_database / admin_console)
-└── static/            # global vendored assets (datastar.js)
+├── shell/             # frontend shell + vendored datastar.js / csrf.js
+│                      # (docs/frontend.md)
+└── features/          # feature modules — one dir per feature
+    └── authorization/ # Authorization feature: my_access / manage /
+                      # create_database / admin_console
+                      # URL prefix: /feature/authorization
 ```
 
 ## Env vars (quick reference)

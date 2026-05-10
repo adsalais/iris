@@ -7,19 +7,19 @@ import asyncio
 def _seed_manage_tab(app, sid: str, database: str = "marketing",
                      tab_id: str = "MG12CD34") -> None:
     asyncio.run(app.state.auth_session_store.update_data(sid, {"tabs": [
-        {"id": tab_id, "feature": "auth", "intent": "manage",
+        {"id": tab_id, "feature": "authorization", "intent": "manage",
          "params": {"database": database}, "title": f"Manage {database}"},
     ]}))
 
 
 def test_manage_intent_registered(app):
-    spec = app.state.intent_dispatcher.resolve("auth", "manage")
+    spec = app.state.intent_dispatcher.resolve("authorization", "manage")
     assert spec.title({"database": "marketing"}) == "Manage marketing"
 
 
 def test_manage_required_predicate_checks_db_admin(app):
     from iris.auth.rights import EMPTY_CAPABILITIES, Capabilities
-    spec = app.state.intent_dispatcher.resolve("auth", "manage")
+    spec = app.state.intent_dispatcher.resolve("authorization", "manage")
     assert spec.required(EMPTY_CAPABILITIES) is False
     assert spec.required(Capabilities(
         is_admin=False, can_create_database=False,
@@ -58,7 +58,7 @@ def test_manage_render_renders_database_name(app, capability_session, monkeypatc
     )
     client, sid = asyncio.run(capability_session(db_admin={"marketing"}))
     _seed_manage_tab(app, sid)
-    r = client.get("/feature/auth/MG12CD34/manage?database=marketing")
+    r = client.get("/feature/authorization/MG12CD34/manage?database=marketing")
     assert r.status_code == 200
     assert "Manage marketing" in r.text
 
@@ -66,5 +66,5 @@ def test_manage_render_renders_database_name(app, capability_session, monkeypatc
 def test_manage_render_returns_403_when_not_db_admin(app, capability_session):
     client, sid = asyncio.run(capability_session())
     _seed_manage_tab(app, sid)
-    r = client.get("/feature/auth/MG12CD34/manage?database=marketing")
+    r = client.get("/feature/authorization/MG12CD34/manage?database=marketing")
     assert r.status_code == 403

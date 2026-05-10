@@ -5,7 +5,7 @@ import asyncio
 
 def _seed(app, sid: str, database="marketing", tab_id="MG12CD34"):
     asyncio.run(app.state.auth_session_store.update_data(sid, {"tabs": [
-        {"id": tab_id, "feature": "auth", "intent": "manage",
+        {"id": tab_id, "feature": "authorization", "intent": "manage",
          "params": {"database": database}, "title": f"Manage {database}"},
     ]}))
 
@@ -20,7 +20,7 @@ def test_add_policy_403_when_not_db_admin(app, capability_session):
     client, sid = asyncio.run(capability_session())
     _seed(app, sid)
     r = client.post(
-        "/feature/auth/MG12CD34/policies",
+        "/feature/authorization/MG12CD34/policies",
         params={"database": "marketing", "table": "events",
                 "column": "user_id", "role": "r1", "value": "alice"},
         headers=_csrf(client),
@@ -43,7 +43,7 @@ def test_add_policy_calls_db_session_method(app, capability_session, monkeypatch
     client, sid = asyncio.run(capability_session(db_admin={"marketing"}))
     _seed(app, sid)
     r = client.post(
-        "/feature/auth/MG12CD34/policies",
+        "/feature/authorization/MG12CD34/policies",
         params={"database": "marketing", "table": "events",
                 "column": "user_id", "role": "r1", "value": "alice"},
         headers=_csrf(client),
@@ -68,7 +68,7 @@ def test_revoke_policy_calls_db_session_method(app, capability_session, monkeypa
     client, sid = asyncio.run(capability_session(db_admin={"marketing"}))
     _seed(app, sid)
     r = client.delete(
-        "/feature/auth/MG12CD34/policies",
+        "/feature/authorization/MG12CD34/policies",
         params={"database": "marketing", "table": "events",
                 "role": "r1", "value": "alice"},
         headers=_csrf(client),

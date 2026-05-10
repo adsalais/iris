@@ -5,7 +5,7 @@ import asyncio
 
 def _seed(app, sid: str, database="marketing", tab_id="DG12CD34"):
     asyncio.run(app.state.auth_session_store.update_data(sid, {"tabs": [
-        {"id": tab_id, "feature": "auth", "intent": "manage",
+        {"id": tab_id, "feature": "authorization", "intent": "manage",
          "params": {"database": database}, "title": f"Manage {database}"},
     ]}))
 
@@ -20,7 +20,7 @@ def test_delete_database_403_when_not_db_admin(app, capability_session):
     client, sid = asyncio.run(capability_session())
     _seed(app, sid)
     r = client.delete(
-        "/feature/auth/DG12CD34/database",
+        "/feature/authorization/DG12CD34/database",
         params={"database": "marketing", "confirm": "marketing"},
         headers=_csrf(client),
     )
@@ -37,7 +37,7 @@ def test_delete_database_400_when_confirm_mismatches(app, capability_session, mo
     client, sid = asyncio.run(capability_session(db_admin={"marketing"}))
     _seed(app, sid)
     r = client.delete(
-        "/feature/auth/DG12CD34/database",
+        "/feature/authorization/DG12CD34/database",
         params={"database": "marketing", "confirm": "wrong-name"},
         headers=_csrf(client),
     )
@@ -54,7 +54,7 @@ def test_delete_database_calls_method_and_closes_tab(app, capability_session, mo
     client, sid = asyncio.run(capability_session(db_admin={"marketing"}))
     _seed(app, sid)
     r = client.delete(
-        "/feature/auth/DG12CD34/database",
+        "/feature/authorization/DG12CD34/database",
         params={"database": "marketing", "confirm": "marketing"},
         headers=_csrf(client),
     )

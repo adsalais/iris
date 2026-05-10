@@ -1,7 +1,7 @@
 """Install the Authorization feature into a FastAPI app.
 
 Registers nav contributions, intent specs, the per-feature templates dir,
-and mounts the feature's APIRouter at /feature/auth.
+and mounts the feature's APIRouter at /feature/authorization.
 
 Depends on app.state.contributions and app.state.intent_dispatcher
 existing — call AFTER iris.shell.install.
@@ -37,25 +37,25 @@ def install(app: FastAPI) -> None:
 
 def _register_intents(dispatcher: IntentDispatcher) -> None:
     dispatcher.register(IntentSpec(
-        feature="auth",
+        feature="authorization",
         intent="my_access",
         title=lambda _params: "My access",
         required=lambda _c: True,
     ))
     dispatcher.register(IntentSpec(
-        feature="auth",
+        feature="authorization",
         intent="manage",
         title=lambda params: f"Manage {params.get('database', '')}",
         required=lambda c: c.is_admin or bool(c.db_admin),
     ))
     dispatcher.register(IntentSpec(
-        feature="auth",
+        feature="authorization",
         intent="create_database",
         title=lambda _params: "Create database",
         required=lambda c: c.is_admin or c.can_create_database,
     ))
     dispatcher.register(IntentSpec(
-        feature="auth",
+        feature="authorization",
         intent="admin_console",
         title=lambda _params: "Org admin console",
         required=lambda c: c.is_admin,
@@ -66,7 +66,7 @@ def _register_nav(contribs: Contributions) -> None:
     contribs.nav.add(NavGroup(
         label="Authorization",
         entries=(
-            NavEntry("My access", on_click=TabIntent("auth", "my_access")),
+            NavEntry("My access", on_click=TabIntent("authorization", "my_access")),
             NavEntry(
                 "Databases I admin",
                 visible=lambda c: bool(c.db_admin),
@@ -74,7 +74,7 @@ def _register_nav(contribs: Contributions) -> None:
                 children=lambda c: [
                     NavEntry(
                         db,
-                        on_click=TabIntent("auth", "manage", {"database": db}),
+                        on_click=TabIntent("authorization", "manage", {"database": db}),
                     )
                     for db in sorted(c.db_admin)
                 ],
@@ -82,7 +82,7 @@ def _register_nav(contribs: Contributions) -> None:
             NavEntry(
                 "Create database",
                 visible=lambda c: c.is_admin or c.can_create_database,
-                on_click=TabIntent("auth", "create_database"),
+                on_click=TabIntent("authorization", "create_database"),
             ),
         ),
     ))
@@ -91,12 +91,12 @@ def _register_nav(contribs: Contributions) -> None:
         visible=lambda c: c.is_admin,
         entries=(
             NavEntry("All users",
-                     on_click=TabIntent("auth", "admin_console", {"subtab": "users"})),
+                     on_click=TabIntent("authorization", "admin_console", {"subtab": "users"})),
             NavEntry("All databases",
-                     on_click=TabIntent("auth", "admin_console", {"subtab": "databases"})),
+                     on_click=TabIntent("authorization", "admin_console", {"subtab": "databases"})),
             NavEntry("Row policies",
-                     on_click=TabIntent("auth", "admin_console", {"subtab": "policies"})),
+                     on_click=TabIntent("authorization", "admin_console", {"subtab": "policies"})),
             NavEntry("Audit",
-                     on_click=TabIntent("auth", "admin_console", {"subtab": "audit"})),
+                     on_click=TabIntent("authorization", "admin_console", {"subtab": "audit"})),
         ),
     ))

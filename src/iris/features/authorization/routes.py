@@ -1,8 +1,8 @@
 """APIRouter for the Authorization feature.
 
-Mounted at /feature/auth by install. Each phase fills in more routes:
-Phase 3 added my_access; Phase 4 adds /manage routes; Phase 5 adds
-/create_database; Phase 6 adds /admin_console sub-routes.
+Mounted at /feature/authorization by install. Each phase fills in more
+routes: Phase 3 added my_access; Phase 4 adds /manage routes; Phase 5
+adds /create_database; Phase 6 adds /admin_console sub-routes.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from iris.auth.views import DatabaseAdminSession
 from iris.shell.element_id import tab_panel_id
 from iris.shell.tabs import find_tab
 
-router = APIRouter(prefix="/feature/auth")
+router = APIRouter(prefix="/feature/authorization")
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +417,7 @@ async def submit_create_database(
     from iris.shell.tabs import TabRecord, replace_tab
 
     rec = find_tab(creator.data, tab_id)
-    if rec is None or rec.feature != "auth" or rec.intent != "create_database":
+    if rec is None or rec.feature != "authorization" or rec.intent != "create_database":
         raise HTTPException(status_code=404, detail="tab not found")
 
     templates = request.app.state.templates
@@ -440,7 +440,7 @@ async def submit_create_database(
 
     # Success: re-target the existing tab to manage <new_db>.
     new_rec = TabRecord(
-        id=tab_id, feature="auth", intent="manage",
+        id=tab_id, feature="authorization", intent="manage",
         params={"database": name}, title=f"Manage {name}",
     )
     replace_tab(creator.data, tab_id, new_rec)
