@@ -35,12 +35,12 @@ def test_list_users_calls_audit_helper(monkeypatch):
     captured = {}
     def fake(client):
         captured["client"] = client
-        return [{"name": "alice", "groups": []}]
+        return [{"name": "alice", "roles": []}]
     monkeypatch.setattr("iris.auth.views.audit.list_all_users", fake)
 
     s = _admin_session()
     result = asyncio.run(s.list_users())
-    assert result == [{"name": "alice", "groups": []}]
+    assert result == [{"name": "alice", "roles": []}]
     assert captured["client"] is s.client
 
 

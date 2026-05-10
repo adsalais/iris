@@ -128,8 +128,6 @@ class LDAPProvider:
             raise _BindFailed() from exc
         except (LDAPSocketOpenError, LDAPException) as exc:
             raise _Unreachable() from exc
-        except Exception as exc:
-            raise _Unreachable() from exc
 
     def _read_display_name(self, conn: Connection, bind_dn: str) -> str | None:
         conn.search(bind_dn, "(objectClass=*)", attributes=["cn"])

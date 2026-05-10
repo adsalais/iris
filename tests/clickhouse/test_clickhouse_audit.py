@@ -134,7 +134,25 @@ def test_list_all_users_returns_users_with_role_lists(ch_client, ch_settings, pr
     result = list_all_users(ch_client)
     by_name = {row["name"]: row for row in result}
     assert user in by_name
-    assert role in by_name[user]["groups"]
+    assert role in by_name[user]["roles"]
+
+
+def test_list_all_users_user_without_grants_has_empty_roles(ch_client, ch_settings, prefix):
+    """A user with no role grants surfaces as roles=[], not roles=[''].
+
+    Regression guard for the LEFT JOIN + groupArray collapse: CH yields a
+    single-element array containing the empty string when the right side
+    of the join is NULL; the implementation must strip those placeholders.
+    """
+    from iris.clickhouse.audit import list_all_users
+
+    user = f"{prefix}_listusr_nogrants"
+    ch_client.command(f"CREATE USER `{user}` IDENTIFIED BY 'pw'")
+
+    result = list_all_users(ch_client)
+    by_name = {row["name"]: row for row in result}
+    assert user in by_name
+    assert by_name[user]["roles"] == []
 
 
 def test_list_all_databases_returns_tier_counts(ch_client, ch_settings, prefix):

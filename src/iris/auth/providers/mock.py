@@ -28,9 +28,13 @@ class MockProvider:
         )
 
     async def authenticate(self, username: str, password: str) -> User:
-        if not hmac.compare_digest(username, self._settings.username) or not hmac.compare_digest(
-            password, self._settings.password
-        ):
+        # Both compares run unconditionally and are combined with bitwise
+        # AND so the work is timing-independent of which half fails. Using
+        # `or` short-circuits past the password check on a username
+        # mismatch, leaking via wall-clock whether the username was right.
+        username_ok = hmac.compare_digest(username, self._settings.username)
+        password_ok = hmac.compare_digest(password, self._settings.password)
+        if not (username_ok & password_ok):
             raise AuthError("invalid_credentials")
         return User(
             subject=f"mock:{self._settings.username}",

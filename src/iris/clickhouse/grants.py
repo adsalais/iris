@@ -16,6 +16,19 @@ TIER_DBREADER: Final = "DBREADER"
 
 _TIERS: Final = (TIER_DBADMIN, TIER_DBWRITER, TIER_DBREADER)
 
+# CH server error code for "role does not exist". 511 is what
+# `system.errors` reports for UNKNOWN_ROLE today. We accept the symbolic
+# name as a secondary signal because clickhouse-connect surfaces it in
+# the error body, and matching on either side guards against either CH
+# renumbering or re-wording in a single future release.
+_UNKNOWN_ROLE_CODE_TOKEN: Final = "code: 511"
+_UNKNOWN_ROLE_SYMBOL: Final = "UNKNOWN_ROLE"
+
+
+def _is_unknown_role_error(err: DatabaseError) -> bool:
+    text = str(err)
+    return _UNKNOWN_ROLE_CODE_TOKEN in text.lower() or _UNKNOWN_ROLE_SYMBOL in text
+
 
 def tier_role_name(database: str, tier: str) -> str:
     """Return the tier role name for ``database`` and tier (one of
@@ -69,6 +82,10 @@ def grant_tier_to_user(
     Pre-creates the user role if it does not yet exist (closes a username
     enumeration channel via differential CH errors).
     """
+    # Validate at the public boundary so the synthesized `<username>_USER`
+    # role cannot escape the regex check via composition. `kind="role"`
+    # downstream of composition skips the suffix check by design.
+    validate_identifier(username, kind="username")
     user_role = f"{username}{USER_ROLE_SUFFIX}"
     _ensure_role(client, user_role)
     user_role_q = quote_identifier(user_role, kind="role")
@@ -83,6 +100,7 @@ def grant_tier_to_group(
 
     Pre-creates the group role if it does not yet exist.
     """
+    validate_identifier(group, kind="group")
     group_role = f"{group}{GROUP_ROLE_SUFFIX}"
     _ensure_role(client, group_role)
     group_role_q = quote_identifier(group_role, kind="role")
@@ -97,17 +115,17 @@ def revoke_tier_from_user(
 
     Does NOT pre-create the user-role: revoke must not leak state for
     arbitrary attacker-supplied usernames. CH may raise on a missing
-    role; we swallow the "not found" case and let any other error
-    propagate.
+    role; we swallow the "not found" case (matched on CH error code 523)
+    and let any other error propagate.
     """
+    validate_identifier(username, kind="username")
     user_role = f"{username}{USER_ROLE_SUFFIX}"
-    validate_identifier(user_role, kind="role")
     user_role_q = quote_identifier(user_role, kind="role")
     tier_q = quote_identifier(tier_role_name(database, tier), kind="role")
     try:
         client.command(f"REVOKE {tier_q} FROM {user_role_q}")
     except DatabaseError as err:
-        if "UNKNOWN_ROLE" in str(err):
+        if _is_unknown_role_error(err):
             return
         raise
 
@@ -118,16 +136,16 @@ def revoke_tier_from_group(
     """``REVOKE <database>_<tier> FROM <group>_GRP``.
 
     Does NOT pre-create the group-role; CH may raise on a missing role
-    (we swallow "not found").
+    (we swallow code 523 only).
     """
+    validate_identifier(group, kind="group")
     group_role = f"{group}{GROUP_ROLE_SUFFIX}"
-    validate_identifier(group_role, kind="role")
     group_role_q = quote_identifier(group_role, kind="role")
     tier_q = quote_identifier(tier_role_name(database, tier), kind="role")
     try:
         client.command(f"REVOKE {tier_q} FROM {group_role_q}")
     except DatabaseError as err:
-        if "UNKNOWN_ROLE" in str(err):
+        if _is_unknown_role_error(err):
             return
         raise
 

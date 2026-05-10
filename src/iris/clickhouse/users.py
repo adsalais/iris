@@ -60,5 +60,7 @@ def provision_user(
 
     # The IMPERSONATE grantee is the CH user iris connects as
     # (settings.user). All HTTP queries-as-user route through this identity.
-    impersonator_q = quote_identifier(settings.user, kind="user")
+    # kind="username" runs the reserved-suffix check so CLICKHOUSE_USER
+    # cannot collide with iris's synthesized role names (e.g. `iris_USER`).
+    impersonator_q = quote_identifier(settings.user, kind="username")
     client.command(f"GRANT IMPERSONATE ON {user_q} TO {impersonator_q}")
