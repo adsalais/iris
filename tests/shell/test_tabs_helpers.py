@@ -17,10 +17,11 @@ from iris.shell.tabs import (
 )
 
 
-def test_new_tab_id_is_url_safe_8_chars():
+def test_new_tab_id_is_path_safe_alphanumeric():
+    """Tab ids must be safe to embed as JS identifiers and Datastar signal
+    paths — alphanumeric only, with a leading letter."""
     tid = new_tab_id()
-    assert len(tid) == 8
-    assert re.fullmatch(r"[A-Za-z0-9_-]{8}", tid)
+    assert re.fullmatch(r"t[a-f0-9]{8}", tid), tid
 
 
 def test_new_tab_id_is_random():

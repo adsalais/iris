@@ -59,8 +59,14 @@ class TabRecord:
 
 
 def new_tab_id() -> str:
-    """8-char URL-safe random tab id."""
-    return secrets.token_urlsafe(6)
+    """9-char alphanumeric tab id with a fixed ``t`` prefix.
+
+    Constrained to ``^t[a-f0-9]{8}$`` so the id is safe to embed as a
+    JavaScript identifier and as a Datastar signal-path segment. 32 bits
+    of randomness is ample given the 32-tab-per-session cap (birthday
+    collisions need ~65K ids to become non-negligible).
+    """
+    return "t" + secrets.token_hex(4)
 
 
 def list_tabs(data: dict[str, Any]) -> list[TabRecord]:

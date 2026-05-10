@@ -1,5 +1,5 @@
 <button id="tab-button-{{ tab.id }}"
-        data-on:click='$active = {{ tab.id | tojson }}; ($tabs[{{ tab.id | tojson }}] && $tabs[{{ tab.id | tojson }}].temporary) && @post("/api/tabs/{{ tab.id }}/promote")'
+        data-on:click='$active = {{ tab.id | tojson }}; @post("/api/tabs/{{ tab.id }}/activate"); ($tabs[{{ tab.id | tojson }}] && $tabs[{{ tab.id | tojson }}].temporary) && @post("/api/tabs/{{ tab.id }}/promote")'
         data-class='{active: $active === {{ tab.id | tojson }}, "tab-temp": ($tabs[{{ tab.id | tojson }}] && $tabs[{{ tab.id | tojson }}].temporary)}'>
   {{ tab.title }}
   <span class="iris-tab-close"

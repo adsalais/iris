@@ -9,18 +9,15 @@
     <div class="iris-account-groups">Groups: {{ user.groups | join(", ") }}</div>
   </section>
 
+  {# "open in workbench" buttons removed: the workbench feature is not
+     yet registered, so the @post would dispatch to an unknown intent
+     and 400. Re-introduce these buttons once feature=workbench exists. #}
   {% if reader_dbs %}
   <section>
     <h3>Databases you can read</h3>
     <ul class="iris-db-list">
       {% for db in reader_dbs %}
-      <li>
-        <span class="iris-db-name">{{ db }}</span>
-        <button class="iris-action"
-                data-on:click='@post("/api/tabs?feature=workbench&amp;intent=open&amp;temporary=true&amp;from_tab=" + encodeURIComponent($active || "") + "&amp;params=" + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))'>
-          open in workbench
-        </button>
-      </li>
+      <li><span class="iris-db-name">{{ db }}</span></li>
       {% endfor %}
     </ul>
   </section>
@@ -31,13 +28,7 @@
     <h3>Databases you can write to</h3>
     <ul class="iris-db-list">
       {% for db in writer_dbs %}
-      <li>
-        <span class="iris-db-name">{{ db }}</span>
-        <button class="iris-action"
-                data-on:click='@post("/api/tabs?feature=workbench&amp;intent=open&amp;temporary=true&amp;from_tab=" + encodeURIComponent($active || "") + "&amp;params=" + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))'>
-          open in workbench
-        </button>
-      </li>
+      <li><span class="iris-db-name">{{ db }}</span></li>
       {% endfor %}
     </ul>
   </section>
@@ -51,7 +42,7 @@
       <li>
         <span class="iris-db-name">{{ db }}</span>
         <button class="iris-action"
-                data-on:click='@post("/api/tabs?feature=auth&amp;intent=manage&amp;temporary=true&amp;from_tab=" + encodeURIComponent($active || "") + "&amp;params=" + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))'>
+                data-on:click='@post("/api/tabs?feature=authorization&amp;intent=manage&amp;temporary=true&amp;from_tab=" + encodeURIComponent($active || "") + "&amp;params=" + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))'>
           manage
         </button>
       </li>
@@ -63,7 +54,7 @@
   {% if can_create_database %}
   <section class="iris-actions-row">
     <button class="iris-action-primary"
-            data-on:click='@post("/api/tabs?feature=auth&amp;intent=create_database&amp;temporary=true&amp;params=%7B%7D&amp;from_tab=" + encodeURIComponent($active || ""))'>
+            data-on:click='@post("/api/tabs?feature=authorization&amp;intent=create_database&amp;temporary=true&amp;params=%7B%7D&amp;from_tab=" + encodeURIComponent($active || ""))'>
       + Create new database
     </button>
   </section>
@@ -73,7 +64,7 @@
   <section class="iris-actions-row">
     <h3>Org administration</h3>
     <button class="iris-action-primary"
-            data-on:click='@post("/api/tabs?feature=auth&amp;intent=admin_console&amp;temporary=true&amp;params=%7B%7D&amp;from_tab=" + encodeURIComponent($active || ""))'>
+            data-on:click='@post("/api/tabs?feature=authorization&amp;intent=admin_console&amp;temporary=true&amp;params=%7B%7D&amp;from_tab=" + encodeURIComponent($active || ""))'>
       Open admin console
     </button>
   </section>
