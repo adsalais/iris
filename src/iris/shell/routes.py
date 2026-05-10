@@ -55,7 +55,14 @@ def install_routes(app: FastAPI) -> None:
 
         nav_html = render_nav(contribs, session.capabilities)
         tabs = list_tabs(session.data)
-        active_tab_id = tabs[0].id if tabs else ""
+        # Restore last-active tab if still present; otherwise fall back to
+        # the leftmost. Persisted by open_tab / retarget_tab / close_tab.
+        stored_active = session.data.get("active_tab_id", "")
+        tab_ids = {t.id for t in tabs}
+        if stored_active in tab_ids:
+            active_tab_id = stored_active
+        else:
+            active_tab_id = tabs[0].id if tabs else ""
         tabs_signal = {t.id: {"temporary": t.temporary} for t in tabs}
 
         csrf = mint_csrf_token(request)
@@ -145,6 +152,7 @@ def install_routes(app: FastAPI) -> None:
             append_tab(session.data, rec)
         except TabCapExceeded as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
+        session.data["active_tab_id"] = tab_id
         await session.persist_data()
 
         button_html = templates.get_template("shell/_tab_strip.html").render(
@@ -181,6 +189,26 @@ def install_routes(app: FastAPI) -> None:
             "tabs": {tab_id: {"temporary": False}},
         }))
 
+    @app.post("/api/tabs/{tab_id}/activate")
+    async def activate_tab(
+        session: Session,
+        tab_id: str,
+        _: None = Depends(verify_csrf_header),
+    ) -> Response:
+        """Persist the user's tab choice so a refresh lands on the same tab.
+
+        Fired on every tab-strip click (in addition to the client-side
+        ``$active = ...`` assignment that drives the immediate UI swap).
+        Returns 204 — no SSE patch needed because the client already
+        flipped its signal locally.
+        """
+        rec = find_tab(session.data, tab_id)
+        if rec is None:
+            return Response(status_code=204)
+        session.data["active_tab_id"] = tab_id
+        await session.persist_data()
+        return Response(status_code=204)
+
     @app.delete("/api/tabs/{tab_id}")
     async def close_tab(
         request: Request,
@@ -210,6 +238,8 @@ def install_routes(app: FastAPI) -> None:
         currently_active = signals.get("active")
 
         remove_tab(session.data, tab_id)
+        if session.data.get("active_tab_id") == tab_id:
+            session.data["active_tab_id"] = new_active
         await session.persist_data()
 
         events = [
@@ -254,6 +284,7 @@ def install_routes(app: FastAPI) -> None:
             params=params_dict, title=spec.title(params_dict),
         )
         replace_tab(session.data, tab_id, new_rec)
+        session.data["active_tab_id"] = tab_id
         await session.persist_data()
 
         return DatastarResponse([

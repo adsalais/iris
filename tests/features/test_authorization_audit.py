@@ -26,10 +26,10 @@ def test_audit_section_renders_grants_list(app, capability_session, monkeypatch)
 
     client, sid = asyncio.run(capability_session(db_admin={"marketing"}))
     asyncio.run(app.state.auth_session_store.update_data(sid, {"tabs": [
-        {"id": "AU12CD34", "feature": "auth", "intent": "manage",
+        {"id": "AU12CD34", "feature": "authorization", "intent": "manage",
          "params": {"database": "marketing"}, "title": "Manage marketing"},
     ]}))
-    r = client.get("/feature/auth/AU12CD34/manage?database=marketing")
+    r = client.get("/feature/authorization/AU12CD34/manage?database=marketing")
     assert r.status_code == 200
     assert "Audit" in r.text
     assert "alice" in r.text

@@ -6,7 +6,7 @@ import asyncio
 
 def _seed(app, sid: str, database: str = "marketing", tab_id: str = "MG12CD34"):
     asyncio.run(app.state.auth_session_store.update_data(sid, {"tabs": [
-        {"id": tab_id, "feature": "auth", "intent": "manage",
+        {"id": tab_id, "feature": "authorization", "intent": "manage",
          "params": {"database": database}, "title": f"Manage {database}"},
     ]}))
 
@@ -22,7 +22,7 @@ def test_grant_reader_user_returns_403_when_not_db_admin(app, capability_session
     _seed(app, sid)
     headers = _csrf_headers(client)
     r = client.post(
-        "/feature/auth/MG12CD34/members/reader/user",
+        "/feature/authorization/MG12CD34/members/reader/user",
         params={"database": "marketing", "username": "bob"},
         headers=headers,
     )
@@ -38,7 +38,7 @@ def test_grant_reader_user_returns_422_on_empty_username(app, capability_session
     _seed(app, sid)
     headers = _csrf_headers(client)
     r = client.post(
-        "/feature/auth/MG12CD34/members/reader/user",
+        "/feature/authorization/MG12CD34/members/reader/user",
         params={"database": "marketing", "username": ""},
         headers=headers,
     )
@@ -62,7 +62,7 @@ def test_grant_reader_user_calls_db_session_method(app, capability_session, monk
     _seed(app, sid)
     headers = _csrf_headers(client)
     r = client.post(
-        "/feature/auth/MG12CD34/members/reader/user",
+        "/feature/authorization/MG12CD34/members/reader/user",
         params={"database": "marketing", "username": "bob"},
         headers=headers,
     )
@@ -91,7 +91,7 @@ def test_revoke_admin_group_calls_remove_admin_group(
     _seed(app, sid)
     headers = _csrf_headers(client)
     r = client.delete(
-        "/feature/auth/MG12CD34/members/admin/group",
+        "/feature/authorization/MG12CD34/members/admin/group",
         params={"database": "marketing", "group": "data-team"},
         headers=headers,
     )
@@ -104,7 +104,7 @@ def test_grant_routes_csrf_required(app, capability_session):
     _seed(app, sid)
     client.get("/")
     r = client.post(
-        "/feature/auth/MG12CD34/members/reader/user",
+        "/feature/authorization/MG12CD34/members/reader/user",
         params={"database": "marketing", "username": "bob"},
         headers={"Datastar-Request": "true"},
     )

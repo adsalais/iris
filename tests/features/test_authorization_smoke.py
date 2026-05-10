@@ -20,7 +20,7 @@ def test_open_my_access_tab_then_render(authed_client, parse_sse):
 
     open_r = authed_client.post(
         "/api/tabs",
-        params={"feature": "auth", "intent": "my_access", "params": "{}"},
+        params={"feature": "authorization", "intent": "my_access", "params": "{}"},
         headers={"Datastar-Request": "true", "X-CSRF-Token": csrf},
     )
     assert open_r.status_code == 200
@@ -38,7 +38,7 @@ def test_open_my_access_tab_then_render(authed_client, parse_sse):
     tab_id = next(iter(sig["tabs"]))
     assert sig["active"] == tab_id
 
-    render_r = authed_client.get(f"/feature/auth/{tab_id}/my_access")
+    render_r = authed_client.get(f"/feature/authorization/{tab_id}/my_access")
     assert render_r.status_code == 200
     assert "My access" in render_r.text
 
@@ -51,7 +51,7 @@ def test_my_access_intent_works_for_minimum_cap_session(app, capability_session)
     csrf = client.cookies.get("iris_csrf")
     open_r = client.post(
         "/api/tabs",
-        params={"feature": "auth", "intent": "my_access", "params": "{}"},
+        params={"feature": "authorization", "intent": "my_access", "params": "{}"},
         headers={"Datastar-Request": "true", "X-CSRF-Token": csrf},
     )
     assert open_r.status_code == 200

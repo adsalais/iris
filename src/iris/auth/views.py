@@ -464,7 +464,12 @@ class AdminSession(AuthSession):
         )
 
     async def list_users(self) -> list[dict[str, Any]]:
-        """All CH users with their granted role names."""
+        """All CH users with the role names granted to them.
+
+        Each row is ``{"name": str, "roles": [str, ...]}``. ``roles``
+        contains every granted role — per-user (``_USER``), group
+        (``_GRP``), and any direct ad-hoc role grants.
+        """
         client, _, _ = self._ch()
         return await asyncio.to_thread(audit.list_all_users, client)
 

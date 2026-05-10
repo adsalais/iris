@@ -29,7 +29,7 @@ def test_org_admin_only_visible_to_admin(app):
 
 def test_install_registers_my_access_intent(app):
     dispatcher = app.state.intent_dispatcher
-    spec = dispatcher.resolve("auth", "my_access")
-    assert spec.feature == "auth"
+    spec = dispatcher.resolve("authorization", "my_access")
+    assert spec.feature == "authorization"
     assert spec.intent == "my_access"
     assert spec.title({}) == "My access"

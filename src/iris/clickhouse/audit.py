@@ -97,24 +97,34 @@ def table_row_policies(
 
 
 def list_all_users(client: Client) -> list[dict[str, Any]]:
-    """All CH users with their granted role names.
+    """All CH users with the role names granted to them.
 
-    Returns ``[{"name": <username>, "groups": [<role_name>, ...]}]``.
-    The ``groups`` key is the list of role names granted to the user
-    (group is iris's terminology in the auth feature; CH calls them roles).
+    Returns ``[{"name": <username>, "roles": [<role_name>, ...]}]``. The
+    ``roles`` list contains every role granted to the user — per-user
+    roles (``<u>_USER``), group roles (``<g>_GRP``), and any directly
+    granted ad-hoc roles. Iris consumers that want only group memberships
+    must filter by the ``_GRP`` suffix themselves.
     """
-    rows = client.query("SELECT name FROM system.users ORDER BY name")
-    users: list[dict[str, Any]] = []
+    # Single query: left-join users to their role grants and aggregate role
+    # names per user. Replaces the prior per-user query loop (N+1).
+    rows = client.query(
+        """
+        SELECT u.name AS name,
+               groupArray(rg.granted_role_name) AS roles
+        FROM system.users AS u
+        LEFT JOIN system.role_grants AS rg ON rg.user_name = u.name
+        GROUP BY u.name
+        ORDER BY u.name
+        """
+    )
+    out: list[dict[str, Any]] = []
     for row in rows.named_results():
-        uname = cast(str, row["name"])
-        role_rows = client.query(
-            "SELECT granted_role_name FROM system.role_grants "
-            + "WHERE user_name = {u:String}",
-            parameters={"u": uname},
-        )
-        roles = [cast(str, r["granted_role_name"]) for r in role_rows.named_results()]
-        users.append({"name": uname, "groups": roles})
-    return users
+        # groupArray over a LEFT JOIN that didn't match yields [""] in CH
+        # (NULL coerced through Array(String)); strip empty placeholders.
+        raw_roles = cast(list[str], row["roles"])
+        roles = [r for r in raw_roles if r]
+        out.append({"name": cast(str, row["name"]), "roles": roles})
+    return out
 
 
 def list_all_databases(client: Client) -> list[dict[str, Any]]:
@@ -128,26 +138,51 @@ def list_all_databases(client: Client) -> list[dict[str, Any]]:
         TIER_DBADMIN,
         TIER_DBREADER,
         TIER_DBWRITER,
-        tier_role_name,
     )
+    # Two queries instead of 3 × N: one for the database list, one that
+    # aggregates grant rows server-side by role name. We merge the two
+    # results in Python by splitting each tier-role name into
+    # ``<db>_<tier>``. Round-trip count is O(1) regardless of database
+    # count.
     db_rows = client.query("SELECT name FROM system.databases ORDER BY name")
+    suffix_to_key: dict[str, str] = {
+        f"_{TIER_DBADMIN}": "admin_count",
+        f"_{TIER_DBWRITER}": "writer_count",
+        f"_{TIER_DBREADER}": "reader_count",
+    }
+    grant_rows = client.query(
+        """
+        SELECT granted_role_name AS role, count() AS c
+        FROM system.role_grants
+        WHERE endsWith(granted_role_name, {a:String})
+           OR endsWith(granted_role_name, {w:String})
+           OR endsWith(granted_role_name, {r:String})
+        GROUP BY granted_role_name
+        """,
+        parameters={
+            "a": f"_{TIER_DBADMIN}",
+            "w": f"_{TIER_DBWRITER}",
+            "r": f"_{TIER_DBREADER}",
+        },
+    )
+    counts_by_db: dict[str, dict[str, int]] = {}
+    for row in grant_rows.named_results():
+        role = cast(str, row["role"])
+        for suffix, key in suffix_to_key.items():
+            if role.endswith(suffix):
+                db = role[: -len(suffix)]
+                counts_by_db.setdefault(db, {})[key] = cast(int, row["c"])
+                break
     out: list[dict[str, Any]] = []
     for row in db_rows.named_results():
         db = cast(str, row["name"])
-        counts: dict[str, int] = {}
-        for tier_const, key in (
-            (TIER_DBADMIN, "admin_count"),
-            (TIER_DBWRITER, "writer_count"),
-            (TIER_DBREADER, "reader_count"),
-        ):
-            role = tier_role_name(db, tier_const)
-            count_rows = client.query(
-                "SELECT count() AS c FROM system.role_grants "
-                + "WHERE granted_role_name = {r:String}",
-                parameters={"r": role},
-            )
-            counts[key] = cast(int, next(count_rows.named_results())["c"])
-        out.append({"name": db, **counts})
+        c = counts_by_db.get(db, {})
+        out.append({
+            "name": db,
+            "admin_count": c.get("admin_count", 0),
+            "writer_count": c.get("writer_count", 0),
+            "reader_count": c.get("reader_count", 0),
+        })
     return out
 
 
