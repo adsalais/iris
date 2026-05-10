@@ -4,42 +4,13 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
-
-def _get_required(key: str) -> str:
-    val = os.environ.get(key, "").strip()
-    if not val:
-        raise ValueError(f"Missing required env var: {key}")
-    return val
-
-
-def _get_bool(key: str, default: bool) -> bool:
-    raw = os.environ.get(key)
-    if raw is None:
-        return default
-    v = raw.strip().lower()
-    if v in ("1", "true", "yes", "on"):
-        return True
-    if v in ("0", "false", "no", "off", ""):
-        return False
-    raise ValueError(f"{key} must be a boolean (true/false), got {raw!r}")
-
-
-def _get_int(key: str, default: int) -> int:
-    raw = os.environ.get(key)
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except ValueError as e:
-        raise ValueError(f"{key} must be an integer, got {raw!r}") from e
-
-
-def _split_csv(raw: str) -> tuple[str, ...]:
-    return tuple(p.strip() for p in raw.split(",") if p.strip())
-
-
-def _split_ws(raw: str) -> tuple[str, ...]:
-    return tuple(p for p in raw.split() if p)
+from iris.envtools import (
+    get_bool as _get_bool,
+    get_int as _get_int,
+    required as _get_required,
+    split_csv as _split_csv,
+    split_ws as _split_ws,
+)
 
 
 @dataclass(frozen=True)
@@ -91,11 +62,11 @@ class AuthSettings:
             )
 
         cookie_name = os.environ.get("SESSION_COOKIE_NAME", "iris_session")
-        ttl_seconds = _get_int("SESSION_TTL_SECONDS", 43200)
-        absolute_ttl_seconds = _get_int("SESSION_ABSOLUTE_TTL_SECONDS", 2_592_000)  # 30 days
-        max_per_user = _get_int("SESSION_MAX_PER_USER", 10)
-        cookie_secure = _get_bool("COOKIE_SECURE", True)
-        trust_forwarded_for = _get_bool("IRIS_TRUST_FORWARDED_FOR", False)
+        ttl_seconds = _get_int("SESSION_TTL_SECONDS", default=43200)
+        absolute_ttl_seconds = _get_int("SESSION_ABSOLUTE_TTL_SECONDS", default=2_592_000)  # 30 days
+        max_per_user = _get_int("SESSION_MAX_PER_USER", default=10)
+        cookie_secure = _get_bool("COOKIE_SECURE", default=True)
+        trust_forwarded_for = _get_bool("IRIS_TRUST_FORWARDED_FOR", default=False)
         auth_db_path = (
             os.environ.get("AUTH_DB_PATH", "").strip() or "./iris-auth.db"
         )
@@ -111,7 +82,7 @@ class AuthSettings:
             )
         elif method == "ldap":
             url = _get_required("LDAP_URL")
-            require_tls = _get_bool("LDAP_REQUIRE_TLS", True)
+            require_tls = _get_bool("LDAP_REQUIRE_TLS", default=True)
             if require_tls and not url.startswith("ldaps://"):
                 raise ValueError(
                     "LDAP_URL must use ldaps:// when LDAP_REQUIRE_TLS=true; "

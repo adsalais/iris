@@ -17,6 +17,7 @@ from iris.auth.deps import SessionAdmin
 from iris.auth.views import AdminSession
 from iris.features.authorization.routes._common import render_subtab_outer
 from iris.shell.element_id import tab_panel_id
+from iris.shell.tabs import TabId
 
 router = APIRouter()
 
@@ -24,7 +25,7 @@ router = APIRouter()
 async def _render_inventory_subtab(
     request: Request,
     admin: AdminSession,
-    tab_id: str,
+    tab_id: TabId,
     *,
     template: str,
     ctx_key: str,
@@ -45,7 +46,7 @@ async def _render_inventory_subtab(
 
 @router.get("/{tab_id}/admin/users")
 async def admin_users(
-    request: Request, admin: SessionAdmin, tab_id: str,
+    request: Request, admin: SessionAdmin, tab_id: TabId,
 ) -> Response:
     return await _render_inventory_subtab(
         request, admin, tab_id,
@@ -57,7 +58,7 @@ async def admin_users(
 
 @router.get("/{tab_id}/admin/databases")
 async def admin_databases(
-    request: Request, admin: SessionAdmin, tab_id: str,
+    request: Request, admin: SessionAdmin, tab_id: TabId,
 ) -> Response:
     return await _render_inventory_subtab(
         request, admin, tab_id,
@@ -69,7 +70,7 @@ async def admin_databases(
 
 @router.get("/{tab_id}/admin/policies")
 async def admin_policies(
-    request: Request, admin: SessionAdmin, tab_id: str,
+    request: Request, admin: SessionAdmin, tab_id: TabId,
 ) -> Response:
     return await _render_inventory_subtab(
         request, admin, tab_id,
@@ -81,7 +82,7 @@ async def admin_policies(
 
 @router.get("/{tab_id}/admin/audit")
 async def admin_audit(
-    request: Request, admin: SessionAdmin, tab_id: str,
+    request: Request, admin: SessionAdmin, tab_id: TabId,
 ) -> Response:
     return await _render_inventory_subtab(
         request, admin, tab_id,
@@ -93,7 +94,7 @@ async def admin_audit(
 
 @router.post("/{tab_id}/admin/users/{username}/reprovision")
 async def admin_reprovision_user(
-    request: Request, admin: SessionAdmin, tab_id: str, username: str,
+    request: Request, admin: SessionAdmin, tab_id: TabId, username: str,
     _: Annotated[None, Depends(verify_csrf_header)] = None,
 ) -> Response:
     # IdP groups aren't accessible from this code path; reprovision_user

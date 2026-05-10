@@ -14,7 +14,7 @@ from iris.auth.deps import (
     SessionDatabaseCreator,
 )
 from iris.shell.element_id import tab_panel_id
-from iris.shell.tabs import TabRecord, find_tab, remove_tab, replace_tab
+from iris.shell.tabs import TabId, TabRecord, find_tab, remove_tab, replace_tab
 
 router = APIRouter()
 
@@ -23,7 +23,7 @@ router = APIRouter()
 async def submit_create_database(
     request: Request,
     creator: SessionDatabaseCreator,
-    tab_id: str,
+    tab_id: TabId,
     name: Annotated[str, Query(min_length=0, max_length=64)],
     _: Annotated[None, Depends(verify_csrf_header)] = None,
 ) -> Response:
@@ -72,7 +72,7 @@ async def submit_create_database(
 
 @router.delete("/{tab_id}/database")
 async def delete_database(
-    db: SessionDatabaseAdmin, tab_id: str,
+    db: SessionDatabaseAdmin, tab_id: TabId,
     database: Annotated[str, Query(min_length=1, max_length=64)],
     confirm: Annotated[str, Query(min_length=0, max_length=255)],
     _: Annotated[None, Depends(verify_csrf_header)] = None,

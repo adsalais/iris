@@ -9,13 +9,14 @@ from iris.auth.csrf import verify_csrf_header
 from iris.auth.deps import SessionDatabaseAdmin
 from iris.features.authorization.routes._common import re_render_policies
 from iris.shell.element_id import tab_panel_id
+from iris.shell.tabs import TabId
 
 router = APIRouter()
 
 
 @router.post("/{tab_id}/policies")
 async def add_policy(
-    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: TabId,
     database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     table: Annotated[str, Query(min_length=1, max_length=64)],
     column: Annotated[str, Query(min_length=1, max_length=64)],
@@ -29,7 +30,7 @@ async def add_policy(
 
 @router.delete("/{tab_id}/policies")
 async def revoke_policy(
-    request: Request, db: SessionDatabaseAdmin, tab_id: str,
+    request: Request, db: SessionDatabaseAdmin, tab_id: TabId,
     database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
     table: Annotated[str, Query(min_length=1, max_length=64)],
     role: Annotated[str, Query(min_length=1, max_length=64)],

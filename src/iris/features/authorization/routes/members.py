@@ -17,6 +17,7 @@ from iris.auth.deps import SessionDatabaseAdmin
 from iris.auth.views import DatabaseAdminSession
 from iris.features.authorization.routes._common import re_render_members
 from iris.shell.element_id import tab_panel_id
+from iris.shell.tabs import TabId
 
 router = APIRouter()
 
@@ -54,7 +55,7 @@ def _resolve_target(kind: str, username: str | None, group: str | None) -> str:
 
 
 async def _change_member(
-    request: Request, db: DatabaseAdminSession, *, tab_id: str,
+    request: Request, db: DatabaseAdminSession, *, tab_id: TabId,
     tier: str, kind: str, op: str, target: str,
 ) -> Response:
     if tier not in _TIERS or kind not in _KINDS:
@@ -69,7 +70,7 @@ async def _change_member(
 async def grant_member(
     request: Request,
     db: SessionDatabaseAdmin,
-    tab_id: str,
+    tab_id: TabId,
     tier: str,
     kind: str,
     database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
@@ -87,7 +88,7 @@ async def grant_member(
 async def revoke_member(
     request: Request,
     db: SessionDatabaseAdmin,
-    tab_id: str,
+    tab_id: TabId,
     tier: str,
     kind: str,
     database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]

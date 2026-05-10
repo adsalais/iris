@@ -10,6 +10,6 @@
     {% endfor %}
   </div>
   <div id="{{ panel_id }}-subtab"
-       data-init='@get("/feature/authorization/{{ tab_id }}/admin/" + {{ initial_subtab | tojson }})'>
+       data-init='$tabs[{{ tab_id | tojson }}].subtab = {{ initial_subtab | tojson }}; @get("/feature/authorization/{{ tab_id }}/admin/" + {{ initial_subtab | tojson }})'>
   </div>
 </div>

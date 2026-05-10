@@ -18,6 +18,7 @@ from iris.auth.deps import (
 )
 from iris.features.authorization.routes._common import render_panel_inner
 from iris.shell.element_id import tab_panel_id
+from iris.shell.tabs import TabId
 
 router = APIRouter()
 
@@ -26,7 +27,7 @@ router = APIRouter()
 async def render_my_access(
     request: Request,
     session: Session,
-    tab_id: str,
+    tab_id: TabId,
 ) -> Response:
     from iris.features.authorization.service import my_access_view
     ctx = my_access_view(session.capabilities)
@@ -41,7 +42,7 @@ async def render_my_access(
 async def render_manage(
     request: Request,
     db: SessionDatabaseAdmin,
-    tab_id: str,
+    tab_id: TabId,
     database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
 ) -> Response:
     from iris.features.authorization.service import manage_view
@@ -58,7 +59,7 @@ async def render_manage(
 async def render_create_database(
     request: Request,
     creator: SessionDatabaseCreator,  # noqa: ARG001  # gates is_admin or can_create_database  # pyright: ignore[reportUnusedParameter]
-    tab_id: str,
+    tab_id: TabId,
 ) -> Response:
     return render_panel_inner(request, "authorization/create_database.html", {
         "panel_id": tab_panel_id(tab_id), "tab_id": tab_id, "error": None,
@@ -69,7 +70,7 @@ async def render_create_database(
 async def render_admin_console(
     request: Request,
     admin: SessionAdmin,  # noqa: ARG001  # gates is_admin  # pyright: ignore[reportUnusedParameter]
-    tab_id: str,
+    tab_id: TabId,
     subtab: Annotated[str, Query()] = "users",
 ) -> Response:
     return render_panel_inner(request, "authorization/admin_console.html", {
