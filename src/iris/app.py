@@ -1,22 +1,32 @@
 from __future__ import annotations
 
+import logging
+import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from iris.envtools import split_csv
 from iris.middleware import SecurityHeadersMiddleware
 from iris.templates import init_templates
+
+logger = logging.getLogger("iris.app")
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Subsystems register teardown callables in app.state.shutdown_hooks during
     # build_app(); this lifespan runs them in LIFO order on shutdown so a
-    # subsystem's teardown sees its dependencies still alive.
+    # subsystem's teardown sees its dependencies still alive. Each hook is
+    # wrapped in try/log so one failing teardown does not skip the others.
     yield
     for hook in reversed(app.state.shutdown_hooks):
-        await hook()
+        try:
+            await hook()
+        except Exception:
+            logger.exception("shutdown hook %r failed", hook)
 
 
 def build_app(*, install_clickhouse: bool = True) -> FastAPI:
@@ -46,6 +56,13 @@ def build_app(*, install_clickhouse: bool = True) -> FastAPI:
     # any callable works at runtime — the ignore is a typing-stub limitation.
     from iris.shell.url_builders import tab_render_url
     app.state.templates.env.globals["tab_render_url"] = tab_render_url  # pyright: ignore[reportArgumentType]
+
+    # IRIS_ALLOWED_HOSTS is a comma-separated host allowlist used by
+    # TrustedHostMiddleware to reject Host-header spoofing. If unset, we
+    # allow any host (matches FastAPI default) — set this in production.
+    allowed_hosts = split_csv(os.environ.get("IRIS_ALLOWED_HOSTS", ""))
+    if allowed_hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts))
 
     app.add_middleware(SecurityHeadersMiddleware)
 

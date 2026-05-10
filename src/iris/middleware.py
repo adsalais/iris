@@ -6,6 +6,13 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
+from iris.envtools import get_bool
+
+# One year. The browser pins HTTPS for this duration after first hit, so
+# accidentally serving over plain HTTP after enabling HSTS gets penalised
+# for a long time — only emit when COOKIE_SECURE=true (production HTTPS).
+_HSTS_VALUE = "max-age=31536000; includeSubDomains"
+
 
 # 'unsafe-eval' on script-src: required by Datastar's reactivity engine.
 # It compiles `data-on:click="..."`, `data-text="$x"`, and similar attribute
@@ -44,7 +51,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     - X-Frame-Options: DENY             (clickjacking)
     - Referrer-Policy                   (don't leak full URL cross-origin)
     - Content-Security-Policy           (XSS defense-in-depth)
+    - Strict-Transport-Security         (only when COOKIE_SECURE=true)
     """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+        # COOKIE_SECURE doubles as the "we're serving production HTTPS"
+        # signal: emit HSTS exactly when the browser is already told to
+        # mark our cookies Secure.
+        self._emit_hsts = get_bool("COOKIE_SECURE", default=False)
 
     @override
     async def dispatch(
@@ -57,4 +72,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Referrer-Policy", "strict-origin-when-cross-origin"
         )
         response.headers.setdefault("Content-Security-Policy", _CSP)
+        if self._emit_hsts:
+            response.headers.setdefault("Strict-Transport-Security", _HSTS_VALUE)
         return response

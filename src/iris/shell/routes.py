@@ -33,6 +33,7 @@ from iris.shell.intent_dispatch import (
 from iris.shell.nav_render import render_nav
 from iris.shell.tabs import (
     TabCapExceeded,
+    TabId,
     TabRecord,
     append_tab,
     find_tab,
@@ -174,7 +175,7 @@ def install_routes(app: FastAPI) -> None:
     @app.post("/api/tabs/{tab_id}/promote")
     async def promote_tab(
         session: Session,
-        tab_id: str,
+        tab_id: TabId,
         _: None = Depends(verify_csrf_header),
     ) -> Response:
         rec = find_tab(session.data, tab_id)
@@ -192,7 +193,7 @@ def install_routes(app: FastAPI) -> None:
     @app.post("/api/tabs/{tab_id}/activate")
     async def activate_tab(
         session: Session,
-        tab_id: str,
+        tab_id: TabId,
         _: None = Depends(verify_csrf_header),
     ) -> Response:
         """Persist the user's tab choice so a refresh lands on the same tab.
@@ -213,7 +214,7 @@ def install_routes(app: FastAPI) -> None:
     async def close_tab(
         request: Request,
         session: Session,
-        tab_id: str,
+        tab_id: TabId,
         _: None = Depends(verify_csrf_header),
     ) -> Response:
         tabs = list_tabs(session.data)
@@ -254,7 +255,7 @@ def install_routes(app: FastAPI) -> None:
     async def retarget_tab(
         request: Request,
         session: Session,
-        tab_id: str,
+        tab_id: TabId,
         intent: Annotated[str, Query(max_length=64)],
         params: Annotated[str, Query(max_length=4096)] = "{}",
         _: None = Depends(verify_csrf_header),

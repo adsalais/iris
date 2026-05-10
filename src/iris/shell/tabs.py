@@ -9,11 +9,34 @@ client.
 """
 from __future__ import annotations
 
+import re
 import secrets
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any, Final
+
+from fastapi import Path
 
 MAX_TABS_PER_SESSION = 32
+
+# Tab ids are alphanumeric with a leading letter so they are safe to
+# embed as JavaScript identifiers and Datastar signal-path segments.
+# Tests sometimes use longer hand-written ids (e.g. ``AB12CD34``); the
+# allowlist accepts those too. Routes validate path-param tab ids
+# against this regex at the boundary via the ``TabId`` annotated alias.
+_TAB_ID_PATTERN: Final = r"^[A-Za-z][A-Za-z0-9]{0,31}$"
+_TAB_ID_RE: Final = re.compile(_TAB_ID_PATTERN)
+
+# Annotated path-param type for route handlers: rejects ill-shaped tab
+# ids at FastAPI's parameter-validation layer before any handler code
+# runs. Defense in depth — handlers also call ``find_tab`` which would
+# return None for any forged id, but the explicit shape check makes the
+# safety property visible at the boundary.
+TabId = Annotated[str, Path(pattern=_TAB_ID_PATTERN)]
+
+
+def is_valid_tab_id(tab_id: str) -> bool:
+    """True iff ``tab_id`` matches the on-the-wire tab id shape."""
+    return bool(_TAB_ID_RE.match(tab_id))
 
 
 class TabCapExceeded(Exception):

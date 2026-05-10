@@ -5,21 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-
-def _required(name: str) -> str:
-    val = os.environ.get(name, "").strip()
-    if not val:
-        raise ValueError(f"{name} is required")
-    return val
-
-
-def _get_bool(name: str) -> bool:
-    raw = os.environ.get(name, "").strip().lower()
-    if raw in ("true", "1"):
-        return True
-    if raw in ("false", "0"):
-        return False
-    raise ValueError(f"{name} must be 'true' or 'false', got {raw!r}")
+from iris.envtools import get_bool as _get_bool, required as _required
 
 
 @dataclass(frozen=True, slots=True)

@@ -74,80 +74,77 @@ def _ensure_role(client: Client, role: str) -> None:
     client.command(f"CREATE ROLE IF NOT EXISTS {role_q}")
 
 
+def _change_tier_grant(
+    client: Client, *, database: str, tier: str, principal: str,
+    kind: str, suffix: str, op: str,
+) -> None:
+    """Shared body for the four tier-grant/revoke variants.
+
+    ``kind`` is ``"username"`` or ``"group"``, used to drive the
+    reserved-suffix validation at the public boundary so the synthesized
+    ``<principal><suffix>`` role cannot escape the regex check via
+    composition. ``op`` is ``"grant"`` or ``"revoke"`` — grant pre-creates
+    the principal role (closes a username-enumeration channel via
+    differential CH errors); revoke does not (revoke must not leak state
+    for attacker-supplied principals) and tolerates the CH "no such role"
+    error so callers can be idempotent.
+    """
+    validate_identifier(principal, kind=kind)
+    principal_role = f"{principal}{suffix}"
+    principal_role_q = quote_identifier(principal_role, kind="role")
+    tier_q = quote_identifier(tier_role_name(database, tier), kind="role")
+    if op == "grant":
+        _ensure_role(client, principal_role)
+        client.command(f"GRANT {tier_q} TO {principal_role_q}")
+        return
+    try:
+        client.command(f"REVOKE {tier_q} FROM {principal_role_q}")
+    except DatabaseError as err:
+        if _is_unknown_role_error(err):
+            return
+        raise
+
+
 def grant_tier_to_user(
     client: Client, *, database: str, tier: str, username: str
 ) -> None:
-    """``GRANT <database>_<tier> TO <username>_USER``.
-
-    Pre-creates the user role if it does not yet exist (closes a username
-    enumeration channel via differential CH errors).
-    """
-    # Validate at the public boundary so the synthesized `<username>_USER`
-    # role cannot escape the regex check via composition. `kind="role"`
-    # downstream of composition skips the suffix check by design.
-    validate_identifier(username, kind="username")
-    user_role = f"{username}{USER_ROLE_SUFFIX}"
-    _ensure_role(client, user_role)
-    user_role_q = quote_identifier(user_role, kind="role")
-    tier_q = quote_identifier(tier_role_name(database, tier), kind="role")
-    client.command(f"GRANT {tier_q} TO {user_role_q}")
+    """``GRANT <database>_<tier> TO <username>_USER`` (pre-creates the role)."""
+    _change_tier_grant(
+        client, database=database, tier=tier, principal=username,
+        kind="username", suffix=USER_ROLE_SUFFIX, op="grant",
+    )
 
 
 def grant_tier_to_group(
     client: Client, *, database: str, tier: str, group: str
 ) -> None:
-    """``GRANT <database>_<tier> TO <group>_GRP``.
-
-    Pre-creates the group role if it does not yet exist.
-    """
-    validate_identifier(group, kind="group")
-    group_role = f"{group}{GROUP_ROLE_SUFFIX}"
-    _ensure_role(client, group_role)
-    group_role_q = quote_identifier(group_role, kind="role")
-    tier_q = quote_identifier(tier_role_name(database, tier), kind="role")
-    client.command(f"GRANT {tier_q} TO {group_role_q}")
+    """``GRANT <database>_<tier> TO <group>_GRP`` (pre-creates the role)."""
+    _change_tier_grant(
+        client, database=database, tier=tier, principal=group,
+        kind="group", suffix=GROUP_ROLE_SUFFIX, op="grant",
+    )
 
 
 def revoke_tier_from_user(
     client: Client, *, database: str, tier: str, username: str
 ) -> None:
-    """``REVOKE <database>_<tier> FROM <username>_USER``.
-
-    Does NOT pre-create the user-role: revoke must not leak state for
-    arbitrary attacker-supplied usernames. CH may raise on a missing
-    role; we swallow the "not found" case (matched on CH error code 523)
-    and let any other error propagate.
-    """
-    validate_identifier(username, kind="username")
-    user_role = f"{username}{USER_ROLE_SUFFIX}"
-    user_role_q = quote_identifier(user_role, kind="role")
-    tier_q = quote_identifier(tier_role_name(database, tier), kind="role")
-    try:
-        client.command(f"REVOKE {tier_q} FROM {user_role_q}")
-    except DatabaseError as err:
-        if _is_unknown_role_error(err):
-            return
-        raise
+    """``REVOKE <database>_<tier> FROM <username>_USER`` (idempotent: CH "no
+    such role" swallowed via the numeric error code)."""
+    _change_tier_grant(
+        client, database=database, tier=tier, principal=username,
+        kind="username", suffix=USER_ROLE_SUFFIX, op="revoke",
+    )
 
 
 def revoke_tier_from_group(
     client: Client, *, database: str, tier: str, group: str
 ) -> None:
-    """``REVOKE <database>_<tier> FROM <group>_GRP``.
-
-    Does NOT pre-create the group-role; CH may raise on a missing role
-    (we swallow code 523 only).
-    """
-    validate_identifier(group, kind="group")
-    group_role = f"{group}{GROUP_ROLE_SUFFIX}"
-    group_role_q = quote_identifier(group_role, kind="role")
-    tier_q = quote_identifier(tier_role_name(database, tier), kind="role")
-    try:
-        client.command(f"REVOKE {tier_q} FROM {group_role_q}")
-    except DatabaseError as err:
-        if _is_unknown_role_error(err):
-            return
-        raise
+    """``REVOKE <database>_<tier> FROM <group>_GRP`` (idempotent: CH "no
+    such role" swallowed)."""
+    _change_tier_grant(
+        client, database=database, tier=tier, principal=group,
+        kind="group", suffix=GROUP_ROLE_SUFFIX, op="revoke",
+    )
 
 
 def grant_select_to_database(client: Client, *, database: str, role: str) -> None:
