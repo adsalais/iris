@@ -22,12 +22,19 @@ class TabCapExceeded(Exception):
 
 @dataclass(frozen=True, slots=True)
 class TabRecord:
-    """Wire-shape for one tab. Mirrors the dict stored in ``session.data['tabs']``."""
+    """Wire-shape for one tab. Mirrors the dict stored in ``session.data['tabs']``.
+
+    `temporary` is a preview-tab flag (italic title in the strip): only one
+    temporary tab can exist at a time, and opening another temp tab replaces
+    it. Promoted to permanent (False) on user interaction — see the open
+    and promote routes in `shell/routes.py`.
+    """
     id: str
     feature: str
     intent: str
     params: dict[str, Any]
     title: str
+    temporary: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -36,6 +43,7 @@ class TabRecord:
             "intent": self.intent,
             "params": self.params,
             "title": self.title,
+            "temporary": self.temporary,
         }
 
     @classmethod
@@ -46,6 +54,7 @@ class TabRecord:
             intent=d["intent"],
             params=d.get("params", {}),
             title=d.get("title", ""),
+            temporary=bool(d.get("temporary", False)),
         )
 
 
@@ -94,3 +103,11 @@ def replace_tab(data: dict[str, Any], tab_id: str, rec: TabRecord) -> None:
             tabs[i] = rec.to_json()
             return
     raise KeyError(tab_id)
+
+
+def find_temporary_tab(data: dict[str, Any]) -> TabRecord | None:
+    """Return the (single) temporary tab in this session, or None."""
+    for t in list_tabs(data):
+        if t.temporary:
+            return t
+    return None

@@ -50,19 +50,14 @@
     {"name": "data_team"}
   ],
 
-  "clients": [
+  "clientScopes": [
     {
-      "clientId": "iris",
-      "secret": "iris-dev-secret",
-      "redirectUris": [
-        "http://localhost:8000/login/callback",
-        "http://127.0.0.1:8000/login/callback"
-      ],
-      "publicClient": false,
-      "directAccessGrantsEnabled": false,
-      "standardFlowEnabled": true,
-      "serviceAccountsEnabled": false,
+      "name": "groups",
       "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
       "protocolMappers": [
         {
           "name": "groups",
@@ -78,6 +73,26 @@
           }
         }
       ]
+    }
+  ],
+
+  "clients": [
+    {
+      "clientId": "iris",
+      "secret": "iris-dev-secret",
+      "redirectUris": [
+        "http://localhost:8000/login/callback",
+        "http://127.0.0.1:8000/login/callback"
+      ],
+      "publicClient": false,
+      "directAccessGrantsEnabled": false,
+      "standardFlowEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "defaultClientScopes": ["openid", "profile", "email", "groups"],
+      "attributes": {
+        "post.logout.redirect.uris": "http://localhost:8000/login##http://127.0.0.1:8000/login"
+      }
     }
   ]
 }

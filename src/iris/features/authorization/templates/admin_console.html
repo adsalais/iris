@@ -1,15 +1,15 @@
-<div class="iris-feature-page" id="{{ panel_id }}">
+<div class="iris-feature-page">
   <h2>Org admin console</h2>
   <div class="iris-subtabs">
     {% for st_key, st_label in [("users", "Users"), ("databases", "Databases"),
                                   ("policies", "Row policies"), ("audit", "Audit")] %}
-    <button data-class="{active: $tabs[{{ tab_id | tojson }}].subtab === {{ st_key | tojson }}}"
-            data-on:click="$tabs[{{ tab_id | tojson }}].subtab = {{ st_key | tojson }}; @get('/feature/auth/{{ tab_id }}/admin/' + {{ st_key | tojson }})">
+    <button data-class='{active: $tabs[{{ tab_id | tojson }}].subtab === {{ st_key | tojson }}}'
+            data-on:click='$tabs[{{ tab_id | tojson }}].subtab = {{ st_key | tojson }}; @get("/feature/auth/{{ tab_id }}/admin/" + {{ st_key | tojson }})'>
       {{ st_label }}
     </button>
     {% endfor %}
   </div>
   <div id="{{ panel_id }}-subtab"
-       data-init="@get('/feature/auth/{{ tab_id }}/admin/' + {{ initial_subtab | tojson }})">
+       data-init='@get("/feature/auth/{{ tab_id }}/admin/" + {{ initial_subtab | tojson }})'>
   </div>
 </div>

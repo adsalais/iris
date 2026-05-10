@@ -10,7 +10,7 @@
         <td>{{ db.writer_count }}</td>
         <td>{{ db.reader_count }}</td>
         <td>
-          <button data-on:click="@post('/api/tabs?feature=auth&amp;intent=manage&amp;params=' + encodeURIComponent(JSON.stringify({database: {{ db.name | tojson }}})))">
+          <button data-on:click='@post("/api/tabs?feature=auth&amp;intent=manage&amp;temporary=true&amp;from_tab=" + encodeURIComponent($active || "") + "&amp;params=" + encodeURIComponent(JSON.stringify({database: {{ db.name | tojson }}})))'>
             manage
           </button>
         </td>

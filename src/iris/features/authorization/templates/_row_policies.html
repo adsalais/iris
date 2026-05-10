@@ -4,7 +4,7 @@
     {% for p in row_policies %}
     <li>
       {{ p.table | default("?") }} ON role {{ p.short_name | default(p.name) | default("?") }}: {{ p.select_filter | default("?") }}
-      <button data-on:click="@delete('/feature/auth/{{ tab_id }}/policies?database={{ database | urlencode }}&amp;table=' + encodeURIComponent({{ (p.table or '') | tojson }}) + '&amp;role=' + encodeURIComponent({{ (p.short_name or p.name or '') | tojson }}) + '&amp;value=' + encodeURIComponent({{ (p.select_filter or '') | tojson }}))">
+      <button data-on:click='@delete("/feature/auth/{{ tab_id }}/policies?database={{ database | urlencode }}&amp;table=" + encodeURIComponent({{ (p.table or "") | tojson }}) + "&amp;role=" + encodeURIComponent({{ (p.short_name or p.name or "") | tojson }}) + "&amp;value=" + encodeURIComponent({{ (p.select_filter or "") | tojson }}))'>
         &times;
       </button>
     </li>

@@ -8,7 +8,7 @@
         <td>{{ u.name }}</td>
         <td>{{ u.groups | join(", ") }}</td>
         <td>
-          <button data-on:click="@post('/feature/auth/{{ tab_id }}/admin/users/' + encodeURIComponent({{ u.name | tojson }}) + '/reprovision')">
+          <button data-on:click='@post("/feature/auth/{{ tab_id }}/admin/users/" + encodeURIComponent({{ u.name | tojson }}) + "/reprovision")'>
             reprovision
           </button>
         </td>

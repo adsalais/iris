@@ -55,7 +55,8 @@ def test_append_tab_initializes_tabs_list():
                     params={}, title="T")
     append_tab(data, rec)
     assert data["tabs"] == [{"id": "X", "feature": "auth",
-                              "intent": "my_access", "params": {}, "title": "T"}]
+                              "intent": "my_access", "params": {}, "title": "T",
+                              "temporary": False}]
 
 
 def test_append_tab_enforces_cap():

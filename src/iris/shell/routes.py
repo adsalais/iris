@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from datastar_py.consts import ElementPatchMode
-from datastar_py.fastapi import DatastarResponse
+from datastar_py.fastapi import DatastarResponse, read_signals
 from datastar_py.fastapi import ServerSentEventGenerator as SSE
 from fastapi import (
     Depends,
@@ -36,6 +36,7 @@ from iris.shell.tabs import (
     TabRecord,
     append_tab,
     find_tab,
+    find_temporary_tab,
     list_tabs,
     new_tab_id,
     remove_tab,
@@ -55,7 +56,7 @@ def install_routes(app: FastAPI) -> None:
         nav_html = render_nav(contribs, session.capabilities)
         tabs = list_tabs(session.data)
         active_tab_id = tabs[0].id if tabs else ""
-        tabs_signal = {t.id: {} for t in tabs}
+        tabs_signal = {t.id: {"temporary": t.temporary} for t in tabs}
 
         csrf = mint_csrf_token(request)
         response = templates.TemplateResponse(
@@ -80,6 +81,8 @@ def install_routes(app: FastAPI) -> None:
         feature: Annotated[str, Query(max_length=64)],
         intent: Annotated[str, Query(max_length=64)],
         params: Annotated[str, Query(max_length=4096)] = "{}",
+        temporary: Annotated[bool, Query()] = False,
+        from_tab: Annotated[str, Query(max_length=32)] = "",
         _: None = Depends(verify_csrf_header),
     ) -> Response:
         dispatcher: IntentDispatcher = request.app.state.intent_dispatcher
@@ -99,10 +102,44 @@ def install_routes(app: FastAPI) -> None:
         except IntentForbidden as e:
             raise HTTPException(status_code=403, detail="intent forbidden") from e
 
+        events: list[Any] = []
+
+        # If the open was triggered from inside `from_tab` (a button in its
+        # content panel) and that tab is currently temporary, the user has
+        # interacted with it — promote it before any temp-tab replacement
+        # logic runs. Without this step the next branch would remove it.
+        if from_tab:
+            origin = find_tab(session.data, from_tab)
+            if origin is not None and origin.temporary:
+                replace_tab(session.data, from_tab, TabRecord(
+                    id=origin.id, feature=origin.feature, intent=origin.intent,
+                    params=origin.params, title=origin.title, temporary=False,
+                ))
+                events.append(SSE.patch_signals({
+                    "tabs": {from_tab: {"temporary": False}},
+                }))
+
+        # Replace the existing temp tab (if any) when the new one is also
+        # temporary. After the from_tab promote above, this only matches a
+        # *different* temp tab — the preview-tab invariant is "at most one
+        # temp tab at a time".
+        if temporary:
+            existing_temp = find_temporary_tab(session.data)
+            if existing_temp is not None:
+                remove_tab(session.data, existing_temp.id)
+                events.append(SSE.patch_elements(
+                    selector=f"#tab-button-{existing_temp.id}",
+                    mode=ElementPatchMode.REMOVE,
+                ))
+                events.append(SSE.patch_elements(
+                    selector=f"#tab-content-{existing_temp.id}",
+                    mode=ElementPatchMode.REMOVE,
+                ))
+
         tab_id = new_tab_id()
         rec = TabRecord(
             id=tab_id, feature=feature, intent=intent,
-            params=params_dict, title=spec.title(params_dict),
+            params=params_dict, title=spec.title(params_dict), temporary=temporary,
         )
         try:
             append_tab(session.data, rec)
@@ -116,29 +153,72 @@ def install_routes(app: FastAPI) -> None:
         panel_html = templates.get_template("shell/_tab_panel.html").render(
             tab=rec.to_json()
         )
-        return DatastarResponse([
+        events.extend([
             SSE.patch_elements(button_html, selector="#tab-strip", mode=ElementPatchMode.APPEND),
             SSE.patch_elements(panel_html, selector="#tab-content", mode=ElementPatchMode.APPEND),
             SSE.patch_signals({
-                "tabs": {tab_id: {}},
+                "tabs": {tab_id: {"temporary": temporary}},
                 "active": tab_id,
             }),
         ])
+        return DatastarResponse(events)
 
-    @app.delete("/api/tabs/{tab_id}")
-    async def close_tab(
+    @app.post("/api/tabs/{tab_id}/promote")
+    async def promote_tab(
         session: Session,
         tab_id: str,
         _: None = Depends(verify_csrf_header),
     ) -> Response:
-        if find_tab(session.data, tab_id) is None:
+        rec = find_tab(session.data, tab_id)
+        if rec is None or not rec.temporary:
             return Response(status_code=204)
+        replace_tab(session.data, tab_id, TabRecord(
+            id=rec.id, feature=rec.feature, intent=rec.intent,
+            params=rec.params, title=rec.title, temporary=False,
+        ))
+        await session.persist_data()
+        return DatastarResponse(SSE.patch_signals({
+            "tabs": {tab_id: {"temporary": False}},
+        }))
+
+    @app.delete("/api/tabs/{tab_id}")
+    async def close_tab(
+        request: Request,
+        session: Session,
+        tab_id: str,
+        _: None = Depends(verify_csrf_header),
+    ) -> Response:
+        tabs = list_tabs(session.data)
+        idx = next((i for i, t in enumerate(tabs) if t.id == tab_id), None)
+        if idx is None:
+            return Response(status_code=204)
+
+        # Pick the tab that should become active if the user just closed
+        # the active one: the left neighbor, or the right neighbor if the
+        # closed tab was the leftmost, or "" when no tabs remain.
+        if len(tabs) == 1:
+            new_active = ""
+        elif idx > 0:
+            new_active = tabs[idx - 1].id
+        else:
+            new_active = tabs[idx + 1].id
+
+        # Datastar sends current signals with @delete (URL query param).
+        # We only re-target $active when the closed tab actually was the
+        # active one — closing a background tab leaves $active alone.
+        signals = await read_signals(request) or {}
+        currently_active = signals.get("active")
+
         remove_tab(session.data, tab_id)
         await session.persist_data()
-        return DatastarResponse([
+
+        events = [
             SSE.patch_elements(selector=f"#tab-button-{tab_id}", mode=ElementPatchMode.REMOVE),
             SSE.patch_elements(selector=f"#tab-content-{tab_id}", mode=ElementPatchMode.REMOVE),
-        ])
+        ]
+        if currently_active == tab_id:
+            events.append(SSE.patch_signals({"active": new_active}))
+        return DatastarResponse(events)
 
     @app.patch("/api/tabs/{tab_id}")
     async def retarget_tab(

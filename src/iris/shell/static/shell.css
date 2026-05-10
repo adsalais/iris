@@ -6,9 +6,17 @@ body {
   grid-template-columns: 240px 1fr;
   color: #1a1a1a;
 }
-body[data-nav-collapsed="true"] {
+body.nav-collapsed {
   grid-template-columns: 56px 1fr;
 }
+
+/* Chevron toggle: pure-CSS so neither arrow flashes during Datastar boot. */
+.iris-chev-collapse { display: none; }
+body.nav-collapsed .iris-chev-expand { display: none; }
+body.nav-collapsed .iris-chev-collapse { display: inline; }
+
+/* Preview tab (single-click temporary): italic title until user interacts. */
+.tab-temp { font-style: italic; }
 
 /* Left panel */
 .iris-left-panel {
@@ -58,10 +66,10 @@ body[data-nav-collapsed="true"] {
 }
 
 /* Collapsed nav: hide labels, show only icons */
-body[data-nav-collapsed="true"] .iris-nav-group-label,
-body[data-nav-collapsed="true"] .iris-nav-entry button,
-body[data-nav-collapsed="true"] .iris-nav-entry-label,
-body[data-nav-collapsed="true"] .iris-nav-badge {
+body.nav-collapsed .iris-nav-group-label,
+body.nav-collapsed .iris-nav-entry button,
+body.nav-collapsed .iris-nav-entry-label,
+body.nav-collapsed .iris-nav-badge {
   display: none;
 }
 

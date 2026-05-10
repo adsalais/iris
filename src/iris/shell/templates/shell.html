@@ -4,11 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Iris{% endblock %}</title>
+  <!-- csrf.js MUST precede datastar.js: it monkey-patches window.fetch to
+       inject X-CSRF-Token, and Datastar can fire requests as soon as it loads. -->
+  <script type="module" src="/static/shell/csrf.js"></script>
   <script type="module" src="/static/shell/datastar.js"></script>
   <link rel="stylesheet" href="/static/shell/shell.css">
 </head>
 <body data-signals='{"active": {{ active_tab_id | tojson }}, "tabs": {{ tabs_signal | tojson }}, "nav_collapsed": false, "account_open": false}'
-      data-attr:data-nav-collapsed="$nav_collapsed">
+      data-class="{'nav-collapsed': $nav_collapsed}">
 
   <aside class="iris-left-panel">
     {% include "shell/_top_buttons.html" %}
@@ -19,11 +22,11 @@
     <div id="tab-strip" class="iris-tab-strip">
       {% for tab in tabs %}
       <button id="tab-button-{{ tab.id }}"
-              data-on:click="$active = {{ tab.id | tojson }}"
-              data-class="{active: $active === {{ tab.id | tojson }}}">
+              data-on:click='$active = {{ tab.id | tojson }}; ($tabs[{{ tab.id | tojson }}] && $tabs[{{ tab.id | tojson }}].temporary) && @post("/api/tabs/{{ tab.id }}/promote")'
+              data-class='{active: $active === {{ tab.id | tojson }}, "tab-temp": ($tabs[{{ tab.id | tojson }}] && $tabs[{{ tab.id | tojson }}].temporary)}'>
         {{ tab.title }}
         <span class="iris-tab-close"
-              data-on:click.stop="@delete('/api/tabs/{{ tab.id }}')">&times;</span>
+              data-on:click__stop="@delete('/api/tabs/{{ tab.id }}')">&times;</span>
       </button>
       {% endfor %}
     </div>
@@ -32,7 +35,7 @@
       {% for tab in tabs %}
       <div id="tab-content-{{ tab.id }}"
            class="iris-tab-panel"
-           data-show="$active === {{ tab.id | tojson }}"
+           data-show='$active === {{ tab.id | tojson }}'
            data-init="@get('{{ tab_render_url(tab) }}')">
       </div>
       {% endfor %}

@@ -1,25 +1,31 @@
 <?xml version="1.0"?>
 <!--
-  Grants NAMED COLLECTION ADMIN to the CLICKHOUSE_USER service account.
+  Elevates the `default` user so that the init SQL in
+  /docker-entrypoint-initdb.d/ can `CREATE USER iris_admin` and
+  `GRANT ALL ... WITH GRANT OPTION` to it.
 
-  CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 grants nearly every privilege EXCEPT
-  NAMED COLLECTION ADMIN. Without that one privilege, the service user cannot
-  run the GRANT ALL that iris's bootstrap_admin issues to the per-user/group
-  admin roles, and bootstrap fails.
+  Init scripts run as `default` (no auth, local socket). By stock CH
+  defaults, `default` has full data privileges but NOT access_management
+  and NOT named_collection_control — so it cannot issue GRANT ALL ON *.*
+  WITH GRANT OPTION (which implicitly includes SHOW NAMED COLLECTIONS
+  SECRETS), and the init fails with code 497 (ACCESS_DENIED).
 
-  ClickHouse merges /etc/clickhouse-server/users.d/*.xml into the user
-  definitions at startup. The placeholder ${CLICKHOUSE_USER} is NOT expanded
-  by CH — you must keep the username here in sync with the value in your
-  deploy/.env file. (For the default `iris_admin` it is already correct.)
+  This overlay grants the missing bits to `default`. iris itself does NOT
+  connect as `default` — it uses iris_admin (created via SQL into writable
+  `local_directory` storage, see ../init/01-iris-admin.sql).
 
-  If you change CLICKHOUSE_USER in deploy/.env, edit the <iris_admin> tag
-  below to match.
+  Also: CLICKHOUSE_USER/CLICKHOUSE_PASSWORD are intentionally unset in the
+  compose, so the entrypoint disables network access for `default`. This
+  means `default` is reachable only via the in-container socket (which is
+  exactly how the init script connects); from the host, only iris_admin
+  can log in. That's the desired security posture for local dev.
 -->
 <clickhouse>
   <users>
-    <iris_admin>
+    <default>
+      <access_management>1</access_management>
       <named_collection_control>1</named_collection_control>
       <show_named_collections_secrets>1</show_named_collections_secrets>
-    </iris_admin>
+    </default>
   </users>
 </clickhouse>

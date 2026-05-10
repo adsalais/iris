@@ -87,9 +87,15 @@ def _render_children(children: Sequence[NavEntry], caps: Capabilities) -> str:
 
 
 def _post_tab_action(intent: TabIntent) -> str:
-    """Build the ``@post('/api/tabs?…')`` Datastar action expression."""
+    """Build the ``@post('/api/tabs?…')`` Datastar action expression.
+
+    Nav clicks open *temporary* (preview) tabs — VS Code style. If the user
+    already has a temp tab open, the open route replaces it. We deliberately
+    do not pass `from_tab` here: nav lives outside any tab panel, so the
+    click isn't "interaction with the current tab" and shouldn't promote it.
+    """
     params_json = json.dumps(intent.params, sort_keys=True)
     return (
         f"@post('/api/tabs?feature={intent.feature}&intent={intent.intent}"
-        f"&params={quote(params_json, safe='')}')"
+        f"&params={quote(params_json, safe='')}&temporary=true')"
     )

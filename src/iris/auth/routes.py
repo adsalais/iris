@@ -169,7 +169,15 @@ def build_auth_router(
             session.user.display_name,
             session.user.subject,
         )
-        response = RedirectResponse("/login", status_code=303)
+        # If the provider has an IdP session (OIDC), redirect through its
+        # end_session_endpoint — otherwise the IdP's SSO cookie silently
+        # re-authenticates the user on the next /login round-trip. We ask
+        # the IdP to bounce back to /login so the user lands on iris's
+        # login form (the URL must be registered in the IdP client config).
+        login_url = str(request.url_for("login_get"))
+        idp_logout = await provider.end_session_url(post_logout_redirect=login_url)
+        target = idp_logout or "/login"
+        response = RedirectResponse(target, status_code=303)
         response.delete_cookie(cookie_name)
         return response
 

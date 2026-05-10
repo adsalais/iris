@@ -13,26 +13,42 @@ does not destroy your test users / databases.
 
 ## First-time setup
 
+The recommended path is `deploy/up.sh` — a small wrapper that declares the
+required variables (`DATA_DIR`, Keycloak admin, ClickHouse service-admin)
+at the top, creates the bind-mount target dirs (chown'd for the in-container
+Keycloak uid), and invokes `docker compose`.
+
 ```bash
 cd deploy/
 
-# 1. Configure: pick where data lives and (optionally) override the default
-#    admin credentials.
-cp .env.example .env
-$EDITOR .env       # set DATA_DIR=/path/where/state/should/live (REQUIRED)
+# 1. Open up.sh and set DATA_DIR to an absolute path outside the project
+#    tree. Tweak admin credentials if you want non-defaults.
+$EDITOR up.sh
 
 # 2. Boot the stack. First run pulls images and imports the seed realm
-#    (~30s for Keycloak, ~10s for CH).
-docker compose up -d
+#    (~30s for Keycloak, ~10s for CH). The script forwards extra args to
+#    docker compose, so subsequent operations also go through it (see
+#    "Common operations" below).
+./up.sh
 
 # 3. Wait for both services to report healthy.
-docker compose ps
+./up.sh ps
 # Expect STATUS = "healthy" for both.
 ```
 
 After this, `${DATA_DIR}/keycloak/` and `${DATA_DIR}/clickhouse/` exist and
 contain all persistent state. `docker compose down` keeps them; deleting
 them re-seeds from `keycloak/realm.json` next time.
+
+If you'd rather not touch the checked-in script, copy it: `cp up.sh
+up.local.sh && $EDITOR up.local.sh`. `up.local.sh` is gitignored.
+
+### Or: plain `.env` instead
+
+`up.sh` is just a launcher around the same env vars `docker compose`
+already reads from `deploy/.env`. If you prefer that flow, copy
+`.env.example` to `.env`, edit it, and run `docker compose up -d` directly.
+`.env` is gitignored. Both styles work; pick one.
 
 ## Configure iris to talk to the local stack
 
@@ -143,7 +159,7 @@ and unset the env var so iris doesn't re-bootstrap it on next start.
 ### Connect a `clickhouse-client` to the local CH
 
 ```bash
-docker compose exec clickhouse clickhouse-client \
+./up.sh exec clickhouse clickhouse-client \
   --user iris_admin --password change-me-please
 # or from the host:
 clickhouse-client --host localhost --port 9000 \
@@ -163,10 +179,10 @@ SELECT * FROM system.grants WHERE database = 'marketing';
 ### Reset everything
 
 ```bash
-docker compose down                    # stop containers, KEEP data volume
-docker compose down -v                 # stop and remove docker-managed volumes (we use bind mounts so this changes nothing)
+./up.sh down                           # stop containers, KEEP data volume
+./up.sh down -v                        # stop and remove docker-managed volumes (we use bind mounts so this changes nothing)
 rm -rf "${DATA_DIR}/keycloak" "${DATA_DIR}/clickhouse"   # delete persistent state
-docker compose up -d                   # fresh boot, re-imports realm.json
+./up.sh                                # fresh boot, re-imports realm.json
 ```
 
 Resetting wipes both: Keycloak users you added in the admin console AND
@@ -175,16 +191,16 @@ all ClickHouse databases / grants / row policies iris provisioned.
 ### Stop the stack (keep data)
 
 ```bash
-docker compose stop                    # pauses containers
-docker compose start                   # resumes
-docker compose down                    # destroys containers, keeps data
+./up.sh stop                           # pauses containers
+./up.sh start                          # resumes
+./up.sh down                           # destroys containers, keeps data
 ```
 
 ### View service logs
 
 ```bash
-docker compose logs -f keycloak
-docker compose logs -f clickhouse
+./up.sh logs -f keycloak
+./up.sh logs -f clickhouse
 ```
 
 ## Troubleshooting

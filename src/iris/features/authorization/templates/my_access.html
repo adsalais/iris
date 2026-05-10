@@ -1,4 +1,4 @@
-<div class="iris-feature-page" id="{{ panel_id }}">
+<div class="iris-feature-page">
   <h2>My access</h2>
 
   <section class="iris-identity-card">
@@ -17,7 +17,7 @@
       <li>
         <span class="iris-db-name">{{ db }}</span>
         <button class="iris-action"
-                data-on:click="@post('/api/tabs?feature=workbench&amp;intent=open&amp;params=' + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))">
+                data-on:click='@post("/api/tabs?feature=workbench&amp;intent=open&amp;temporary=true&amp;from_tab=" + encodeURIComponent($active || "") + "&amp;params=" + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))'>
           open in workbench
         </button>
       </li>
@@ -34,7 +34,7 @@
       <li>
         <span class="iris-db-name">{{ db }}</span>
         <button class="iris-action"
-                data-on:click="@post('/api/tabs?feature=workbench&amp;intent=open&amp;params=' + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))">
+                data-on:click='@post("/api/tabs?feature=workbench&amp;intent=open&amp;temporary=true&amp;from_tab=" + encodeURIComponent($active || "") + "&amp;params=" + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))'>
           open in workbench
         </button>
       </li>
@@ -51,7 +51,7 @@
       <li>
         <span class="iris-db-name">{{ db }}</span>
         <button class="iris-action"
-                data-on:click="@post('/api/tabs?feature=auth&amp;intent=manage&amp;params=' + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))">
+                data-on:click='@post("/api/tabs?feature=auth&amp;intent=manage&amp;temporary=true&amp;from_tab=" + encodeURIComponent($active || "") + "&amp;params=" + encodeURIComponent(JSON.stringify({database: {{ db | tojson }}})))'>
           manage
         </button>
       </li>
@@ -63,7 +63,7 @@
   {% if can_create_database %}
   <section class="iris-actions-row">
     <button class="iris-action-primary"
-            data-on:click="@post('/api/tabs?feature=auth&amp;intent=create_database&amp;params=%7B%7D')">
+            data-on:click='@post("/api/tabs?feature=auth&amp;intent=create_database&amp;temporary=true&amp;params=%7B%7D&amp;from_tab=" + encodeURIComponent($active || ""))'>
       + Create new database
     </button>
   </section>
@@ -73,7 +73,7 @@
   <section class="iris-actions-row">
     <h3>Org administration</h3>
     <button class="iris-action-primary"
-            data-on:click="@post('/api/tabs?feature=auth&amp;intent=admin_console&amp;params=%7B%7D')">
+            data-on:click='@post("/api/tabs?feature=auth&amp;intent=admin_console&amp;temporary=true&amp;params=%7B%7D&amp;from_tab=" + encodeURIComponent($active || ""))'>
       Open admin console
     </button>
   </section>

@@ -116,6 +116,25 @@ class OAuthProvider:
         """Close the async httpx client. Safe to call multiple times."""
         await self._async_client.aclose()
 
+    async def end_session_url(self, post_logout_redirect: str | None = None) -> str | None:
+        """Return the OIDC `end_session_endpoint` URL, or None if unsupported.
+
+        We pass `client_id` (Keycloak accepts it as an alternative to
+        `id_token_hint`, which iris doesn't store). When `post_logout_redirect`
+        is given, the IdP redirects back to it after sign-out — that URL must
+        be in the client's "Valid post logout redirect URIs" or Keycloak
+        rejects with `invalid_redirect_uri`.
+        """
+        from urllib.parse import urlencode
+        doc = await self._ensure_discovered()
+        endpoint = doc.get("end_session_endpoint")
+        if not endpoint:
+            return None
+        params: dict[str, str] = {"client_id": self._settings.client_id}
+        if post_logout_redirect:
+            params["post_logout_redirect_uri"] = post_logout_redirect
+        return endpoint + "?" + urlencode(params)
+
     async def begin(self, request: Request) -> Response:
         doc = await self._ensure_discovered()
         redirect_uri = str(request.url_for("login_callback"))

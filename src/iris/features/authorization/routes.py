@@ -34,6 +34,25 @@ router = APIRouter(prefix="/feature/auth")
 # ---------------------------------------------------------------------------
 
 
+def _render_panel_inner(
+    request: Request, template_name: str, ctx: dict[str, object],
+) -> Response:
+    """Render a tab panel's body and return it as an SSE INNER patch.
+
+    Why INNER: the panel wrapper `<div id="tab-content-XXX" data-show=... data-init=...>`
+    is created by the shell at tab-open time and carries the visibility binding.
+    OUTER mode (or a plain TemplateResponse, which Datastar morphs over the
+    calling element) replaces the wrapper and strips data-show — every panel
+    that loads its content this way then becomes permanently visible, so
+    every open tab visually shows the most-recently-loaded content.
+    """
+    templates = request.app.state.templates
+    html = templates.get_template(template_name).render(request=request, **ctx)
+    return DatastarResponse(SSE.patch_elements(
+        html, selector=f"#{ctx['panel_id']}", mode=ElementPatchMode.INNER,
+    ))
+
+
 @router.get("/{tab_id}/my_access")
 async def render_my_access(
     request: Request,
@@ -41,16 +60,12 @@ async def render_my_access(
     tab_id: str,
 ) -> Response:
     from iris.features.authorization.service import my_access_view
-    templates = request.app.state.templates
     ctx = my_access_view(session.capabilities)
-    return templates.TemplateResponse(
-        request, "authorization/my_access.html",
-        {
-            "user": session.user,
-            "panel_id": tab_panel_id(tab_id),
-            **ctx,
-        },
-    )
+    return _render_panel_inner(request, "authorization/my_access.html", {
+        "user": session.user,
+        "panel_id": tab_panel_id(tab_id),
+        **ctx,
+    })
 
 
 @router.get("/{tab_id}/manage")
@@ -61,17 +76,13 @@ async def render_manage(
     database: Annotated[str, Query(min_length=1, max_length=64)],  # consumed by SessionDatabaseAdmin dep  # pyright: ignore[reportUnusedParameter]
 ) -> Response:
     from iris.features.authorization.service import manage_view
-    templates = request.app.state.templates
     ctx = await manage_view(db)
-    return templates.TemplateResponse(
-        request, "authorization/manage.html",
-        {
-            "panel_id": tab_panel_id(tab_id),
-            "tab_id": tab_id,
-            "database": db.database,
-            **ctx,
-        },
-    )
+    return _render_panel_inner(request, "authorization/manage.html", {
+        "panel_id": tab_panel_id(tab_id),
+        "tab_id": tab_id,
+        "database": db.database,
+        **ctx,
+    })
 
 
 @router.get("/{tab_id}/create_database")
@@ -80,11 +91,9 @@ async def render_create_database(
     creator: SessionDatabaseCreator,  # noqa: ARG001  # gates is_admin or can_create_database  # pyright: ignore[reportUnusedParameter]
     tab_id: str,
 ) -> Response:
-    templates = request.app.state.templates
-    return templates.TemplateResponse(
-        request, "authorization/create_database.html",
-        {"panel_id": tab_panel_id(tab_id), "tab_id": tab_id, "error": None},
-    )
+    return _render_panel_inner(request, "authorization/create_database.html", {
+        "panel_id": tab_panel_id(tab_id), "tab_id": tab_id, "error": None,
+    })
 
 
 @router.get("/{tab_id}/admin_console")
@@ -94,15 +103,11 @@ async def render_admin_console(
     tab_id: str,
     subtab: Annotated[str, Query()] = "users",
 ) -> Response:
-    templates = request.app.state.templates
-    return templates.TemplateResponse(
-        request, "authorization/admin_console.html",
-        {
-            "panel_id": tab_panel_id(tab_id),
-            "tab_id": tab_id,
-            "initial_subtab": subtab,
-        },
-    )
+    return _render_panel_inner(request, "authorization/admin_console.html", {
+        "panel_id": tab_panel_id(tab_id),
+        "tab_id": tab_id,
+        "initial_subtab": subtab,
+    })
 
 
 # ---------------------------------------------------------------------------

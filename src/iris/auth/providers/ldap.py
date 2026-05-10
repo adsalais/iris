@@ -57,6 +57,10 @@ class LDAPProvider:
         self._settings = settings
         self._connection_factory = _connection_factory  # for tests
 
+    async def end_session_url(self, post_logout_redirect: str | None = None) -> str | None:
+        del post_logout_redirect
+        return None
+
     async def begin(self, request: Request) -> Response:
         return render_login_form(
             request,
