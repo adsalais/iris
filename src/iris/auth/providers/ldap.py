@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import logging
 import re
+import ssl
 from typing import Any, Callable
 
 from fastapi import Request, Response
-from ldap3 import Connection, Server
+from ldap3 import Connection, Server, Tls
 from ldap3.core.exceptions import (
     LDAPException,
     LDAPInvalidCredentialsResult,
@@ -24,6 +25,25 @@ from iris.auth.providers._form import render_login_form
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 logger = logging.getLogger("iris.auth.ldap")
+
+
+def _build_tls(settings: LDAPSettings) -> Tls:
+    """Build a TLS config that always verifies the server certificate.
+
+    ldap3's default ``Tls()`` constructor uses ``validate=ssl.CERT_NONE`` —
+    passing ``tls=None`` to ``Server(ldaps://...)`` therefore silently
+    accepts any certificate, including a MITM. We always pass an explicit
+    ``Tls(validate=CERT_REQUIRED, ...)``: with ``ca_certs_file`` when the
+    operator pinned a CA, otherwise relying on the system trust store
+    (ldap3 falls through to ``set_default_verify_paths()`` when no
+    ``ca_certs_*`` is supplied).
+    """
+    if settings.ca_cert_path:
+        return Tls(
+            validate=ssl.CERT_REQUIRED,
+            ca_certs_file=settings.ca_cert_path,
+        )
+    return Tls(validate=ssl.CERT_REQUIRED)
 
 
 class LDAPProvider:
@@ -111,17 +131,11 @@ class LDAPProvider:
                 raise _BindFailed()
             return conn
         try:
-            tls = None
-            if self._settings.ca_cert_path:
-                import ssl
-
-                from ldap3 import Tls
-
-                tls = Tls(
-                    validate=ssl.CERT_REQUIRED,
-                    ca_certs_file=self._settings.ca_cert_path,
-                )
-            server = Server(self._settings.url, get_info="NO_INFO", tls=tls)
+            server = Server(
+                self._settings.url,
+                get_info="NO_INFO",
+                tls=_build_tls(self._settings),
+            )
             conn = Connection(server, user=bind_dn, password=password, auto_bind=True)
             return conn
         except LDAPInvalidCredentialsResult as exc:

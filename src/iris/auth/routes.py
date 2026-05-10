@@ -40,8 +40,11 @@ def _safe_next(next_url: str) -> str:
     """Return next_url only if it's a same-origin relative path; else /.
 
     Defends against open-redirect attacks via a crafted `next` query param.
-    Rejects: empty input, CRLF (header injection), backslash (browser
-    normalization), absolute URLs, protocol-relative URLs (`//evil`).
+    Rejects: empty input, CRLF (header injection), other ASCII control
+    characters (TAB and other C0 / DEL — browsers strip TAB/CR/LF at URL
+    parse time per WHATWG, so a `Location: /\t/evil` header navigates the
+    user to `//evil`), backslash (browser normalization), absolute URLs,
+    protocol-relative URLs (`//evil`).
     Logs every rewrite at INFO so operators tracing client misconfiguration
     or attempted attacks can see the rejected value (truncated to 128 chars
     to defend against log injection via giant payloads).
@@ -50,6 +53,9 @@ def _safe_next(next_url: str) -> str:
         return "/"
     if "\r" in next_url or "\n" in next_url:
         logger.info("auth: safe_next_rejected reason=crlf next=%r", next_url[:128])
+        return "/"
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in next_url):
+        logger.info("auth: safe_next_rejected reason=control next=%r", next_url[:128])
         return "/"
     if "\\" in next_url:
         logger.info("auth: safe_next_rejected reason=backslash next=%r", next_url[:128])
