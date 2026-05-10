@@ -141,6 +141,47 @@ def test_open_connection_classifies_socket_open_as_unreachable(settings):
         provider._open_connection("uid=x,...", "pw")
 
 
+def test_build_tls_uses_cert_required_when_ca_path_unset():
+    """ldap3's default Tls() uses CERT_NONE — silently accepts MITM. Iris must
+    always validate against system CAs even when no explicit anchor is pinned."""
+    import ssl
+
+    from iris.auth.providers.ldap import _build_tls
+
+    s = LDAPSettings(
+        url="ldaps://ldap.example/",
+        bind_dn_template="uid={username},ou=people,dc=corp,dc=local",
+        group_base_dn="ou=groups,dc=corp,dc=local",
+        require_tls=True,
+        ca_cert_path=None,
+    )
+    tls = _build_tls(s)
+    assert tls.validate == ssl.CERT_REQUIRED
+    # No pinned CA: fall through to system trust (no ca_certs_file set).
+    assert tls.ca_certs_file is None
+
+
+def test_build_tls_pins_ca_file_when_path_set(tmp_path):
+    """When the operator pins a CA bundle, _build_tls passes it through."""
+    import ssl
+
+    from iris.auth.providers.ldap import _build_tls
+
+    ca = tmp_path / "ca.pem"
+    ca.write_text("-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n")
+
+    s = LDAPSettings(
+        url="ldaps://ldap.example/",
+        bind_dn_template="uid={username},ou=people,dc=corp,dc=local",
+        group_base_dn="ou=groups,dc=corp,dc=local",
+        require_tls=True,
+        ca_cert_path=str(ca),
+    )
+    tls = _build_tls(s)
+    assert tls.validate == ssl.CERT_REQUIRED
+    assert tls.ca_certs_file == str(ca)
+
+
 def test_open_connection_localized_invalid_credentials_classified_correctly(settings):
     """Locale-independent classification: a non-English error msg from ldap3 is still
     classified as bad creds via the typed exception, not the substring match."""

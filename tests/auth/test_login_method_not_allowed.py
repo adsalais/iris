@@ -50,6 +50,34 @@ def test_safe_next_rejects_crlf():
     assert _safe_next("/foo\rbar") == "/"
 
 
+def test_safe_next_rejects_tab_and_other_controls():
+    """Browsers strip ASCII TAB / CR / LF from URLs at parse time per WHATWG,
+    so `Location: /\t/evil.com` navigates the user to `//evil.com`. Reject
+    every C0 control character (and DEL) up front."""
+    from iris.auth.routes import _safe_next
+
+    # TAB is the headline bypass: passes startswith("/") but the browser
+    # strips it before navigation, exposing the protocol-relative tail.
+    assert _safe_next("/\t/evil.example.com") == "/"
+    # Other C0 controls — NUL, VT, FF, ESC — and DEL (0x7F).
+    for ch in ("\x00", "\x0b", "\x0c", "\x1b", "\x7f"):
+        assert _safe_next(f"/{ch}/evil") == "/", f"control char {ch!r} not rejected"
+
+
+def test_safe_next_logs_control_reason(caplog):
+    """The new control-char branch logs reason=control distinct from crlf."""
+    import logging
+
+    from iris.auth.routes import _safe_next
+
+    caplog.set_level(logging.INFO, logger="iris.auth")
+    _safe_next("/\t/evil")
+    assert any(
+        "safe_next_rejected" in record.message and "reason=control" in record.message
+        for record in caplog.records
+    ), [r.message for r in caplog.records]
+
+
 def test_safe_next_rejects_backslash():
     """Pre-existing rejection: browsers normalize \\ to / in URLs."""
     from iris.auth.routes import _safe_next
