@@ -31,12 +31,11 @@ path properly.
 In scope:
 1. ClickHouse storage layout: `rag_embeddings`, `rag_acl`, `rag_acl_dict`.
 2. Row policy on `rag_embeddings` keyed by `auth_id`.
-3. `tlp` column on `rag_embeddings` (informational metadata, not auth).
-4. Required grants for the `dictGet` policy invocation.
-5. Vector-only synthesis: pre-synthesis pipeline (rerank + truncate),
+3. Required grants for the `dictGet` policy invocation.
+4. Vector-only synthesis: pre-synthesis pipeline (rerank + truncate),
    prompt template, citation enforcement, refusal/uncertainty handling.
-6. `.rag_env` test configuration with skip-if-missing semantics.
-7. Feature module shape (one route, one service method).
+5. `.rag_env` test configuration with skip-if-missing semantics.
+6. Feature module shape (one route, one service method).
 
 Out of scope:
 - Data ingestion pipeline (phase 2).
@@ -85,7 +84,6 @@ without extra named namespaces.
 | `doc_id` | `UUID` | Parent document. Many chunks share. Used for grouping / display, **not** for auth. `uuid5(NS_DOC, <doc_identifier>)`. Phase-2 ingest uses `<doc_identifier> = source_uri \|\| source_hash`; Phase-4 STIX bootstrap uses `<doc_identifier> = "stix:" + stix_source` (one doc_id per bundle). |
 | `chunk_id` | `UUID` | `uuid5(doc_id, <chunk_identifier>)` — **`doc_id` itself is the namespace**, so chunks are naturally parented to their document in the ID derivation. `<chunk_identifier>` is `content_hash` (Phase 1 manual loads), `f"{ordinal}::{content_hash}"` (Phase 2 pipeline), `f"stix:{stix_id}:description"` (Phase 4 STIX SDO chunks), or `f"stix:{stix_relationship_id}"` (Phase 4 STIX SRO logical chunk_ids). |
 | `auth_id` | `String` | Authorization key. References `rag_acl.auth_id`. |
-| `tlp` | `Enum8('clear' = 1, 'green' = 2, 'amber' = 3, 'amber_strict' = 4, 'red' = 5)` DEFAULT `'clear'` | Informational TLP marker for analyst awareness. **Not used for authorization.** UI surfaces it next to retrieved chunks so analysts know dissemination constraints when sharing. |
 | `embedding` | `Array(Float32)` | Vector. Has an HNSW ANN index — see "Vector indexes" below. |
 | `content` | `String` | Chunk text. |
 | `source_uri` | `String` | Original document URI. |
@@ -98,10 +96,10 @@ without extra named namespaces.
 | `pipeline_version` | `LowCardinality(String) DEFAULT 'manual'` | Phase-1 manual loads use `'manual'`; Phase 2 overrides. |
 
 All schema columns are declared from Phase 1 so the SOURCES prompt
-block (which references `section_path[0]`, `page`, `tlp`) renders
-cleanly on day one. Phase-1 manual loaders may leave the
-Nullable / Array-default fields empty; Phase 2 populates them.
-This avoids a Phase-1→Phase-2 schema migration.
+block (which references `section_path[0]`, `page`) renders cleanly on
+day one. Phase-1 manual loaders may leave the Nullable / Array-default
+fields empty; Phase 2 populates them. This avoids a Phase-1→Phase-2
+schema migration.
 
 Engine:
 ```sql
@@ -146,11 +144,12 @@ migration path is "create rag_embeddings_v2 with the new
 RAG_EMBEDDING_VECTOR_SIZE, re-embed into it, atomically swap via a
 view". Out of v1 scope but flagged here so the constraint is visible.
 
-**`tlp` is metadata, not access control.** Authorization is enforced
-exclusively by `auth_id` + `rag_acl` + the row policy. Operators may
-*choose* to encode TLP intent into `auth_id` naming (e.g.,
-`auth_id = "tlp:amber"` with a matching `rag_acl` row), but that's an
-organizational convention, not an iris-enforced linkage.
+**Authorization is enforced exclusively by `auth_id` + `rag_acl` +
+the row policy.** No other column gates row visibility. Operators
+encode their classification intent into `auth_id` naming
+(`customer:acme`, `tlp:amber`, `internal:eng`, whatever the
+organization's classification scheme produces); iris doesn't interpret
+the namespace prefix, it just matches it against `rag_acl`.
 
 ### `rag_acl` — operator-curated authorization table
 
@@ -273,10 +272,10 @@ Output format:
    cited, with their doc_id.
 
 [SOURCES]
-[C1] doc_id=<doc_id>, chunk_id=<chunk_id>, source=<source_uri>, tlp=<tlp>, page=<page>, section="<section_path[0]>", score=0.91
+[C1] doc_id=<doc_id>, chunk_id=<chunk_id>, source=<source_uri>, page=<page>, section="<section_path[0]>", score=0.91
 <chunk content verbatim>
 
-[C2] doc_id=<doc_id>, chunk_id=<chunk_id>, source=<source_uri>, tlp=<tlp>, page=<page>, section="<section_path[0]>", score=0.84
+[C2] doc_id=<doc_id>, chunk_id=<chunk_id>, source=<source_uri>, page=<page>, section="<section_path[0]>", score=0.84
 <chunk content verbatim>
 
 ...
@@ -288,11 +287,11 @@ Output format:
 `QUESTION` is placed last so it stays in the recency window even at
 long context. SOURCES are ordered by rerank score (highest first).
 
-The widened source header travels with citations into analyst notes —
-`tlp` in particular is load-bearing for DFIR write-ups (TLP:AMBER
-content must not be quoted in a TLP:WHITE report). Fields whose value
-is empty or missing render as `(none)` rather than being omitted, so
-the positional structure stays parseable.
+The widened source header travels with citations into the consuming
+application (analyst notes, generated reports, audit logs) so each
+factual claim carries its provenance. Fields whose value is empty or
+missing render as `(none)` rather than being omitted, so the
+positional structure stays parseable.
 
 ### Citation enforcement
 

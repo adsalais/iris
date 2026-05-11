@@ -52,12 +52,14 @@ Out of scope:
 ## Deferred to a later phase
 
 **Community detection + per-community LLM summarization** is
-intentionally out. For DFIR-style workloads, almost every analyst
-question is entity-anchored ("what does T1059.001 do?", "which past
-cases mention this hash?"). The regular entity-match + 1–2-hop
-traversal handles those. Global / aggregative questions are rare and
-not the bread-and-butter; they don't justify the cost (Leiden + a
-worker + question classifier + new table + partition coordination).
+intentionally out. For the kinds of queries this system targets
+(entity-anchored: "what does this technique do?", "which documents
+mention this person?", "which threads cite this customer?"), the
+regular entity-match + 1–2-hop traversal handles them. Global /
+aggregative questions ("what are the dominant themes in this
+corpus?") are rare and not the bread-and-butter; they don't justify
+the cost (Leiden + a worker + question classifier + new table +
+partition coordination).
 
 Communities sit *on top of* `kg_edges` without changing it, so adding
 them later is a clean follow-on. Trigger metric: count of questions
@@ -104,7 +106,9 @@ entities accumulate hundreds of `auth_ids`.
 
 Loaded as config by both extractor and resolver. Operators tune for
 their corpus; phase 4 provides a tool to derive this from STIX bundles
-for DFIR deployments.
+for deployments that share canonical entities across tenants (e.g.,
+a public threat-intel bundle referenced from private case files; a
+shared company-glossary referenced from per-team documentation).
 
 **Entity types:** `Person | Organization | Location | Concept | Document | Event | Product`
 
@@ -193,10 +197,10 @@ Same refresh semantics as `kg_mentions_raw`.
 | `canonical_name` | `String` |
 | `canonical_name_normalized` | `String` | Normalized form (the input to `entity_id`'s uuid5). Stored explicitly so Stage 1.5 can do a primary-key lookup on the table's ORDER BY tuple `(entity_type, canonical_name_normalized)` instead of recomputing per query. |
 | `aliases` | `Array(String)` |
-| `mitre_attack_id` | `LowCardinality(Nullable(String))` — hoisted from `properties_merged` for DFIR analyst lookups (`T1059.001`, etc.). Direct point-query target. |
-| `cve_id` | `LowCardinality(Nullable(String))` — hoisted; same rationale (`CVE-2024-1234`). |
-| `stix_id` | `Nullable(String)` — hoisted; for traceability back to the source STIX object on bootstrapped entities. |
-| `properties_merged` | `Map(String, String)` — remaining free-form properties; hot keys live in their own columns above. |
+| `mitre_attack_id` | `LowCardinality(Nullable(String))` — hoisted external-ID column; populated by the phase-4 STIX connector for `AttackPattern` entities. Optional for other corpora. |
+| `cve_id` | `LowCardinality(Nullable(String))` — hoisted external-ID column; populated by the phase-4 STIX connector for `Vulnerability` entities. |
+| `stix_id` | `Nullable(String)` — STIX-object provenance; populated by the phase-4 STIX connector. |
+| `properties_merged` | `Map(String, String)` — free-form properties for everything else. Operators with their own structured-data connectors can hoist additional well-known keys to dedicated columns by extending this table (e.g., `email_message_id`, `jira_ticket_id`, `confluence_page_id`). The three above are pre-defined because phase 4 ships with them. |
 | `representative_embedding` | `Array(Float32)` — centroid of contributing direct-mention `mention_embedding`s, computed at Stage 5. Used by Stage 2's pre-existing-canonical lookup AND by the graph-path query's question-entity matching. For STIX-bootstrapped entities with one synthetic mention, the centroid equals that single mention's embedding. HNSW ANN index. |
 | `auth_ids` | `Array(String)` — union over contributing mentions. ANY-match policy. |
 | `normalization_rules_hash` | `LowCardinality(String)` — hash of the normalization rules used to compute this entity's `canonical_name`. Lets drift be detected: when the rules-hash changes, the operator knows entity_ids must be re-derived. |
@@ -353,24 +357,68 @@ Required grants: every tier role attached needs
 `GRANT dictGet ON rag_docs.rag_acl_dict`. Single grant covers
 phase-1's `rag_embeddings` and all five phase-3 KG tables.
 
-## Extraction pipeline
+## Extraction worker (async, queue-driven)
 
-Runs once per chunk during ingestion (after phase-2 writes the chunk
-to `rag_embeddings`). Operator-owned, same boundary as the rest of
-the ingestion pipeline.
+**Extraction runs asynchronously**, not in-band with phase-2 ingest.
+The phase-2 pipeline writes a row into `kg_extraction_queue` (defined
+in phase 2) for every chunk that landed via a non-`pre_extracted`
+connector; a separate worker pool consumes the queue and writes
+`kg_mentions_raw` / `kg_relations_raw`.
 
-1. **Fetch chunk content** — same text that was embedded for
-   `rag_embeddings`.
+**Consistency window.** The chunk is queryable via the phase-1 vector
+path immediately after ingest. It becomes queryable via the phase-3
+graph path only after the extraction worker processes it — typically
+within minutes, but the SLA is operator-tunable based on worker pool
+size and LLM rate limits. There is no time-based ordering guarantee:
+older chunks may finish extracting after newer ones if the older one
+hit a transient retry.
+
+**Why async, not in-band.** Per-chunk LLM extraction would otherwise
+gate ingest throughput on the LLM's latency and rate limit. For
+high-volume corpora that's a hard bottleneck. Decoupling lets ingest
+run as fast as the parsing/embedding pipeline allows, and the
+extraction pool scales independently.
+
+**Worker access model.** Same as the resolution worker — runs under
+`query_as_user(worker_session, ...)` where `worker_session` belongs
+to a regular iris user (e.g., `kg-extractor`), NOT a tier admin. The
+worker's groups must be explicitly listed in `rag_acl.allowed_roles`
+for every `auth_id` the worker should extract from. Row policies
+apply normally on reads; INSERTs are gated by table-level
+`GRANT INSERT` on the KG tables. The worker may be the same user as
+the resolution worker or a separate one with a different scope.
+
+### Per-task workflow
+
+For each task claimed from `kg_extraction_queue`:
+
+1. **Fetch chunk content** from `rag_embeddings`. Row policy filters
+   apply; if the worker can't see the chunk, mark the task `failed`
+   with `error = 'unauthorized'` (a misconfiguration signal).
 2. **Call the schema-guided LLM extractor** — fixed vocabulary, JSON
-   output, small context window of neighboring chunks. Extractor emits
-   direct mentions + (optionally) in-document coreference mentions.
-   Validate against a Pydantic schema; reject and retry on violations.
+   output, small context window of neighboring chunks. Extractor
+   emits direct mentions + (optionally) in-document coreference
+   mentions. Validate against a Pydantic schema; reject and retry on
+   violations.
 3. **Compute mention embeddings** — embed
    `f"{entity_type}: {name_surface} | {context_snippet}"`.
 4. **Compute deterministic IDs** — `mention_id` as defined above.
 5. **Insert** into `kg_mentions_raw` and `kg_relations_raw`,
    propagating `auth_id` onto every row and setting `mention_kind`
    per emission.
+6. **Mark the task** `completed` (or `failed` with retry budget).
+
+### Task claim semantics
+
+Workers claim a batch of pending tasks via an `ALTER TABLE … UPDATE`
+that sets `status = 'claimed'`, `claimed_by = <worker_id>`,
+`claimed_at = now()` filtered by `status = 'pending' LIMIT N`.
+Stale claims (`status = 'claimed' AND claimed_at < now() - 10 minutes`)
+get re-claimed by another worker, since the deterministic
+`task_id = uuid5(chunk_id, "extract")` makes re-processing
+idempotent at the chunk level — if both workers happen to finish,
+`ReplacingMergeTree(extracted_at)` on `kg_mentions_raw` keeps the
+newest row.
 
 Extractor prompt shape:
 
@@ -419,7 +467,8 @@ Two common shapes:
 2. **Per-tenant workers** — strict tenant isolation; no cross-tenant
    canonicals.
 
-DFIR deployments typically want shape (1) for public-STIX sharing.
+Deployments sharing canonical entities across tenants (e.g.
+public-STIX bundles, company-wide glossaries) typically want shape (1).
 
 ### Stage 1 — deterministic normalization + exact-match merge
 
@@ -679,8 +728,9 @@ Phase-3 internal steps that differ from phase 1:
 | Concern | Owner |
 |---|---|
 | Maintaining schema config (entity types, relation types, normalization) | Operator |
-| Running the extraction LLM (incl. in-doc coreference), computing mention embeddings, loading raw tables | Ingestion pipeline |
-| Propagating `auth_id` from `rag_embeddings` onto KG rows | Ingestion pipeline |
+| Running the extraction worker pool (consumes `kg_extraction_queue`, calls the LLM extractor, writes `kg_mentions_raw` / `kg_relations_raw`) | Iris (worker process; operator scales it) |
+| Provisioning the extraction-worker user (`kg-extractor`) and granting its groups in `rag_acl.allowed_roles` | Operator |
+| Propagating `auth_id` from `rag_embeddings` onto KG rows | Extraction worker (for queue-driven) / phase-2 pipeline (for `pre_extracted`) |
 | Provisioning the worker user (`kg-resolver`) and granting groups in `rag_acl.allowed_roles` | Operator |
 | Running the resolution batch job as `query_as_user(worker_session, ...)` | Ingestion pipeline |
 | Running the cross-document coreference pass | Ingestion pipeline |
@@ -737,8 +787,10 @@ Additional test surface:
    hundreds of `auth_ids`.
 5. **Coreference confidence cutoff.** Default 0.75; tune after measuring
    false-merge rate.
-6. **Worker scope shape.** Single global-ish vs. per-tenant. DFIR
-   with public STIX favors global-ish.
+6. **Worker scope shape.** Single global-ish vs. per-tenant.
+   Deployments with shared cross-tenant content (public threat intel,
+   company-wide glossaries) favor global-ish; strict tenant isolation
+   favors per-tenant.
 7. **Graph-path query performance.** Step 4 of the graph path traverses
    `kg_entities → kg_edges → kg_alias_map → kg_mentions_raw →
    rag_embeddings` — four joins, all on UUIDs, all row-policy

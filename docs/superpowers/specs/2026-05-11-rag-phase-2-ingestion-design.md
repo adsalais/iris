@@ -13,30 +13,41 @@
 A concrete, minimal implementation of the ingestion pipeline that turns
 heterogeneous source documents (PDFs, DOCX, PPTX, XLSX, web pages,
 emails, Markdown, plain text) into rows in `rag_embeddings` with stable
-identifiers, propagated authorization metadata (`auth_id`), and
-informational TLP metadata (`tlp`). Roughly 500 LOC of Python, no
-exotic dependencies, owned by the operator-side ingestion service.
+identifiers and propagated authorization metadata (`auth_id`). Roughly
+500 LOC of Python, no exotic dependencies, owned by the operator-side
+ingestion service.
 
-Builds on phase-1's `rag_embeddings` schema. No KG extraction, no STIX
-parsing — those live in later phases. Phase-2's only consumer is the
-phase-1 vector retrieval path.
+Builds on phase-1's `rag_embeddings` schema. The pipeline also writes
+**extraction tasks** to a queue table (`kg_extraction_queue`) so the
+phase-3 worker can asynchronously do per-chunk KG extraction without
+blocking ingest; the queue table is provisioned in phase 2 because
+its writer is the ingestion pipeline. The actual phase-3 worker that
+consumes the queue is out of scope here.
+
+A connector may also yield documents whose entities/relations are
+**already structured** (e.g., the phase-4 STIX connector). For those,
+the pipeline writes the pre-extracted KG rows synchronously and skips
+the queue entirely — no LLM extraction is needed.
 
 ## Scope
 
 In scope:
-1. Eight-stage pipeline and per-stage tool choices.
+1. Nine-stage pipeline and per-stage tool choices.
 2. Chunking strategy and defaults.
-3. Metadata schema attached to every chunk (including the phase-1
-   `tlp` column).
-4. **How `auth_id` (and `tlp`) enter the pipeline (externally supplied)
-   and how the pipeline validates and propagates them.**
-5. Error handling for missing or unknown `auth_id`.
-6. Audit tables for pipeline runs and per-document failures.
+3. Metadata schema attached to every chunk.
+4. **How `auth_id` enters the pipeline (externally supplied) and how
+   the pipeline validates and propagates it.**
+5. The `kg_extraction_queue` table — written by phase 2, consumed by
+   phase 3's extraction worker.
+6. The `pre_extracted` optional field on the connector's
+   `AcquiredDocument`, used by structured-data connectors (e.g. phase
+   4's STIX connector) to bypass the LLM extractor.
+7. Error handling for missing or unknown `auth_id`.
+8. Audit tables for pipeline runs and per-document failures.
 
 Out of scope:
-- KG extraction (phase 3 runs after this pipeline writes each chunk).
-- STIX ingestion (phase 4 — a parallel ingestion path for structured
-  content).
+- The phase-3 extraction worker itself (it consumes
+  `kg_extraction_queue`; lives in phase 3).
 - Live streaming ingestion — phase-2 is batch-driven.
 - Orchestration framework — call the pipeline from a script, Prefect
   job, Airflow, cron, etc.
@@ -60,20 +71,18 @@ The pipeline's three responsibilities around `auth_id`:
 3. **Propagate it.** Attached to every chunk derived from the document
    and written into `rag_embeddings.auth_id` unchanged.
 
-**TLP follows the same external-supply model**, but it's informational
-metadata rather than authorization. Missing TLP defaults to `'clear'`;
-unknown values are rejected with a clear error.
-
 ## Pipeline stages
 
 ```
 [ acquire ] → [ detect ] → [ parse ] → [ clean ] → [ chunk ]
                                                        ↓
-    [ store ] ← [ embed ] ← [ dedup ] ← [ enrich metadata ]
+    [ kg handoff ] ← [ store ] ← [ embed ] ← [ dedup ] ← [ enrich ]
 ```
 
 Each stage is a function with typed inputs/outputs. Composition is
-straightforward; no framework required.
+straightforward; no framework required. Stages 2–5 are skipped when
+the connector supplied `pre_extracted` and no `raw_bytes` (e.g. STIX
+SRO documents that carry only a relation, no content).
 
 ### 1. Acquire
 
@@ -81,14 +90,43 @@ A source-specific connector implements `IngestionConnector`:
 
 ```python
 from typing import Iterator, Protocol
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+@dataclass(frozen=True)
+class PreExtractedMention:
+    local_id: int
+    entity_type: str
+    name_surface: str
+    aliases: list[str]
+    properties: dict[str, str]
+    # If the connector knows the canonical entity already (e.g., STIX
+    # provides a stable per-object UUID), populate this. Otherwise NULL
+    # and the resolver does Stage 1.5 lookup.
+    canonical_entity_id: str | None = None
+
+@dataclass(frozen=True)
+class PreExtractedRelation:
+    source_local_id: int  # refers to a local mention in this doc
+    target_local_id: int  # may also refer to a mention in ANOTHER doc
+                          # the same connector emitted -- the loader
+                          # resolves cross-doc local_ids by name.
+    relation_type: str
+    evidence: str
+
+@dataclass(frozen=True)
+class PreExtractedKG:
+    """Filled in by structured-data connectors (e.g. phase-4 STIX) to
+    bypass the LLM extractor. Optional."""
+    mentions: list[PreExtractedMention] = field(default_factory=list)
+    relations: list[PreExtractedRelation] = field(default_factory=list)
 
 @dataclass(frozen=True)
 class AcquiredDocument:
     source_uri: str
-    raw_bytes: bytes
+    raw_bytes: bytes  # may be empty for relation-only documents
     auth_id: str
-    source_metadata: dict[str, str]  # may carry `tlp` and other hints
+    source_metadata: dict[str, str]
+    pre_extracted: PreExtractedKG | None = None
 
 class IngestionConnector(Protocol):
     name: str
@@ -96,14 +134,15 @@ class IngestionConnector(Protocol):
 ```
 
 Built-in connectors (filesystem walker, S3 lister, IMAP fetcher, web
-crawler, API endpoint) all implement this. Operators can add their own.
+crawler, API endpoint, phase-4 STIX connector) all implement this
+single Protocol. The optional `pre_extracted` field is what
+distinguishes a structured-data connector from an unstructured one;
+both go through the same pipeline.
 
 `source_metadata` is the catch-all for fields the connector knows up
-front. The pipeline reads:
-
-- `tlp` (optional) — one of `'clear' | 'green' | 'amber' | 'amber_strict' | 'red'`.
-  Stored on `rag_embeddings.tlp`. Missing → default `'clear'`. Invalid
-  value → reject document.
+front. Used today for audit breadcrumbs (`classified_by`,
+`classified_at`); future hot keys (sensitivity labels, retention
+class) can be threaded through it without schema changes.
 
 **The connector is the authoritative source of `auth_id`.** See "How
 auth_id reaches the pipeline" below for the three supported delivery
@@ -174,7 +213,6 @@ Every chunk receives:
 | `doc_id` | `uuid5(NS_DOC, f"{source_uri}::{source_hash}")` — see Phase 1 "UUID derivation" for the namespace definition. |
 | `chunk_id` | `uuid5(doc_id, f"{ordinal}::{content_hash}")` — `doc_id` itself is the namespace; chunks are naturally parented to their document. |
 | `auth_id` | from stage 1, **unchanged** |
-| `tlp` | from `source_metadata['tlp']` if supplied; else `'clear'` |
 | `source_uri` | from stage 1 |
 | `source_hash` | from stage 1 |
 | `page` | (PDF) page number from Docling |
@@ -248,11 +286,86 @@ Two distinct concerns, often conflated:
   New `auth_id`s must exist in `rag_acl` before documents carrying
   them arrive.
 
-## How `auth_id` (and `tlp`) reach the pipeline
+### 9. KG handoff
+
+The last stage decides how each document's KG side gets populated.
+There are two branches:
+
+**Branch A — `pre_extracted` is set** (structured-data connector;
+e.g. phase-4 STIX). Write the KG rows synchronously:
+
+1. For each `PreExtractedMention`, compute `mention_id` (phase-1 UUID
+   derivation: `uuid5(chunk_id, <mention_identifier>)` for content-bearing
+   docs; the connector supplies a stable identifier for content-less
+   relation-only docs). Insert into `kg_mentions_raw` with the
+   document's `auth_id`.
+2. If the mention carries `canonical_entity_id`, insert a
+   `kg_alias_map` row tying the synthetic mention to the canonical
+   directly (`resolution_method = 'exact'`, `confidence = 1.0`). If
+   not, leave it to the next phase-3 resolution run.
+3. For each `PreExtractedRelation`, insert a `kg_relations_raw` row
+   referencing the resolved source/target `mention_id`s.
+4. **No extraction-queue task is enqueued.** Pre-extracted content
+   bypasses the LLM extractor entirely.
+
+**Branch B — `pre_extracted` is unset** (standard text-document
+connector). Enqueue extraction tasks, one per chunk just written:
+
+```sql
+INSERT INTO kg_extraction_queue (
+    task_id, chunk_id, doc_id, auth_id,
+    enqueued_at, status, claimed_by, claimed_at, completed_at, error
+)
+VALUES (...)
+```
+
+The phase-3 extraction worker (described in the phase-3 spec) consumes
+this queue, calls the LLM extractor on the chunk's content, and
+writes `kg_mentions_raw` / `kg_relations_raw`. Until the worker
+processes the task, the chunk is queryable via the phase-1 vector
+path but invisible to the phase-3 graph path.
+
+### `kg_extraction_queue` table
+
+Provisioned alongside `rag_embeddings` (iris's create-database flow
+does both).
+
+| Column | Type | Notes |
+|---|---|---|
+| `task_id` | `UUID` | `uuid5(chunk_id, "extract")`. Deterministic; the same chunk re-enqueued for any reason produces the same task_id. |
+| `chunk_id` | `UUID` | |
+| `doc_id` | `UUID` | |
+| `auth_id` | `String` | Inherited from the chunk; lets per-tenant workers filter by their granted auth_ids. |
+| `enqueued_at` | `DateTime` | |
+| `status` | `Enum8('pending' = 1, 'claimed' = 2, 'completed' = 3, 'failed' = 4)` | |
+| `claimed_by` | `LowCardinality(Nullable(String))` | Worker identifier. |
+| `claimed_at` | `Nullable(DateTime)` | |
+| `completed_at` | `Nullable(DateTime)` | |
+| `error` | `Nullable(String)` | Last error message on failed tasks. |
+
+Engine:
+```sql
+ENGINE = ReplacingMergeTree(enqueued_at)
+PARTITION BY toYYYYMM(enqueued_at)
+ORDER BY task_id
+TTL completed_at + INTERVAL 30 DAY DELETE WHERE status = 'completed'
+```
+
+The worker claims tasks with optimistic update (`ALTER UPDATE status='claimed', claimed_by=..., claimed_at=now() WHERE task_id IN (...) AND status='pending'`),
+re-claims stuck tasks (`status='claimed' AND claimed_at < now() - 10 minutes`),
+and marks done or failed.
+
+Re-running the ingestion pipeline on an already-extracted chunk:
+deterministic `task_id` lets `ReplacingMergeTree(enqueued_at)` dedupe
+naturally; the worker sees one row and re-processes only if `status` is
+`pending` or stale-`claimed`.
+
+## How `auth_id` reaches the pipeline
 
 Three operator-supportable mechanisms. The pipeline accepts any via
 pluggable connectors; the connector produces a clean
-`(source_uri, raw_bytes, auth_id, source_metadata)` tuple.
+`(source_uri, raw_bytes, auth_id, source_metadata, pre_extracted)`
+tuple.
 
 ### Mechanism A — sidecar manifest
 
@@ -264,7 +377,6 @@ pluggable connectors; the connector produces a clean
 ```json
 {
   "auth_id": "customer:acme",
-  "tlp": "amber",
   "source_uri": "internal://cases/2026-Q1-acme",
   "classified_by": "alice@org.example",
   "classified_at": "2026-05-08T10:14:00Z"
@@ -277,12 +389,12 @@ Strongest audit trail.
 
 ```
 /ingest/customer:acme/incidents/2026-Q1.pdf
-/ingest/tlp:white/public-cti/vendor-report.pdf
+/ingest/internal:eng/runbooks/sso-recovery.md
+/ingest/public/handbook-2026.pdf
 ```
 
-Connector parses the first path segment as `auth_id`. TLP defaults to
-`'clear'` unless a manifest sidecar overrides. Simplest to wire up;
-weakest audit trail.
+Connector parses the first path segment as `auth_id`. Simplest to
+wire up; weakest audit trail (no record of who classified).
 
 ### Mechanism C — API ingest
 
@@ -291,7 +403,6 @@ weakest audit trail.
 ```
 file: <bytes>
 auth_id: customer:acme
-tlp: amber
 source_uri: https://internal/case/2026-Q1
 classified_by: alice@org.example
 ```
@@ -307,7 +418,6 @@ The operator picks one or supports several through distinct connectors.
 |---|---|
 | Document without `auth_id` | Reject at acquisition; do not parse. `error_kind = 'missing_auth_id'`. |
 | `auth_id` not present in `rag_acl` | Reject at metadata enrichment; no chunks embedded. `error_kind = 'unknown_auth_id'`. |
-| Invalid `tlp` value | Reject the document with `error_kind = 'invalid_tlp'`. |
 | Parse failure | Mark document failed; do **not** partial-ingest a subset of chunks. `error_kind = 'parse_failure'`. |
 | Empty document (parse succeeded but yielded zero chunks; e.g., image-only PDF with no OCR layer) | Reject with `error_kind = 'no_extractable_text'`. The operator's response is re-OCR + re-ingest. Counted in `documents_failed_parse`. |
 | Embed-API failure (transient) | Retry with exponential backoff. After N retries, mark failed. |
@@ -329,7 +439,6 @@ silent authorization bug waiting to happen.
 | `documents_seen` / `documents_ingested` | `UInt32` |
 | `documents_rejected_no_auth_id` | `UInt32` |
 | `documents_rejected_unknown_auth_id` | `UInt32` |
-| `documents_rejected_invalid_tlp` | `UInt32` |
 | `documents_failed_parse` | `UInt32` |
 | `chunks_written` / `chunks_dedup_skipped` | `UInt32` |
 | `pipeline_version` / `embedding_model_id` | `LowCardinality(String)` |
@@ -391,8 +500,8 @@ Plus the embedding-provider SDK from `.rag_env` (phase-1 config).
 | Implementing the pipeline (~500 LOC Python) | Iris |
 | Built-in connectors (FS walker, S3 lister, IMAP fetcher, web crawler, API endpoint) | Iris (pluggable) |
 | Audit tables (`ingest_runs`, `ingest_failures`) | Iris |
-| **Assigning `auth_id` and `tlp` to each document** | Operator's classification process |
-| Wiring `auth_id` / `tlp` into manifests / dirs / API calls | Operator |
+| **Assigning `auth_id` to each document** | Operator's classification process |
+| Wiring `auth_id` into manifests / dirs / API calls | Operator |
 | Provisioning `rag_acl` rows before documents arrive | Operator |
 | Choosing and configuring the embedding model (`.rag_env`) | Operator |
 | Scheduling pipeline runs | Operator |
@@ -407,16 +516,15 @@ Additional tests:
 - **No external resources needed**: parser-stage unit tests on fixture
   PDFs/DOCX (decoupled from CH and the embedding model).
 - **Requires `.rag_env`**: end-to-end ingest of a fixture document into
-  a test database; verify chunks land with correct `auth_id` / `tlp`
-  and the row policy filters as expected when read under different
-  sessions.
+  a test database; verify chunks land with correct `auth_id` and the
+  row policy filters as expected when read under different sessions.
 
 The "external resources" tests reuse the phase-1 `rag_env` fixture; no
 new test infrastructure.
 
 ## Non-goals
 
-- No content-based `auth_id` or `tlp` derivation (deliberately).
+- No content-based `auth_id` derivation (deliberately).
 - No automatic creation of `rag_acl` rows by the pipeline.
 - No live streaming ingestion in v1.
 - No in-pipeline KG extraction.
@@ -430,8 +538,9 @@ new test infrastructure.
    cross-doc duplicates preserved. Revisit if storage cost becomes
    uncomfortable.
 2. **Re-classification of an already-ingested document.** If a document
-   previously ingested as `tlp:white` arrives later as `customer:acme`,
-   warn (likely) or silently create the second copy? Defer to v1.1.
+   previously ingested under one `auth_id` arrives later under a
+   different one, warn (likely) or silently create the second copy?
+   Defer to v1.1.
 3. **OCR cache.** Commercial OCR is expensive enough that re-runs
    should be free. A dedicated `ocr_cache` table keyed by `source_hash`
    is the obvious shape. v1.1.

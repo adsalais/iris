@@ -1,4 +1,4 @@
-# RAG phase 4 — STIX vocabulary + bootstrap loader — high-level spec
+# RAG phase 4 — STIX vocabulary + connector — high-level spec
 
 **Status:** design only.
 **Date:** 2026-05-11.
@@ -10,48 +10,63 @@
 
 ## Goal
 
-Two related capabilities for DFIR-flavoured deployments:
+Two related capabilities for deployments whose corpus includes
+STIX 2.1 content (most commonly DFIR-flavoured, but the mechanism is
+generic — any structured-data feed could follow the same pattern):
 
 1. **Derive the KG vocabulary from STIX bundles.** Generate
    `kg_schema.json` (the entity-type / relation-type vocabulary fed
    to the phase-3 LLM extractor) directly from the STIX content the
-   deployment will ingest, so LLM extractions from unstructured DFIR
+   deployment will ingest, so LLM extractions from unstructured
    documents resolve cleanly against STIX-sourced canonical entities.
-2. **Bootstrap the KG with pre-structured STIX content.** Load
-   STIX 2.1 bundles (MITRE ATT&CK / MITRE-CTI first; TAXII feeds,
-   MISP exports, vendor STIX later) directly into phase-1's
-   `rag_embeddings` and phase-3's KG tables **without going through
-   the LLM extractor** — STIX is already structured, so extraction is
-   pure waste. Gives iris a working KG on day one (thousands of
-   techniques, threat actors, malware families with their relations).
+2. **Ingest STIX content via a connector for the phase-2 pipeline.**
+   A `StixConnector` implementing the phase-2 `IngestionConnector`
+   Protocol yields one `AcquiredDocument` per STIX object, with
+   `pre_extracted` filled in so the phase-2 pipeline writes the KG
+   rows directly without invoking the LLM extractor. STIX is already
+   structured; running it through extraction would be pure waste.
+   The connector reuses every phase-2 mechanism (auth_id validation,
+   audit tables, `redocument` helper, idempotency); no parallel
+   loader, no separate workflow.
+
+This phase is also a **template for any structured-data connector**.
+The same `pre_extracted` mechanism could front a JIRA exporter (each
+issue → entity, each link → relation), a Confluence exporter (each
+page → entity, mentions of people → entities via author/assignee),
+an email connector that pre-extracts From/To/Subject as entities,
+etc. STIX is the canonical example because it's well-specified and
+because MITRE-CTI is free, but the design is not STIX-specific.
 
 ## Scope
 
 In scope:
-1. STIX vocabulary scanner + renderer (Part 1).
+1. STIX vocabulary scanner + renderer (Part 1; reusable for any
+   structured corpus that has a fixed type vocabulary).
 2. STIX → iris schema mapping (entity / relation type tables).
 3. ID-assignment rules (STIX-native UUIDs for entities; `uuid5` for
    edges).
-4. Where STIX content lands across phase-1's `rag_embeddings` and
-   phase-3's 5 KG tables.
-5. Authorization — externally supplied `auth_id`, same model as
-   phase-2 ingestion. The loader does NOT derive `auth_id` from STIX
-   TLP markings. TLP markings are parsed into `rag_embeddings.tlp` as
-   informational metadata.
-6. Loader workflow, refresh / idempotency strategy, operator
-   interface.
+4. `StixConnector` implementing phase-2's `IngestionConnector` —
+   what the connector yields for SDOs vs SROs, including the
+   `pre_extracted` payload.
+5. `auth_id` is supplied externally by the operator (same model as
+   the phase-2 ingestion pipeline).
+6. Refresh / idempotency strategy via the phase-2 pipeline's
+   existing mechanisms.
 
 Out of scope:
 - TAXII network client implementation (use `stix2`/`taxii2-client` or
   a static dump).
 - Vendor-specific STIX dialect normalization beyond MITRE-CTI's
   `x-mitre-*` extensions.
-- Live STIX subscription (phase-4 is a scheduled batch).
+- Live STIX subscription (the connector is invoked by phase-2's
+  normal scheduling).
 - LLM re-extraction over STIX-sourced descriptions (skipped by
-  design).
+  design — that's the whole point of `pre_extracted`).
 - Two-way sync (iris-extracted entities never pushed back out as
   STIX).
 - Multi-language vocabulary handling.
+- A parallel STIX-only loader pipeline (the previous design; replaced
+  by the connector-on-phase-2-pipeline pattern).
 
 ---
 
@@ -60,9 +75,13 @@ Out of scope:
 ## Why
 
 The phase-3 KG extractor needs a fixed vocabulary to constrain LLM
-output. For DFIR corpora, the right vocabulary matches the STIX
-objects the deployment will ingest — anything else creates a naming
-mismatch and the resolver's Stage 1.5 can't merge.
+output. The right vocabulary matches the actual content of the
+ingested corpora — anything else creates a naming mismatch and the
+resolver's Stage 1.5 can't merge. STIX bundles (used by DFIR
+deployments most commonly, but also threat-intel feeds in any
+security-aware deployment) come with an implicit vocabulary baked
+into their type system; this section turns that into iris's
+`kg_schema.json`.
 
 This part defines two small utilities and the lifecycle:
 
@@ -222,7 +241,7 @@ approach from the phase-3 spec).
 
 ---
 
-# Part 2 — STIX bundle bootstrap loader
+# Part 2 — `StixConnector` (a phase-2 `IngestionConnector`)
 
 ## STIX → iris schema mapping
 
@@ -268,7 +287,7 @@ entries).
 | `subtechnique-of` | `PART_OF` |
 | `revoked-by` | *soft-delete signal; not stored as edge* |
 
-Unmapped relationship types fall back to `RELATED_TO`. The loader
+Unmapped relationship types fall back to `RELATED_TO`. The connector
 prefixes the `evidence` field with a structured marker:
 `f"[stix_relationship_type={original}] {sro_description_if_present}"`.
 Falls are logged so the operator can extend the mapping.
@@ -281,10 +300,6 @@ Critical STIX properties land in `properties_merged` on the entity:
   `external_references[*].external_id` where `source_name == "mitre-attack"`.
 - `cve_id` — from CVE external references.
 - `capec_id`, `cwe_id` — from corresponding external references.
-- `tlp` — parsed from `object_marking_refs`. **Stored on
-  `rag_embeddings.tlp` for the SDO's description chunk as
-  informational metadata ONLY.** Does not affect `auth_id` or
-  row-policy evaluation.
 - `kill_chain_phases` — denormalized list.
 - `stix_id` — original STIX object id, for traceability.
 - `stix_revoked` — bool (default `false`); flipped to `true` on
@@ -315,227 +330,167 @@ The two `entity_id` schemes (STIX-native, `uuid5`) coexist in
 
 ## Authorization (`auth_id`)
 
-The loader does **not** interpret STIX TLP markings as authorization
-input. `auth_id` for every row written by the loader is supplied
-externally by the operator, exactly the same model as the phase-2
-ingestion spec uses for ordinary documents.
+The connector does **not** interpret STIX content as authorization
+input. `auth_id` for every document yielded by the connector is
+supplied externally by the operator, exactly the same model as the
+phase-2 ingestion pipeline uses for ordinary documents.
 
-Two supported delivery mechanisms (CLI flags):
+Two delivery mechanisms, configured on the connector instance:
 
-1. **Per-bundle `auth_id`** — `--auth-id customer:acme`. Every SDO and
-   SRO in the bundle gets the same `auth_id`.
-2. **Per-object manifest** — `--auth-id-manifest <path.json>`
-   `{stix_id: auth_id}` overrides; falls back to the per-bundle default.
+1. **Per-bundle `auth_id`** — `StixConnector(bundle_path, auth_id="customer:acme")`.
+   Every SDO and SRO in the bundle gets the same `auth_id`.
+2. **Per-object manifest** — `StixConnector(bundle_path, auth_id_manifest=Path(...))`
+   with a `{stix_id: auth_id}` map; falls back to a per-bundle
+   default for unlisted objects.
 
-Operator pre-conditions:
+Operator pre-conditions are the same as for any other connector:
 
-- The supplied `auth_id` must already exist in `rag_acl`. The loader
-  validates every distinct `auth_id` against `rag_acl` before any
-  insert; missing rows cause the bundle to be rejected with a clear
-  error.
-- The loader **does not** auto-create `rag_acl` rows.
+- Every distinct `auth_id` the connector will yield must already
+  exist in `rag_acl`. The phase-2 pipeline's existing validation
+  (Stage 6 — `enrich metadata`) rejects documents with an unknown
+  `auth_id`, so a misconfigured bundle fails the same way a
+  misconfigured PDF would.
+- The connector **does not** auto-create `rag_acl` rows.
 
-TLP markers inside STIX objects populate `rag_embeddings.tlp` only.
-Operators may *choose* to align `auth_id` with TLP (e.g.,
-`--auth-id tlp:amber` for an AMBER bundle + a matching `rag_acl` row)
-but that's an organizational convention, not loader behaviour.
+## What the `StixConnector` yields
 
-## Where STIX content lands
+The connector's `acquire()` iterates the STIX bundle and yields one
+`AcquiredDocument` per STIX object. Two shapes:
 
-For each STIX SDO (entity-like object):
+### For each STIX SDO (entity-like object) — one content-bearing document
 
-**1. One row in `rag_embeddings`** — content = SDO `description`
-prefixed with a normalized header (name, aliases, MITRE ID, kill-chain
-phases).
-
-| Column | Value |
-|---|---|
-| `doc_id` | `uuid5(NS_DOC, f"stix:{stix_source}")` (e.g. for `"stix:mitre-cti"`). UUID type, uniform with phase-1 rag_embeddings. |
-| `chunk_id` | `uuid5(doc_id, f"stix:{stix_id}:description")` — `doc_id` is the namespace, per Phase 1's UUID derivation. UUID type, uniform with phase-1 rag_embeddings. The original `stix:<stix_id>:description` string lives in the `source_uri` column for traceability. |
-| `auth_id` | operator-supplied (per-bundle / per-object) |
-| `tlp` | parsed from `object_marking_refs`, else `'clear'`. Informational. |
-| `embedding` | computed by the loader |
-| `content` | `<header>\n\n<description>` |
-
-**2. One row in `kg_mentions_raw`** — synthetic mention pointing at
-the chunk above:
-
-| Column | Value |
-|---|---|
-| `mention_id` | `uuid5(chunk_id, "stix")` — `chunk_id` is the namespace, per Phase 1's UUID derivation. The synthetic mention has no span, so the name is a fixed marker. |
-| `chunk_id` | matches the chunk (UUID, derived above) |
-| `doc_id` | matches the chunk (UUID) |
-| `auth_id` | matches the chunk |
-| `entity_type` | per the mapping table |
-| `name_surface` | SDO's `name` |
-| `aliases` | SDO's `aliases` list |
-| `mention_kind` | `'direct'` (always — STIX SDOs are direct mentions) |
-| `properties` | the property set above |
-| `mention_embedding` | embedding of `f"{entity_type}: {name} | {description[:200]}"` |
-| `extractor_version` | `"stix-bootstrap-<version>"` |
-| `prompt_version` | `"n/a"` |
-
-**3. One row in `kg_entities`** — canonical entity:
-
-| Column | Value |
-|---|---|
-| `entity_id` | the STIX-native UUID |
-| `entity_type` | per the mapping table |
-| `canonical_name` | SDO's `name` |
-| `canonical_name_normalized` | normalize(`canonical_name`) using iris's active normalization rules |
-| `aliases` | SDO's `aliases` |
-| `mitre_attack_id` | parsed from `external_references` where `source_name == "mitre-attack"`; else `NULL` |
-| `cve_id` | parsed from `external_references` where `source_name == "cve"`; else `NULL` |
-| `stix_id` | the original STIX object id (string, e.g. `"attack-pattern--abc..."`) |
-| `properties_merged` | remaining keys (`capec_id`, `cwe_id`, `kill_chain_phases`, `stix_revoked`, `stix_source`, `stix_source_version`, etc.) — the hoisted columns above are NOT duplicated here |
-| `representative_embedding` | equals the single synthetic mention's `mention_embedding` (the centroid of one element) |
-| `auth_ids` | `[auth_id]` (singleton; resolution may extend later) |
-| `normalization_rules_hash` | hash of the active normalization-rules config used to compute `canonical_name_normalized` |
-| `resolution_version` | loader's stamp |
-
-**4. One row in `kg_alias_map`**:
-
-| Column | Value |
-|---|---|
-| `mention_id` | from step 2 |
-| `entity_id` | from step 3 |
-| `auth_id` | matches the mention |
-| `resolution_method` | `'exact'`, `confidence = 1.0` |
-
-For each STIX SRO (relationship):
-
-**5. One row in `kg_relations_raw`**:
-
-| Column | Value |
-|---|---|
-| `relation_id` | `uuid5(chunk_id, stix_relationship_id)` — `chunk_id` is the namespace (the logical SRO chunk_id derived below), per Phase 1's UUID derivation. |
-| `chunk_id` | `uuid5(doc_id, f"stix:{stix_relationship_id}")` — `doc_id` is the namespace. UUID (no `rag_embeddings` row backs it; it's a logical anchor). The synthesis stage filters these out because they never appear in `authorized_chunk_ids` (which comes from row-policied `rag_embeddings` reads). |
-| `auth_id` | resolved by the precedence rules below |
-| `source_mention_id` / `target_mention_id` | synthetic mentions of the SRO's endpoints |
-| `relation_type` | per the relation mapping |
-| `evidence` | SRO `description` if present; prefixed with `[stix_relationship_type=<orig>]` for fall-back types |
-
-**SRO `auth_id` precedence** (apply in order; first match wins):
-
-1. **Manifest entry for the SRO's own `stix_id`.** Operator explicitly
-   chose the auth_id for this relationship. Use it.
-2. **Strictest of the two endpoint SDO `auth_id`s,** where "strictest"
-   is determined by the operator-configured ordering. Default ordering
-   (most-restrictive first):
-   `tlp:red > tlp:amber_strict > tlp:amber > tlp:green > tlp:clear`,
-   with `customer:*` entries treated as incomparable across customers
-   (a relationship between two different `customer:*` SDOs is rejected
-   with `error_kind = 'cross_tenant_sro'` — the operator must split
-   the bundle or add an explicit manifest entry).
-3. **Per-bundle `--auth-id` default.**
-
-Operators can override the default strictness ordering via a config
-file (`--strictness-config <path.json>`). The chosen `auth_id` must
-already exist in `rag_acl` for the SRO to load; otherwise it's
-rejected like any other unknown-auth_id row.
-
-**Note on `chunk_id` for SRO-derived relation rows.** This `chunk_id`
-has no corresponding `rag_embeddings` row. Consequence: when phase-3's
-Stage 5 derives `kg_edges.evidence_chunks` via `groupArray(chunk_id)`,
-STIX-derived edges carry `stix:<sro_id>` entries that don't fetch.
-The synthesis stage filters them when computing `authorized_chunk_ids`.
-STIX-derived edges still surface via entity-traversal; the model
-grounds claims in the source/target SDO description chunks, which
-**are** fetchable.
-
-**6. `kg_edges`** — loader does **not** insert. The next phase-3
-resolution-job run derives them. Operator must run the resolution job
-after each bootstrap load.
-
-## Loader workflow
-
-A new CLI entry point: `uv run iris stix-bootstrap <bundle.json> [opts]`.
-
-```
-1. Parse the STIX bundle with `stix2`. Validate version == 2.1.
-2. Resolve auth_id for the run:
-   - From --auth-id and/or --auth-id-manifest.
-   - Validate every referenced auth_id exists in rag_acl.
-   - Reject the bundle if any auth_id is missing.
-3. Build the marking-definition table:
-   marking_id -> tlp_string -> tlp_enum_value, per the mapping below.
-   STIX 2.0 markings (definition_type="tlp" with definition.tlp) and
-   STIX 2.1 markings (extension-definition--<TLP2.0-UUID> form) are
-   both supported:
-     - TLP:WHITE (2.0)         -> 'clear'
-     - TLP:CLEAR (2.1)         -> 'clear'
-     - TLP:GREEN               -> 'green'
-     - TLP:AMBER               -> 'amber'
-     - TLP:AMBER+STRICT (2.1)  -> 'amber_strict'
-     - TLP:RED                 -> 'red'
-     - missing / unrecognized  -> 'clear' (the column default)
-   The mapping populates rag_embeddings.tlp only (informational); it
-   never feeds auth_id.
-4. First pass: SDOs.
-   For each entity-like object:
-     a. If revoked == True:
-        - On first load: hard-skip (loader option).
-        - On refresh: flip stix_revoked=true on the existing entity.
-     b. Resolve auth_id (manifest or per-bundle default).
-     c. Resolve tlp from object_marking_refs (default 'clear').
-     d. Build chunk content; compute embeddings.
-     e. Insert rag_embeddings, kg_mentions_raw, kg_entities, kg_alias_map.
-5. Second pass: SROs.
-   For each relationship:
-     a. Validate both endpoints exist; skip dangling refs with logging.
-     b. Resolve auth_id (manifest or default).
-     c. Insert kg_relations_raw row.
-6. Stamp kg_stix_bootstrap_runs (audit table; iris-provided; same
-   TTL discipline as phase-2's ingest_runs):
-   (bundle_name, bundle_version, loaded_at, sdo_count, sro_count,
-    skipped_count, errors).
-7. Operator follow-up: run the phase-3 resolution job to materialise
-   kg_edges.
+```python
+AcquiredDocument(
+    source_uri = f"stix:{stix_id}",
+    raw_bytes  = (<header> + "\n\n" + sdo.description).encode("utf-8"),
+    auth_id    = <operator-supplied, per-bundle or per-object>,
+    source_metadata = {
+        "stix_source": "mitre-cti",
+        "stix_source_version": "15.1",
+        "classified_by": "stix-connector",
+    },
+    pre_extracted = PreExtractedKG(
+        mentions = [PreExtractedMention(
+            local_id = 1,
+            entity_type = <per the mapping table>,
+            name_surface = sdo.name,
+            aliases = sdo.get("aliases", []),
+            properties = {  # hot keys hoisted to kg_entities columns later
+                "mitre_attack_id": <from external_references>,
+                "cve_id": <from external_references>,
+                "stix_id": sdo.id,
+                "capec_id": ..., "cwe_id": ...,
+                "kill_chain_phases": ...,
+                "stix_revoked": str(sdo.get("revoked", False)),
+                "stix_source": "mitre-cti",
+                "stix_source_version": "15.1",
+            },
+            canonical_entity_id = <the STIX-native UUID parsed from sdo.id>,
+        )],
+        relations = [],
+    ),
+)
 ```
 
-The `kg_stix_bootstrap_runs` table is a small `MergeTree PARTITION BY
-toYYYYMM(loaded_at) ORDER BY (loaded_at, bundle_name) TTL loaded_at +
-INTERVAL 365 DAY DELETE` — same retention shape as the phase-2 audit
-tables.
+The phase-2 pipeline runs the full content path for this document:
+parse the embedded text, chunk it (typically one chunk per SDO since
+descriptions are short), embed, store. The `pre_extracted` payload
+makes Stage 9 (KG handoff) write a single synthetic mention plus a
+direct alias-map row pointing at the STIX-native canonical
+`entity_id`. No queue task is enqueued. The phase-3 resolution job's
+next run picks up the new `kg_entities` row (deterministic by
+`entity_id`, which is the STIX UUID) and aggregates it normally.
 
-**Idempotency.** Re-running on the same bundle produces the same row
-primary keys. `ReplacingMergeTree` on `kg_entities` / `kg_alias_map`
-dedups by `resolution_version`. Append-only tables get duplicate rows
-on the same primary key; the deterministic-ID scheme keeps them
-logically equivalent. Run `OPTIMIZE TABLE … DEDUPLICATE` periodically.
+### For each STIX SRO (relationship) — one content-less relation-only document
 
-## Refresh strategy
+```python
+AcquiredDocument(
+    source_uri = f"stix:{sro.id}",
+    raw_bytes  = b"",                # no content; relation-only
+    auth_id    = <operator-supplied, per-bundle or per-object>,
+    source_metadata = {...},
+    pre_extracted = PreExtractedKG(
+        mentions = [],
+        relations = [PreExtractedRelation(
+            source_local_id = -1,    # cross-document: refers to the
+                                     #   synthetic mention emitted by
+                                     #   the SDO document at sro.source_ref
+            target_local_id = -2,    # likewise for sro.target_ref
+            relation_type = <per the relation mapping>,
+            evidence = sro.get("description", "") or f"[stix_relationship_type={sro.relationship_type}]",
+        )],
+    ),
+)
+```
+
+The phase-2 pipeline detects empty `raw_bytes` and **skips parse →
+chunk → embed → store**. It still validates `auth_id` and writes the
+`kg_relations_raw` row in Stage 9. The cross-document `local_id`
+references (negative values, or any sentinel the connector designs) are
+resolved by the connector before yielding: the connector knows the
+SDO chunk_ids ahead of time (deterministic from
+`uuid5(doc_id, f"stix:{stix_id}:description")`) so it can compute the
+target mention_ids directly. The relation row gets the per-bundle
+`doc_id` for grouping and the operator-supplied `auth_id` (matching
+the source/target SDOs by default; manifest overrides per SRO if
+needed).
+
+**`kg_edges`** — the connector does not insert directly. The next
+phase-3 resolution-job run derives `kg_edges` from `kg_relations_raw`
++ `kg_alias_map` via the standard derivation path. Operator runs the
+resolution job after each bundle ingest.
+
+### Idempotency
+
+Re-running the connector on the same bundle produces the same
+deterministic IDs for every row (every UUID derives from stable
+inputs: STIX object id, bundle source name). `ReplacingMergeTree`
+engines on `kg_entities` / `kg_alias_map` / `kg_mentions_raw` /
+`kg_relations_raw` dedupe naturally. Append-only / immutable tables
+need no special treatment because the IDs match.
+
+### Re-derivation on bundle refresh
+
+When MITRE-CTI publishes a new release:
+
+1. The operator re-runs the same connector against the new bundle.
+2. Updated SDOs (same `stix_id`, new content) overwrite the previous
+   `kg_entities` / `kg_alias_map` rows via ReplacingMergeTree's
+   `resolution_version` semantics.
+3. SDOs marked `revoked: true` in the new bundle: the connector sets
+   `stix_revoked = "true"` in the mention's `properties` payload, and
+   the resolution job propagates that to `kg_entities.properties_merged`.
+   The synthesis path filters `stix_revoked = true` by default; an
+   operator-controlled flag includes them for historical queries.
+4. Operator runs the resolution job to refresh `kg_edges`.
+
+No separate STIX-only audit table is needed; the phase-2 pipeline's
+`ingest_runs` and `ingest_failures` audit every bundle ingest like
+any other connector run.
+
+## Refresh cadence
 
 MITRE-CTI publishes versioned releases (~quarterly). Recommended
-cadence:
-
-1. Schedule the loader monthly, or on MITRE release.
-2. New entities → inserted as fresh rows.
-3. Updated entities (same `stix_id`, new content) →
-   `ReplacingMergeTree` keeps the highest `resolution_version`.
-4. Revoked entities → loader sets `stix_revoked = true` in
-   `properties_merged`. Query path filters revoked by default; an
-   `include_revoked = true` flag brings them back for historical
-   investigations.
-5. Re-run the resolution job to refresh `kg_edges`.
+cadence: schedule the `StixConnector` invocation monthly (or on
+MITRE release), then trigger the phase-3 resolution job to refresh
+`kg_edges`. The bundle-refresh data flow is detailed in the
+"Re-derivation on bundle refresh" subsection above.
 
 ## What iris owns vs. what the operator owns
 
 | Concern | Owner |
 |---|---|
 | Implementing the scanner + renderer (`tools/scan_stix_vocab.py`, `tools/render_kg_vocab.py`) | Iris |
-| Implementing the bootstrap loader (CLI + module) | Iris |
+| Implementing the `StixConnector` (subclass of `IngestionConnector`) | Iris |
 | Maintaining the STIX → schema mapping config in repo | Iris |
-| Providing the `kg_stix_bootstrap_runs` audit table | Iris |
 | Loading `config/kg_schema.json` at startup | Iris |
 | Fetching STIX bundles (TAXII / file download / `mitre/cti` submodule) | Operator |
 | Running the scanner + renderer to regenerate `kg_schema.json` | Operator |
 | Reviewing proposed vocab additions on each MITRE release | Operator |
 | **Choosing `auth_id`(s) for each bundle / object** (classification decision) | Operator |
-| Ensuring chosen `auth_id`(s) exist in `rag_acl` before loading | Operator |
-| Scheduling and invoking the loader | Operator |
-| Running the phase-3 resolution job after each bootstrap load | Operator |
-| Pruning duplicate rows in append-only tables | Operator |
+| Ensuring chosen `auth_id`(s) exist in `rag_acl` before connector runs | Operator |
+| Scheduling the phase-2 pipeline runs that drive `StixConnector` | Operator |
+| Running the phase-3 resolution job after each bundle ingest | Operator |
 
 ## Tests
 
@@ -544,23 +499,29 @@ Additional test surface:
 
 - Scanner / renderer unit tests on a fixture STIX bundle (no external
   resources).
-- Loader end-to-end (requires `.rag_env`): load a fixture
-  MITRE-CTI-shaped bundle into a test database, run resolution, query
-  graph-path, verify STIX-sourced entities are reachable and the
-  Stage 1.5 merge correctly de-duplicates LLM-extracted mentions of
-  the same MITRE technique.
+- Connector end-to-end (requires `.rag_env`): run the phase-2
+  pipeline with `StixConnector` over a fixture MITRE-CTI-shaped
+  bundle into a test database, run resolution, query graph-path,
+  verify STIX-sourced entities are reachable and the Stage 1.5
+  merge correctly de-duplicates LLM-extracted mentions of the same
+  MITRE technique.
 
 ## Non-goals
 
 - No live TAXII subscription / push-driven updates in v1.
 - No vendor STIX dialect normalization beyond MITRE-CTI's `x-mitre-*`.
-- **No content-based `auth_id` inference.** TLP markings inside STIX
-  populate `rag_embeddings.tlp` only.
+- **No content-based `auth_id` inference.** STIX markings (including
+  TLP) are not interpreted as authorization input; `auth_id` is
+  always operator-supplied via the connector instance.
 - No automatic creation of missing `rag_acl` rows.
-- No LLM re-extraction over STIX descriptions.
+- No LLM re-extraction over STIX descriptions (defeats the point of
+  `pre_extracted`).
 - No two-way sync.
 - No fine-grained masking inside a single STIX object — the whole
   description chunk shares one `auth_id`.
+- No separate parallel STIX-loader pipeline (this is the design
+  change from the previous spec revision — STIX now runs through the
+  phase-2 pipeline as a connector).
 
 ## Open questions
 
@@ -583,10 +544,11 @@ Additional test surface:
    e.g., "the model tried to emit `Customer` 50 times last week but
    it's not in the vocab"? Useful signal for vocab expansion. Defer
    to follow-on.
-5. **Per-corpus schemas.** A DFIR deployment and a corporate-KB
-   deployment want different vocabs. Today the schema is global per
-   iris instance; if iris later hosts multiple RAG databases of
-   different shapes, this needs to become per-database config.
+5. **Per-corpus schemas.** Different deployments (DFIR, internal
+   documentation, email archive, customer support tickets) want
+   different vocabs. Today the schema is global per iris instance;
+   if iris later hosts multiple RAG databases of different shapes,
+   this needs to become per-database config.
 6. **STIX 2.0 fallback.** A few older feeds still emit 2.0. The
    scanner is version-agnostic on the property-counting path but the
    rename tables assume 2.1 type names. Pin to 2.1 in v1.
