@@ -22,8 +22,8 @@ only unstructured corpus content (incident reports, blog posts, PDFs).
 
 In scope:
 1. STIX SDO / SRO → iris schema (entity/relation type) mapping.
-2. Where STIX content lands across `rag_embeddings` and the 6 KG tables
-   (mentions, relations, entities, alias_map, edges, communities).
+2. Where STIX content lands across `rag_embeddings` and the 5 KG tables
+   (mentions, relations, entities, alias_map, edges).
 3. Authorization: TLP marking → `auth_id` mapping.
 4. ID-assignment rules (use STIX-native UUIDs for entities).
 5. Refresh / idempotency strategy.
@@ -222,10 +222,6 @@ chunks, which **are** fetchable.
 resolution-job run picks the new relations up via the standard derivation
 path (`kg_relations_raw + kg_alias_map → kg_edges`). This preserves the
 single `kg_edges`-derivation invariant from the KG spec.
-
-**7. `kg_communities`** — not produced by the loader. The community
-detection job runs separately (per the KG spec) and will pick STIX-only
-auth_id partitions (e.g., `tlp:white`) up automatically.
 
 **Operator step:** run the resolution job after each bootstrap load so the
 edges materialize. Until that runs, traversal still works on

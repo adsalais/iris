@@ -47,12 +47,6 @@ When the synthesizer is called it has:
    structural block — only the `[Cx]` citation may be missing for that
    chunk. Without this distinction, the structural block becomes
    over-pruned.
-5. **Community summaries** (global questions only) — top-K rows from
-   `kg_communities` ranked by `cosineDistance(summary_embedding,
-   question_embedding)`, row-policy filtered. Carry `community_id`,
-   `level`, `auth_id_partition`, `summary`, and the member entity names
-   for citation.
-
 ## Pre-synthesis pipeline
 
 ```
@@ -75,10 +69,6 @@ When the synthesizer is called it has:
        constraint: every included edge has at least one
        chunk_id in evidence_chunks ∩ authorized_chunk_ids
        (uses the BROAD set — keeps edges with un-ranked but authorized evidence)
-                |
-                v
-       (global questions only) fetch top-K kg_communities by
-       cosineDistance(summary_embedding, question_embedding)
                 |
                 v
        construct synthesis prompt
@@ -135,17 +125,6 @@ The following relationships are present in the sources:
   evidence: [C1, C9, C11]
 ...
 
-[COMMUNITY SUMMARIES]  (global questions only; omitted otherwise)
-The following thematic summaries cover broader regions of the corpus
-relevant to the question. Treat them as orienting context — every claim
-in your answer must still cite a [C<n>] source from below, not a
-community summary.
-
-- Level 2 / community <id>: <summary text>
-  members: <entity_name_A>, <entity_name_B>, ...
-- Level 1 / community <id>: <summary text>
-  members: ...
-
 [SOURCES]
 [C1] doc_id=<doc_id>, chunk_id=<chunk_id>, retrieval=vector+graph, score=0.91
 <chunk content verbatim>
@@ -168,12 +147,6 @@ community summary.
   `[Cx]` references here are intersected with the actual `SOURCES`
   numbering** — if an edge's evidence chunks didn't end up in top-N, the
   edge still appears but with fewer (or no) `[Cx]` pointers.
-- **`COMMUNITY SUMMARIES`** is rendered only for questions the graph
-  path classified as global (aggregative wording, broad scope). Pulled
-  from `kg_communities`; row-policy filtered (the user only sees
-  summaries of communities whose `auth_id_partition` they have access
-  to). The model is explicitly told the summaries are orienting context,
-  not citable evidence.
 - **`SOURCES`** are numbered `[C1]..[CN]`, ordered by rerank score
   (highest first). `retrieval=` tells the model where each chunk came
   from; `score=` is the post-rerank score. **STIX-logical chunk_ids
@@ -241,34 +214,27 @@ async def synthesize(
     graph_hops: int = 2,
     final_n: int = 12,
     structural_edges_cap: int = 50,
-    community_summaries_k: int = 6,
 ) -> SynthesisResult: ...
 ```
 
 Internally:
 1. Embed the question.
-2. Classify the question as local vs. global (heuristic; see KG spec
-   §Query path).
-3. In parallel: vector-path query; graph-path query (both on `session`).
-4. Union and dedup the row-policied results → `retrieval_set` (the
+2. In parallel: vector-path query; graph-path query (both on `session`).
+3. Union and dedup the row-policied results → `retrieval_set` (the
    broad set).
-5. **`authorized_chunk_ids = {c.chunk_id for c in retrieval_set}`** —
+4. **`authorized_chunk_ids = {c.chunk_id for c in retrieval_set}`** —
    computed *here*, before rerank/truncate. These are exactly the
    chunks the user is allowed to see; STIX-logical chunk_ids (no
    `rag_embeddings` row) are filtered out here.
-6. Rerank `retrieval_set` and truncate to `final_n` → `selected_chunks`.
-7. Build the structural block from `kg_edges`, filtered against
+5. Rerank `retrieval_set` and truncate to `final_n` → `selected_chunks`.
+6. Build the structural block from `kg_edges`, filtered against
    `authorized_chunk_ids` (not `selected_chunks`).
-8. If the question is global: fetch top `community_summaries_k` from
-   `kg_communities` by `cosineDistance(summary_embedding, question_embedding)`,
-   row-policy filtered.
-9. Render the prompt; call the LLM.
-10. Parse citations → assemble `SynthesisResult`:
-    `{answer, sources_cited, sources_unused, audit_record}`.
+7. Render the prompt; call the LLM.
+8. Parse citations → assemble `SynthesisResult`:
+   `{answer, sources_cited, sources_unused, audit_record}`.
 
 The session carries `currentRoles()`; the row policy enforces auth on
-every `rag_embeddings`, `kg_*`, and `kg_communities` read performed
-inside this function.
+every `rag_embeddings` and `kg_*` read performed inside this function.
 
 ## What iris owns vs. what the operator owns
 
@@ -289,6 +255,8 @@ inside this function.
   answer.
 - No map-reduce synthesis. Over-budget chunk sets are truncated by rerank
   score, not re-summarized.
+- **No community-summary block in v1.** Community detection is deferred
+  in the KG spec; revisit once global-question demand is measured.
 - No agentic re-querying based on the LLM's intermediate output.
 - No automatic question rewriting / expansion before retrieval.
 

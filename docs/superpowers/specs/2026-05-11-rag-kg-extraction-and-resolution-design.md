@@ -11,36 +11,58 @@ Augment iris's vector RAG with a knowledge graph: extract typed entities and
 relationships from each indexed chunk using an LLM with a fixed schema,
 resolve the entity mentions into canonical nodes with a hybrid strategy,
 resolve **cross-document coreference** to merge pronouns and definite
-descriptions into the same canonical nodes, build a **hierarchical
-community index** over the resulting graph for "global" questions, and
-expose the artefacts (`kg_entities`, `kg_edges`, `kg_communities`) to the
-synthesis stage. All tables sit inside the same authorization boundary as
-`rag_embeddings` — the row-dict-policy substrate is extended to gate every
-read of mentions, relations, entities, edges, alias mappings, and
-community summaries.
+descriptions into the same canonical nodes, and expose the artefacts
+(`kg_entities`, `kg_edges`) to the synthesis stage. All tables sit inside
+the same authorization boundary as `rag_embeddings` — the row-dict-policy
+substrate is extended to gate every read of mentions, relations, entities,
+edges, and alias mappings.
 
 ## Scope
 
 In scope:
 1. Schema (entity types + relation types).
-2. ClickHouse storage layout (6 tables, all row-policied).
+2. ClickHouse storage layout (5 tables, all row-policied).
 3. Extraction pipeline (LLM-driven, per chunk).
 4. Hybrid entity-resolution pipeline (deterministic → embedding cluster → LLM pairwise).
 5. **Coreference resolution** (in-document during extraction; cross-document as a post-resolution pass).
-6. **Community detection + hierarchical summarization** (Leiden + per-community LLM summaries, partitioned by `auth_id` for authorization correctness).
-7. How the KG plugs into query time alongside vector search.
-8. **What the KG side produces for the synthesis stage** (structural block, community summaries; the prompt itself is in the synthesis spec).
+6. How the KG plugs into query time alongside vector search.
+7. **What the KG side produces for the synthesis stage** (structural block; the prompt itself is in the synthesis spec).
 
 Out of scope: the synthesis prompt template (lives in the synthesis spec);
 streaming / incremental resolution; cross-language entity resolution
-beyond the embedding model's intrinsic ability.
+beyond the embedding model's intrinsic ability; **community detection and
+hierarchical summarization** (GraphRAG-style global-question routing) —
+explicitly deferred (see "Deferred" below).
+
+## Deferred to a later phase
+
+**Community detection + per-community LLM summarization** ("GraphRAG-style"
+structural index that pre-computes summaries of entity clusters at multiple
+resolution levels) is intentionally not in v1. The motivation:
+
+- For DFIR-style workloads, almost every analyst question is
+  **entity-anchored**: "what does T1059.001 do?", "which past cases mention
+  this hash?", "what malware does APT29 use?". These are handled well by
+  the regular entity-match + 1–2-hop graph traversal.
+- The questions communities help with are **global / aggregative** ("what
+  are the dominant TTPs in our incident history?"). These are real but
+  rare; they're strategic-review queries, not investigation-flow queries.
+- The cost is real: Leiden + per-community LLM summaries, a second
+  worker, a second access-grant story, a question-classifier in the
+  synthesis path, a new table with its own row policy, and partition
+  coordination. Worth it only when global-question demand is measured.
+
+If global questions turn out to matter in practice, the addition is clean
+because communities sit *on top of* `kg_edges` without changing it. Add a
+`kg_communities` table, a community-detection job, and a
+`COMMUNITY SUMMARIES` prompt block in a follow-on phase.
 
 ## Authorization stance
 
 **All KG tables sit inside iris's auth boundary, using the same
 `rag_acl_dict` substrate as `rag_embeddings`.** No structural metadata
-about entities, edges, or communities leaks to a user who has no
-authorized evidence for them.
+about entities or edges leaks to a user who has no authorized evidence
+for them.
 
 Two flavors of row policy are needed:
 
@@ -48,10 +70,10 @@ Two flavors of row policy are needed:
    `kg_alias_map`) carry a single `auth_id String` column, inherited from
    the source chunk. They use the same row policy expression as
    `rag_embeddings`.
-2. **Aggregated tables** (`kg_entities`, `kg_edges`, `kg_communities`)
-   carry an `auth_ids Array(String)` column — the union of `auth_id`s of
-   all contributing mentions / relations / member entities. Their row
-   policy uses ANY-match semantics.
+2. **Aggregated tables** (`kg_entities`, `kg_edges`) carry an
+   `auth_ids Array(String)` column — the union of `auth_id`s of all
+   contributing mentions / relations. Their row policy uses ANY-match
+   semantics.
 
 **Visibility semantics:**
 
@@ -59,10 +81,8 @@ Two flavors of row policy are needed:
   mentions it.
 - A user can see an edge iff they can read at least one chunk that
   evidences it.
-- A user can see a community summary iff they can read at least one
-  chunk evidencing one of the community's member entities.
-- Entity/edge/community names are never exposed to a user who has no
-  authorized evidence for them.
+- Entity/edge names are never exposed to a user who has no authorized
+  evidence for them.
 - A user reading an authorized `kg_edges` row sees all `chunk_id`s in
   its `evidence_chunks` array — including any whose underlying
   `rag_embeddings` row they cannot read. CH row policies are row-level,
@@ -70,8 +90,6 @@ Two flavors of row policy are needed:
   the unauthorized `chunk_id`s before they reach the LLM prompt. That
   masking is the only remaining defense for `evidence_chunks` contents,
   and the chunk content itself stays gated by the row policy at fetch.
-- **Community summaries are partitioned by `auth_id`** (see Community
-  Detection below) so summary text never blends authorization scopes.
 
 **Performance note.** The aggregated-table policy does `arrayExists` over
 `auth_ids × currentRoles()` with a `dictGet` per pair. Cost scales with
@@ -93,7 +111,7 @@ into a free-form `properties Map(String, String)`.
 
 ## Storage layout
 
-Six tables, colocated with embeddings in the RAG database (e.g. `rag_docs`).
+Five tables, colocated with embeddings in the RAG database (e.g. `rag_docs`).
 
 ### `kg_mentions_raw` — extractor output, one row per mention
 
@@ -179,27 +197,9 @@ Engine: `ReplacingMergeTree(resolution_version) ORDER BY mention_id`.
 Engine: `ReplacingMergeTree(resolution_version) ORDER BY edge_id`. Re-derived
 from `kg_relations_raw` + `kg_alias_map` after each resolution run.
 
-### `kg_communities` — hierarchical community index over the graph
-
-| Column | Type | Notes |
-|---|---|---|
-| `community_id` | `UUID` | `uuid5(NS, f"{auth_id_partition}::{level}::{sorted_entity_ids}")` — stable across re-runs with identical membership and partition. |
-| `auth_id_partition` | `String` | The `auth_id` partition this community lives in (see "Community detection" below). Single value, not an array, because partitioning is strict. |
-| `level` | `UInt8` | 0 = finest resolution; ascending = coarser. Default depth 3. |
-| `entity_ids` | `Array(UUID)` | Member entities (all share `auth_id_partition` in their `auth_ids`). |
-| `summary` | `String` | LLM-generated, 3–5 sentences. |
-| `summary_embedding` | `Array(Float32)` | For routing global questions to relevant communities. |
-| `auth_ids` | `Array(String)` | Singleton: `[auth_id_partition]`. Row visibility via ANY-match (degenerate to exact match). |
-| `parent_community_id` | `Nullable(UUID)` | Link to the coarser-level community this one belongs to. |
-| `support_count` | `UInt32` | Sum of member-edge `support_count`s. |
-| `resolution_version` | `LowCardinality(String)` | |
-| `summarized_at` | `DateTime` | |
-
-Engine: `ReplacingMergeTree(resolution_version) ORDER BY (auth_id_partition, level, community_id)`.
-
 ### Row policies on KG tables
 
-All six tables receive policies installed by iris's Authorization feature
+All five tables receive policies installed by iris's Authorization feature
 (extend the create-database flow alongside the `rag_embeddings` policy).
 
 **Per-row tables** (`kg_mentions_raw`, `kg_relations_raw`, `kg_alias_map`):
@@ -213,7 +213,7 @@ USING arrayExists(r -> has(
 
 Identical shape to the `rag_embeddings` policy.
 
-**Aggregated tables** (`kg_entities`, `kg_edges`, `kg_communities`), ANY-match semantics:
+**Aggregated tables** (`kg_entities`, `kg_edges`), ANY-match semantics:
 
 ```sql
 USING arrayExists(a -> arrayExists(r -> has(
@@ -224,8 +224,8 @@ USING arrayExists(a -> arrayExists(r -> has(
 
 Required grants: every tier role attached to the policies needs
 `GRANT dictGet ON rag_docs.rag_acl_dict`. This is the same grant the
-`rag_embeddings` policy already requires; install it once and all seven
-tables (embeddings + 6 KG tables) are covered.
+`rag_embeddings` policy already requires; install it once and all six
+tables (embeddings + 5 KG tables) are covered.
 
 ## Extraction pipeline
 
@@ -453,100 +453,17 @@ output: `unresolved_references: [{span: str, hint: str}]`).
 references. Off by default; operator enables when corpus quality
 demands it (e.g., narrative incident reports with heavy anaphora).
 
-**Re-derivation.** After Stage 6 (below), re-run Stage 5's
-`kg_entities`/`kg_edges` derivation so the new coreference mentions
-contribute to `auth_ids` and edge `support_count`.
-
-## Community detection + hierarchical summarization
-
-Builds the structural index that makes "global" questions tractable
-(e.g., "what are the dominant themes in our incident history?"). Runs
-after entity resolution + coreference + edge derivation.
-
-**Worker access model.** Same as the resolution job — runs under
-`query_as_user(worker_session, ...)` with the worker's groups granted in
-`rag_acl` for every auth_id it should index. The community-detection
-worker may be the same user as the resolution worker or a separate one
-(e.g., `kg-communities`) with a smaller scope.
-
-### Partitioning rule
-
-**Detection runs per `auth_id` partition, not over the worker's full
-visible graph.** For each distinct `auth_id` the worker can see, build
-a separate sub-graph from `kg_edges` whose `auth_ids` contains that
-partition value, limited to that partition's slice. Communities are
-computed and summarized within the partition only. Each `kg_communities`
-row's `auth_id_partition` records which partition it came from.
-
-Why: a community whose member entities span multiple `auth_id`s would
-inherit a union `auth_ids` that's correct at the row-policy level but
-the summary text could still describe entities a user can see existence
-of without being able to read evidence for them. Partitioning eliminates
-that ambiguity at the cost of duplicated structural work.
-
-Operator may coarsen the partition (e.g., group all `tlp:*` into one
-"public" partition) via config when the strict per-`auth_id` partitioning
-is too expensive.
-
-### Detection algorithm
-
-1. **Graph projection.** Weighted undirected graph: nodes =
-   `kg_entities` in partition, edges = `kg_edges` in partition, weight =
-   `support_count`.
-2. **Leiden community detection** (via `graspologic` or `igraph-python`),
-   run at multiple resolution parameters → a hierarchy of levels (level
-   0 finest, level N coarsest). Default depth: 3 levels.
-3. **Assign `community_id`** = `uuid5(NS, f"{auth_id_partition}::{level}::{sorted_entity_ids}")` — stable across re-runs with identical membership.
-4. **Link parent communities** at each level via `parent_community_id`.
-
-### Per-community summarization
-
-For each community at each level:
-
-1. Gather member entities (names + types + most salient properties) and
-   a small sample of supporting edges (with their `evidence_chunks`).
-2. Prompt the LLM:
-   ```
-   Summarize this cluster of entities and the relationships between them
-   in 3–5 sentences. Cite entities by canonical name. Do not invent facts
-   not supported by the listed evidence.
-
-   Entities: [{name, type, top_aliases, top_properties}, ...]
-   Sample relations: [{source, type, target, support_count, evidence_chunk_sample}, ...]
-   ```
-3. Write a `kg_communities` row. Compute `summary_embedding` for global
-   question routing.
-4. Cache by `hash(sorted_entity_ids || sorted_edge_ids)`; only
-   re-summarize when membership or edge support actually changed.
-
-### Budgeting and caps
-
-The community job is **expensive** — it makes O(communities × LLM-call)
-calls. To keep the cost bounded:
-
-- **Minimum community size.** Skip communities with fewer than
-  `min_members = 5` member entities (singletons and tiny pairs aren't
-  useful summary targets and dominate the long tail).
-- **Per-partition hard cap.** `max_communities_per_partition = 500` per
-  level. If Leiden produces more, drop the smallest by `support_count`.
-  Tune after measurement.
-- **Resummarization gate.** Cache by
-  `hash(sorted_entity_ids || sorted_supporting_edge_ids || resolution_version)`;
-  re-summarize only when membership or supporting evidence actually
-  changed. Pure `resolution_version` bumps that don't move membership
-  reuse cached summaries.
-
-### Refresh cadence
-
-Run less often than the entity resolution job (e.g., weekly vs. nightly).
-Operator-tunable.
+**Re-derivation.** After the coreference pass writes new mentions and
+alias-map rows, re-run Stage 5's `kg_entities` / `kg_edges` derivation so
+the new coreference mentions contribute to `auth_ids` and edge
+`support_count`.
 
 ## Query path alongside vector RAG
 
 Both paths run on the user's `DatabaseSession` (so `currentRoles()` is
 correct for every row-policy evaluation along the path). **Every read in
 the path traverses a row-policied table**, so the graph itself only
-returns entities/edges/communities the user is authorized to see.
+returns entities/edges the user is authorized to see.
 
 **Vector path** (existing): top-K from `rag_embeddings`, row-policy
 filtered.
@@ -554,30 +471,18 @@ filtered.
 **Graph path:**
 1. Run a lightweight extractor on the question (same schema, simpler
    prompt) to get question entities and optional relation hints.
-2. Classify the question as **local** (asks about specific entities) vs.
-   **global** (asks about the corpus / a broad slice). Heuristic: presence
-   of named entities + relational phrasing → local; aggregative wording
-   ("summarize", "what are the main", "across all") → global.
-3. **Local path:**
-   a. Match question entities to `kg_entities` by name-embedding
-      similarity with an exact-alias fallback.
-   b. Traverse `kg_edges` 1–2 hops from matched entities, optionally
-      filtering by relation type.
-   c. From the resulting entity set, follow `kg_alias_map` →
-      `kg_mentions_raw.chunk_id` to assemble candidate chunks.
-   d. Fetch those chunks from `rag_embeddings` — final row-policy
-      filter as defense in depth.
-4. **Global path:**
-   a. Embed the question with the same embedding model used for
-      `summary_embedding`.
-   b. Top-K nearest community summaries via `cosineDistance` on
-      `kg_communities.summary_embedding`, row-policy filtered. Pull
-      from coarser levels first (typically level N or N-1) — they're
-      the "themes".
-   c. Optionally drill down: for the top-K coarse communities, also
-      fetch their level-0 children's summaries for detail.
-   d. Use community member entities to seed a graph-path traversal
-      (step 3c onwards) for evidence chunks.
+2. Match question entities to `kg_entities` by name-embedding similarity
+   with an exact-alias fallback. The match query is row-policy filtered:
+   the user only sees entities they have evidence for.
+3. Traverse `kg_edges` 1–2 hops from matched entities, optionally
+   filtering by relation type. Pure SQL JOINs; `kg_edges` is row-policy
+   filtered.
+4. From the resulting entity set, follow `kg_alias_map` →
+   `kg_mentions_raw.chunk_id` to assemble candidate chunks. Both joined
+   tables are row-policy filtered, so only `chunk_id`s the user can read
+   survive.
+5. Fetch those chunks from `rag_embeddings` — the same row policy applies
+   one final time as defense in depth.
 
 Merge vector + graph chunks, deduplicate by `(doc_id, chunk_id)`,
 optionally rerank, then synthesize.
@@ -585,11 +490,11 @@ optionally rerank, then synthesize.
 ## Synthesis integration
 
 The synthesis prompt template is defined in
-`2026-05-11-rag-synthesis-prompt-design.md`. The KG side contributes
-three inputs to the pre-synthesis pipeline:
+`2026-05-11-rag-synthesis-prompt-design.md`. The KG side contributes two
+inputs to the pre-synthesis pipeline:
 
-1. **Question-entity matches and candidate chunks** — from the
-   local-path query (steps 3a–3c above), row-policy filtered.
+1. **Question-entity matches and candidate chunks** — from the graph-path
+   query (steps 2–4 above), row-policy filtered.
 2. **Structural block** — a set of `kg_edges` rows used to build the
    `STRUCTURAL CONTEXT` block of the synthesis prompt. The KG side:
    - Selects `kg_edges` whose endpoints include a question-matched
@@ -600,13 +505,6 @@ three inputs to the pre-synthesis pipeline:
      relation_type, target_entity_name, target_entity_type, evidence_chunk_ids}`.
    - The synthesis-stage filter further restricts `evidence_chunk_ids`
      to the user's authorized chunk set before they land in the prompt.
-3. **Community summaries** (global questions only) — for questions the
-   graph path classified as global, the KG side surfaces a `COMMUNITY
-   SUMMARIES` block: the top-K `kg_communities.summary` strings by
-   `summary_embedding` similarity to the question, ordered by level
-   (coarsest first), all row-policy filtered. The synthesis spec
-   describes how this block plugs into the prompt; this spec is the
-   source of the data.
 
 ## What iris owns vs. what the operator owns
 
@@ -618,18 +516,19 @@ three inputs to the pre-synthesis pipeline:
 | Provisioning the worker user (`kg-resolver` or per-tenant equivalents) and granting its groups in `rag_acl.allowed_roles` | Operator |
 | Running the resolution batch job as `query_as_user(worker_session, ...)` | Ingestion pipeline |
 | Running the cross-document coreference pass under the same worker session | Ingestion pipeline |
-| Running the community detection + summarization job under the same (or a separate, smaller-scope) worker session | Ingestion pipeline |
-| Provisioning the 6 KG tables with the right engines | Iris (extend Authorization feature's create-database flow) |
-| Attaching row policies to the 6 KG tables | Iris |
-| Granting roles `dictGet` on `rag_acl_dict` (single grant, covers all 7 tables) | Iris |
-| Question classification (local vs. global) and graph-path execution | A new feature module (alongside the RAG feature) |
-| Producing the synthesis-stage inputs (structural block, community summaries) | Same feature module |
+| Provisioning the 5 KG tables with the right engines | Iris (extend Authorization feature's create-database flow) |
+| Attaching row policies to the 5 KG tables | Iris |
+| Granting roles `dictGet` on `rag_acl_dict` (single grant, covers all 6 tables) | Iris |
+| Graph-path execution (entity match, edge traversal, candidate chunks) | A new feature module (alongside the RAG feature) |
+| Producing the synthesis-stage inputs (structural block) | Same feature module |
 | Issuing the vector-path queries (existing, row-policied) | Same feature module |
 
 ## Non-goals
 
-- No streaming / incremental resolution — resolution, coreference, and
-  community detection are batch.
+- No streaming / incremental resolution — resolution and coreference
+  are batch.
+- **No community detection / hierarchical summarization in v1.** See
+  "Deferred to a later phase" above.
 - No automatic schema drift detection — schema is operator-curated.
 - No cross-language entity resolution beyond what the embedding model
   gives for free.
@@ -640,22 +539,19 @@ three inputs to the pre-synthesis pipeline:
   policy at fetch; the synthesis stage masks unauthorized `chunk_id`s in
   the structural prompt block. Out-of-scope to enforce at the column
   level.
-- **No cross-partition community detection.** Communities never span
-  `auth_id` partitions by design (see Partitioning rule).
 - No reified coreference chains (we link each referring expression to
   one canonical entity; we do not store the chain of intermediate
   mentions).
 
 ## Open questions
 
-1. **Embedding model for mentions vs. chunks vs. community summaries.**
-   Same model = simpler; cheaper model for short-string tasks usually
-   fine. Pick after benchmark.
+1. **Embedding model for mentions vs. chunks.** Same model = simpler;
+   cheaper model for short-string tasks usually fine. Pick after
+   benchmark.
 2. **Stage 2 / Stage 3 thresholds.** Need real data to tune. Start with
    0.90 / 0.75–0.90 and adjust.
 3. **`uuid5` namespace stability.** Must be fixed up front and never
-   rotated, or every `entity_id`, `edge_id`, and `community_id` will
-   change across runs.
+   rotated, or every `entity_id` and `edge_id` will change across runs.
 4. **Aggregated-table policy cost at scale.** `arrayExists × arrayExists`
    with a `dictGet` inside is O(|auth_ids| × |currentRoles|) per row.
    Fine for small arrays; measure if popular entities accumulate
@@ -663,18 +559,12 @@ three inputs to the pre-synthesis pipeline:
 5. **Coreference confidence cutoff.** Too low → wrong merges pollute the
    graph; too high → coreference adds little. Default 0.75; operator
    tunes after measuring real false-merge rate.
-6. **Community-detection partition coarsening.** Strict per-`auth_id`
-   partitioning is most secure but most expensive. Operator may want to
-   group, e.g., all `tlp:white` + `tlp:green` into one "public"
-   partition. Spec the grouping config but defer the heuristic.
-7. **Question local-vs-global classification.** Heuristic v1; an LLM
-   classifier or learned router is the obvious upgrade once usage data
-   exists.
-8. **Community summary refresh trigger.** v1 re-summarizes when
-   membership or edge support changes. A more aggressive cache (e.g.,
-   "only resummarize if support changed by ≥10%") is worth measuring.
-9. **Worker scope shape.** Single global-ish worker vs. per-tenant
+6. **Worker scope shape.** Single global-ish worker vs. per-tenant
    workers (see Worker access model). DFIR deployments with
    public-STIX-shared canonicals favor the single worker; strict
    multi-tenancy favors per-tenant. Operator decision encoded in
    `rag_acl` grants — no code change required to switch.
+7. **When to revisit communities.** Add a metric — count of questions
+   classified as "global" or that fail to find a satisfying answer via
+   the local path. If that count is non-trivial after a few months,
+   re-evaluate the community-detection addition.
