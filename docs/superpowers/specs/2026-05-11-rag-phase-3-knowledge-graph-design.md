@@ -410,15 +410,23 @@ For each task claimed from `kg_extraction_queue`:
 
 ### Task claim semantics
 
-Workers claim a batch of pending tasks via an `ALTER TABLE … UPDATE`
-that sets `status = 'claimed'`, `claimed_by = <worker_id>`,
-`claimed_at = now()` filtered by `status = 'pending' LIMIT N`.
-Stale claims (`status = 'claimed' AND claimed_at < now() - 10 minutes`)
-get re-claimed by another worker, since the deterministic
+Workers claim a batch of pending tasks via a **ClickHouse lightweight
+update** (CH 24.3+): `ALTER TABLE kg_extraction_queue UPDATE status =
+'claimed', claimed_by = <worker_id>, claimed_at = now() WHERE
+task_id IN (<read-then-claim batch>) AND status = 'pending'`.
+Lightweight updates avoid part rewrites; reads with
+`apply_mutations_on_fly = 1` see the claim immediately, so two
+workers don't double-claim the same task. Stale claims
+(`status = 'claimed' AND claimed_at < now() - 10 minutes`) get
+re-claimed by another worker, since the deterministic
 `task_id = uuid5(chunk_id, "extract")` makes re-processing
 idempotent at the chunk level — if both workers happen to finish,
 `ReplacingMergeTree(extracted_at)` on `kg_mentions_raw` keeps the
 newest row.
+
+Same `ALTER … UPDATE` mechanism the phase-2 ingest worker uses on
+`rag_ingestion_buffer` (stage 8). Both queues rely on CH's
+lightweight-mutation guarantees.
 
 Extractor prompt shape:
 

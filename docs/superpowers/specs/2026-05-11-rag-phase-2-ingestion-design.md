@@ -10,24 +10,41 @@
 
 ## Goal
 
-A concrete, minimal implementation of the ingestion pipeline that turns
-heterogeneous source documents (PDFs, DOCX, PPTX, XLSX, web pages,
-emails, Markdown, plain text) into rows in `rag_embeddings` with stable
-identifiers and propagated authorization metadata (`auth_id`). Roughly
-500 LOC of Python, no exotic dependencies, owned by the operator-side
-ingestion service.
+A two-stage ingestion pipeline that turns heterogeneous source
+documents (PDFs, DOCX, PPTX, XLSX, web pages, emails, Markdown, plain
+text) into rows in `rag_embeddings` with stable identifiers and
+propagated authorization metadata (`auth_id`). Roughly 500 LOC of
+Python, no exotic dependencies, owned by the operator-side ingestion
+service.
 
-Builds on phase-1's `rag_embeddings` schema. The pipeline also writes
-**extraction tasks** to a queue table (`kg_extraction_queue`) so the
-phase-3 worker can asynchronously do per-chunk KG extraction without
-blocking ingest; the queue table is provisioned in phase 2 because
-its writer is the ingestion pipeline. The actual phase-3 worker that
-consumes the queue is out of scope here.
+**Two stages decouple intake from embedding.** The operator submits
+a document; the intake stage parses, chunks, and writes the chunks to
+a buffer table (`rag_ingestion_buffer`) — fast and synchronous; the
+operator's call returns once the chunks are buffered. A separate
+async worker pool reads from the buffer, runs the slow stages
+(embed, store in `rag_embeddings`, KG handoff), then **deletes the
+processed rows from the buffer** via ClickHouse's lightweight delete.
 
-A connector may also yield documents whose entities/relations are
+Why two stages: embedding is the slowest stage (network round-trips
+to the embedding API, often rate-limited). Without decoupling, every
+ingest call's latency is bounded by the embedding service's response
+time, and an outage of that service blocks all uploads. With the
+buffer, intake survives embedding-service outages — documents queue
+up and the worker drains the buffer when the service is healthy
+again.
+
+Builds on phase-1's `rag_embeddings` schema. Also writes **extraction
+tasks** to `kg_extraction_queue` so the phase-3 extraction worker
+can asynchronously do per-chunk KG extraction; the queue table is
+provisioned in phase 2 because its writer is the ingestion worker.
+The actual phase-3 worker that consumes the queue is out of scope
+here.
+
+A connector may yield documents whose entities/relations are
 **already structured** (e.g., the phase-4 STIX connector). For those,
-the pipeline writes the pre-extracted KG rows synchronously and skips
-the queue entirely — no LLM extraction is needed.
+the worker writes the pre-extracted KG rows synchronously after the
+chunk lands in `rag_embeddings`, and **does not** enqueue an
+extraction task — no LLM extraction is needed.
 
 ## Scope
 
@@ -73,16 +90,43 @@ The pipeline's three responsibilities around `auth_id`:
 
 ## Pipeline stages
 
+Two stages, separated by `rag_ingestion_buffer`.
+
 ```
+─── INTAKE (sync) ──────────────────────────────────────
 [ acquire ] → [ detect ] → [ parse ] → [ clean ] → [ chunk ]
                                                        ↓
-    [ kg handoff ] ← [ store ] ← [ embed ] ← [ dedup ] ← [ enrich ]
+                              [ buffer-write ] ← [ enrich ]
+                                       ↓
+                            rag_ingestion_buffer
+
+─── PROCESSING (async worker) ──────────────────────────
+              rag_ingestion_buffer
+                       ↓
+              [ claim batch ]
+                       ↓
+              [ dedup ] → [ embed ] → [ store-rag_embeddings ]
+                                                       ↓
+              [ lightweight-delete from buffer ] ← [ kg handoff ]
 ```
 
-Each stage is a function with typed inputs/outputs. Composition is
-straightforward; no framework required. Stages 2–5 are skipped when
-the connector supplied `pre_extracted` and no `raw_bytes` (e.g. STIX
-SRO documents that carry only a relation, no content).
+Each stage is a function with typed inputs/outputs. Intake stages are
+synchronous on the operator's submit call — they finish in the time
+budget of "parse a doc + compute a few hashes". The processing
+stages run on a separate worker pool that pulls from the buffer.
+
+**Structured-data connectors short-circuit.** If the connector
+yielded `pre_extracted` + empty `raw_bytes` (e.g. a STIX SRO with no
+description), intake skips parse → clean → chunk and writes a single
+buffer row with `content` empty + `pre_extracted_json` populated. The
+worker likewise skips dedup → embed and goes straight to KG handoff.
+
+## Intake (synchronous)
+
+These stages run on the operator's submit call. They finish in
+parse-a-doc + hash time. The call returns once the chunks are in
+`rag_ingestion_buffer`; from the operator's perspective, the document
+is "received" but not yet queryable.
 
 ### 1. Acquire
 
@@ -237,14 +281,19 @@ change so provenance is visible.
 
 The pipeline provides a `redocument(doc_id)` helper that the operator
 calls when re-chunking. It runs as a single transaction-like
-sequence:
+sequence, all using ClickHouse **lightweight deletes** (CH 23.3+):
 
-1. `ALTER TABLE rag_embeddings DELETE WHERE doc_id = :doc_id` — purge
-   the document's chunks.
-2. `ALTER TABLE kg_mentions_raw DELETE WHERE doc_id = :doc_id` (phase 3 table; skipped if phase 3 isn't yet deployed).
-3. `ALTER TABLE kg_relations_raw DELETE WHERE doc_id = :doc_id` (phase 3 table; skipped if phase 3 isn't yet deployed).
-4. Re-ingest the document from its source.
-5. Operator runs the phase-3 resolution job at next cadence — it
+1. `DELETE FROM rag_embeddings WHERE doc_id = :doc_id` — purge the
+   document's chunks. Lightweight; no part rewrite.
+2. `DELETE FROM kg_mentions_raw WHERE doc_id = :doc_id` (phase 3
+   table; skipped if phase 3 isn't yet deployed).
+3. `DELETE FROM kg_relations_raw WHERE doc_id = :doc_id` (phase 3
+   table; skipped if phase 3 isn't yet deployed).
+4. `DELETE FROM rag_ingestion_buffer WHERE doc_id = :doc_id` — in
+   case any chunks of the old document are still buffered, drop them
+   so the new ingest doesn't race with the old one.
+5. Re-ingest the document from its source.
+6. Operator runs the phase-3 resolution job at next cadence — it
    re-derives `kg_entities` / `kg_edges`, naturally dropping orphan
    contributions from the deleted mentions/relations.
 
@@ -256,7 +305,70 @@ Operators who want to keep old chunks alongside new ones (for
 provenance audit) snapshot the tables before `redocument()` rather
 than trying to coexist two `pipeline_version`s of the same `doc_id`.
 
-### 7. Dedup
+### 7. Buffer-write
+
+The last intake stage. Writes one row per chunk into
+`rag_ingestion_buffer`, then returns to the operator. All chunks of a
+single document are buffered atomically (via a batched INSERT) — the
+operator's call doesn't return half-buffered.
+
+For documents with `pre_extracted` (structured connectors), the
+buffer row stores the `PreExtractedKG` payload serialized as JSON
+in `pre_extracted_json`. For documents with empty `raw_bytes`
+(relation-only docs from structured connectors), the buffer row's
+`content` is empty and `content_hash` is the hash of the empty
+string; the processing worker recognizes this shape and skips the
+embed step.
+
+## Processing (async worker)
+
+These stages run on a separate worker pool, decoupled from the
+operator's submit call. Workers can be scaled independently of intake
+based on embedding-API throughput.
+
+**Worker access model.** Same as the phase-3 workers — runs under
+`query_as_user(worker_session, ...)` with a regular iris user
+(`rag-ingest-worker`), NOT a tier admin. The worker's groups must be
+listed in `rag_acl.allowed_roles` for every `auth_id` it should
+process. Row policies apply normally; `GRANT INSERT` on
+`rag_embeddings` is granted explicitly to the worker.
+
+### 8. Claim batch
+
+The worker reads a batch of unclaimed rows from
+`rag_ingestion_buffer` and claims them atomically via a
+**ClickHouse lightweight update**:
+
+```sql
+-- 1. Read candidate task ids
+SELECT chunk_id
+FROM rag_ingestion_buffer
+WHERE claimed_by IS NULL
+   OR claimed_at < now() - INTERVAL 10 MINUTE  -- re-claim stale
+ORDER BY buffered_at
+LIMIT 64
+SETTINGS apply_mutations_on_fly = 1
+
+-- 2. Claim them
+ALTER TABLE rag_ingestion_buffer
+UPDATE claimed_by = '<worker_id>', claimed_at = now()
+WHERE chunk_id IN (...)
+  AND (claimed_by IS NULL OR claimed_at < now() - INTERVAL 10 MINUTE)
+SETTINGS materialize_ttl_after_modify = 0
+```
+
+The `UPDATE` is a **lightweight update** (CH 24.3+) — it writes the
+change to a separate part-level structure instead of rewriting the
+underlying part. Reads with `apply_mutations_on_fly = 1` see the
+updated values immediately. This is what makes a CH-backed buffer
+viable as a claim queue.
+
+Stale-claim recovery (`claimed_at < now() - 10 minutes`) handles
+worker crashes: another worker re-claims the row and re-processes
+it. Re-processing is safe because chunk_ids are deterministic and the
+final INSERT into `rag_embeddings` produces an identical row.
+
+### 9. Dedup
 
 Two distinct concerns, often conflated:
 
@@ -276,7 +388,7 @@ Two distinct concerns, often conflated:
   produce the same dedup decisions; changing either is a
   `pipeline_version` bump.
 
-### 8. Embed + store
+### 10. Embed + store
 
 - Batched API calls (16–64 chunks per request).
 - Local cache by `(embedding_model_id, content_hash)` in SQLite.
@@ -286,7 +398,7 @@ Two distinct concerns, often conflated:
   New `auth_id`s must exist in `rag_acl` before documents carrying
   them arrive.
 
-### 9. KG handoff
+### 11. KG handoff
 
 The last stage decides how each document's KG side gets populated.
 There are two branches:
@@ -325,6 +437,94 @@ writes `kg_mentions_raw` / `kg_relations_raw`. Until the worker
 processes the task, the chunk is queryable via the phase-1 vector
 path but invisible to the phase-3 graph path.
 
+### 12. Lightweight-delete from buffer
+
+Last processing stage. Once the chunk is in `rag_embeddings` and the
+KG handoff has run (synchronous write of pre-extracted rows, or task
+enqueued in `kg_extraction_queue`), the worker deletes the row from
+`rag_ingestion_buffer`:
+
+```sql
+DELETE FROM rag_ingestion_buffer
+WHERE chunk_id IN (...)
+```
+
+This is a **ClickHouse lightweight delete** (default behaviour for
+`DELETE FROM` on MergeTree since CH 23.3) — it marks rows as deleted
+via the `_row_exists` virtual column without rewriting the
+underlying part. Reads filter out deleted rows immediately; the
+physical purge happens at the next merge.
+
+Atomicity matters here: a worker crash between "store to
+rag_embeddings" and "delete from buffer" leaves the buffer row in
+place, and stale-claim recovery (stage 8) will eventually re-claim
+it. The duplicate INSERT into `rag_embeddings` produces an identical
+row (deterministic chunk_id), so no harm. Same for the KG handoff:
+the queue task is keyed by `task_id = uuid5(chunk_id, "extract")`,
+so re-enqueue is idempotent.
+
+### Buffer-table failure modes
+
+If a buffer row fails repeatedly (parse OK at intake but embed fails
+permanently — chunk too large, embedding model unavailable for too
+long, content corruption), it accumulates retry attempts. After N
+failed claims (default `max_attempts = 5`), the worker moves the row
+to a sibling `ingest_failures` audit table (see below) and
+lightweight-deletes from the buffer. The operator sees the failure
+on the audit dashboard.
+
+The buffer table also has a TTL safety net: rows older than 7 days
+get TTL-deleted regardless of state, on the theory that anything
+that hasn't completed in a week is stuck for non-recoverable
+reasons.
+
+## `rag_ingestion_buffer` table
+
+| Column | Type | Notes |
+|---|---|---|
+| `chunk_id` | `UUID` | Deterministic per Phase 1's UUID derivation. |
+| `doc_id` | `UUID` | |
+| `auth_id` | `String` | Validated at intake against `rag_acl`. |
+| `content` | `String` | Chunk text. Empty for relation-only docs (structured connectors). |
+| `content_hash` | `FixedString(64)` | `sha256(content)`. |
+| `source_uri` | `String` | |
+| `page` | `Nullable(UInt32)` | |
+| `section_path` | `Array(String)` | |
+| `language` | `LowCardinality(Nullable(String))` | |
+| `mime_type` | `LowCardinality(Nullable(String))` | |
+| `ordinal` | `UInt32` | Position within the document; needed for the chunk_id derivation reproducibility. |
+| `pipeline_version` | `LowCardinality(String)` | |
+| `pre_extracted_json` | `Nullable(String)` | Serialized `PreExtractedKG` if the connector supplied it; else `NULL`. |
+| `buffered_at` | `DateTime` | |
+| `claimed_by` | `LowCardinality(Nullable(String))` | Worker id; `NULL` when unclaimed. |
+| `claimed_at` | `Nullable(DateTime)` | |
+| `attempts` | `UInt8` DEFAULT 0 | Incremented on each claim; gates the max_attempts cutoff. |
+
+Engine:
+```sql
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(buffered_at)
+ORDER BY (buffered_at, chunk_id)
+TTL buffered_at + INTERVAL 7 DAY DELETE
+SETTINGS
+    apply_mutations_on_fly = 1,         -- lightweight UPDATE visible to subsequent reads
+    materialize_ttl_after_modify = 0    -- don't re-materialize TTL on each mutation
+```
+
+The TTL is a safety net — under normal operation, the worker
+lightweight-deletes rows long before TTL kicks in. Rows that hit the
+TTL are stuck-and-unrecovered; their absence from the audit table is
+itself a signal the operator should investigate.
+
+### Backpressure on the buffer
+
+If the worker pool can't keep up with intake (sustained input >
+sustained embedding throughput), the buffer grows unboundedly. v1 has
+no explicit backpressure mechanism — operators monitor buffer depth
+via `SELECT count() FROM rag_ingestion_buffer WHERE claimed_by IS NULL`
+and provision more workers when needed. v1.1 may add an intake-side
+rate limit triggered by buffer depth.
+
 ### `kg_extraction_queue` table
 
 Provisioned alongside `rag_embeddings` (iris's create-database flow
@@ -351,9 +551,14 @@ ORDER BY task_id
 TTL completed_at + INTERVAL 30 DAY DELETE WHERE status = 'completed'
 ```
 
-The worker claims tasks with optimistic update (`ALTER UPDATE status='claimed', claimed_by=..., claimed_at=now() WHERE task_id IN (...) AND status='pending'`),
-re-claims stuck tasks (`status='claimed' AND claimed_at < now() - 10 minutes`),
-and marks done or failed.
+The worker claims tasks with a **lightweight update** (`ALTER TABLE
+kg_extraction_queue UPDATE status='claimed', claimed_by=...,
+claimed_at=now() WHERE task_id IN (...) AND status='pending' SETTINGS
+materialize_ttl_after_modify = 0`), re-claims stuck tasks
+(`status='claimed' AND claimed_at < now() - 10 minutes`), and marks
+done or failed. The lightweight-update mechanism (CH 24.3+) avoids
+part rewrites; reads with `apply_mutations_on_fly = 1` see the
+claim immediately. Same pattern as the ingestion-buffer claim.
 
 Re-running the ingestion pipeline on an already-extracted chunk:
 deterministic `task_id` lets `ReplacingMergeTree(enqueued_at)` dedupe
