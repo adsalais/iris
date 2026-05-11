@@ -6,7 +6,7 @@
 - Phase 1 (`2026-05-11-rag-phase-1-vector-rag-with-acl-design.md`) — vector RAG with row-policy ACL.
 - **Phase 2 (this spec)** — data ingestion pipeline.
 - Phase 3 (`2026-05-11-rag-phase-3-knowledge-graph-design.md`) — knowledge graph extension.
-- Phase 4 (`2026-05-11-rag-phase-4-stix-vocab-and-bootstrap-design.md`) — STIX vocabulary + bootstrap.
+- Phase 4 (`2026-05-11-rag-phase-4-stix-vocab-and-bootstrap-design.md`) — STIX vocabulary + connector.
 
 ## Goal
 
@@ -49,7 +49,7 @@ extraction task — no LLM extraction is needed.
 ## Scope
 
 In scope:
-1. Nine-stage pipeline and per-stage tool choices.
+1. Twelve-stage two-phase pipeline (7 sync intake, 5 async processing) and per-stage tool choices.
 2. Chunking strategy and defaults.
 3. Metadata schema attached to every chunk.
 4. **How `auth_id` enters the pipeline (externally supplied) and how
@@ -280,8 +280,10 @@ tables) are orphaned. Bump `pipeline_version` on every chunking-strategy
 change so provenance is visible.
 
 The pipeline provides a `redocument(doc_id)` helper that the operator
-calls when re-chunking. It runs as a single transaction-like
-sequence, all using ClickHouse **lightweight deletes** (CH 23.3+):
+calls when re-chunking. ClickHouse has no multi-statement transactions,
+so the helper issues each step sequentially; the steps are idempotent
+and re-running after a partial failure is safe. All deletes are
+**lightweight deletes** (CH 23.3+):
 
 1. `DELETE FROM rag_embeddings WHERE doc_id = :doc_id` — purge the
    document's chunks. Lightweight; no part rewrite.
@@ -655,7 +657,7 @@ silent authorization bug waiting to happen.
 |---|---|
 | `run_id` | `UUID` |
 | `source_uri` | `String` |
-| `stage` | `Enum8('acquire', 'detect', 'parse', 'clean', 'chunk', 'enrich', 'embed', 'store')` |
+| `stage` | `Enum8('acquire', 'detect', 'parse', 'clean', 'chunk', 'enrich', 'buffer_write', 'claim', 'dedup', 'embed', 'store', 'kg_handoff')` |
 | `error_kind` | `LowCardinality(String)` |
 | `error_message` | `String` |
 | `failed_at` | `DateTime` |
@@ -696,7 +698,8 @@ httpx            # web fetching
 playwright       # JS-rendered web pages (optional)
 ```
 
-Plus the embedding-provider SDK from `.rag_env` (phase-1 config).
+Plus iris's single HTTP-client wrapper around the embedding endpoint
+configured in `.rag_env` (phase-1 — no per-vendor SDK).
 
 ## What iris owns vs. what the operator owns
 

@@ -6,7 +6,7 @@
 - Phase 1 (`2026-05-11-rag-phase-1-vector-rag-with-acl-design.md`) — vector RAG with row-policy ACL.
 - Phase 2 (`2026-05-11-rag-phase-2-ingestion-design.md`) — data ingestion pipeline.
 - **Phase 3 (this spec)** — knowledge graph extension.
-- Phase 4 (`2026-05-11-rag-phase-4-stix-vocab-and-bootstrap-design.md`) — STIX vocabulary + bootstrap.
+- Phase 4 (`2026-05-11-rag-phase-4-stix-vocab-and-bootstrap-design.md`) — STIX vocabulary + connector.
 
 ## Goal
 
@@ -16,8 +16,9 @@ Augment phase 1's vector RAG with a knowledge graph:
   an LLM with a fixed schema.
 - Resolve entity mentions into canonical nodes with a hybrid strategy
   (deterministic → embedding cluster → LLM pairwise).
-- Resolve cross-document coreference (pronouns, definite descriptions)
-  into canonical entities.
+- Optionally resolve cross-document coreference (pronouns, definite
+  descriptions) into canonical entities — off by default; enable
+  when corpus quality demands it.
 - Expose the artefacts (`kg_entities`, `kg_edges`) to the phase-1
   synthesis stage as a `STRUCTURAL CONTEXT` block that lets the LLM
   ground answers in graph structure as well as raw chunks.
@@ -31,8 +32,8 @@ Augment phase 1's vector RAG with a knowledge graph:
 In scope:
 1. KG schema (entity types + relation types).
 2. ClickHouse storage layout — 5 KG tables, all row-policied.
-3. Extraction pipeline (LLM-driven, per chunk; runs after phase-2 chunk
-   write).
+3. Extraction worker (LLM-driven, per chunk; async consumer of
+   `kg_extraction_queue` written by phase 2).
 4. Hybrid entity-resolution pipeline (deterministic → embedding cluster
    → LLM pairwise) + Stage 1.5 merge into pre-existing canonicals.
 5. Cross-document coreference (in-document during extraction;
@@ -373,20 +374,17 @@ size and LLM rate limits. There is no time-based ordering guarantee:
 older chunks may finish extracting after newer ones if the older one
 hit a transient retry.
 
-**Why async, not in-band.** Per-chunk LLM extraction would otherwise
-gate ingest throughput on the LLM's latency and rate limit. For
-high-volume corpora that's a hard bottleneck. Decoupling lets ingest
-run as fast as the parsing/embedding pipeline allows, and the
-extraction pool scales independently.
-
-**Worker access model.** Same as the resolution worker — runs under
-`query_as_user(worker_session, ...)` where `worker_session` belongs
-to a regular iris user (e.g., `kg-extractor`), NOT a tier admin. The
-worker's groups must be explicitly listed in `rag_acl.allowed_roles`
-for every `auth_id` the worker should extract from. Row policies
-apply normally on reads; INSERTs are gated by table-level
-`GRANT INSERT` on the KG tables. The worker may be the same user as
-the resolution worker or a separate one with a different scope.
+**Worker access model.** Runs under `query_as_user(worker_session,
+...)` where `worker_session` belongs to a regular iris user (e.g.,
+`kg-extractor`), NOT a tier admin. The worker's groups must be
+explicitly listed in `rag_acl.allowed_roles` for every `auth_id` the
+worker should extract from. Row policies apply normally on reads;
+INSERTs are gated by table-level `GRANT INSERT` on the KG tables.
+**Same access pattern as the phase-2 ingest worker and the
+resolution worker below** — three iris workers, three explicit user
+identities, all granted via the same `rag_acl`-row mechanism. The
+extraction worker may be the same iris user as the resolution worker
+or a separate one with a smaller scope.
 
 ### Per-task workflow
 
@@ -458,13 +456,10 @@ Constraints:
 Batch job at operator-controlled cadence (e.g. nightly). Each run
 bumps `resolution_version`.
 
-**Worker access model.** Runs under
-`query_as_user(worker_session, ...)` where `worker_session` belongs to
-a regular iris user (e.g., `kg-resolver`) — NOT a tier admin. The
-worker's groups (e.g., `KG_RESOLVER_GRP`) must be explicitly added to
-`rag_acl.allowed_roles` for every `auth_id` the operator wants the
-worker to aggregate over. Row policies apply normally. No service-tier
-bypass.
+**Worker access model.** Same as the extraction worker, with a
+different iris user (e.g., `kg-resolver`) whose groups are granted
+in `rag_acl.allowed_roles` for every `auth_id` the operator wants
+the worker to aggregate over.
 
 Two common shapes:
 
@@ -735,15 +730,15 @@ Phase-3 internal steps that differ from phase 1:
 
 | Concern | Owner |
 |---|---|
-| Maintaining schema config (entity types, relation types, normalization) | Operator |
-| Running the extraction worker pool (consumes `kg_extraction_queue`, calls the LLM extractor, writes `kg_mentions_raw` / `kg_relations_raw`) | Iris (worker process; operator scales it) |
+| Maintaining schema config (entity types, relation types, normalization rules) | Operator |
 | Provisioning the extraction-worker user (`kg-extractor`) and granting its groups in `rag_acl.allowed_roles` | Operator |
-| Propagating `auth_id` from `rag_embeddings` onto KG rows | Extraction worker (for queue-driven) / phase-2 pipeline (for `pre_extracted`) |
-| Provisioning the worker user (`kg-resolver`) and granting groups in `rag_acl.allowed_roles` | Operator |
-| Running the resolution batch job as `query_as_user(worker_session, ...)` | Ingestion pipeline |
-| Running the cross-document coreference pass | Ingestion pipeline |
-| Provisioning the 5 KG tables with the right engines | Iris (extend Authorization feature's create-database flow) |
-| Attaching row policies to the 5 KG tables | Iris |
+| Provisioning the resolution-worker user (`kg-resolver`) and granting its groups in `rag_acl.allowed_roles` | Operator |
+| Running the extraction worker pool (consumes `kg_extraction_queue`, calls the LLM extractor, writes `kg_mentions_raw` / `kg_relations_raw`) | Iris (worker process; operator scales it) |
+| Running the resolution batch job (Stages 1–5) as `query_as_user(kg-resolver, ...)` on the operator's cron | Iris (worker process; operator schedules and scales) |
+| Running the cross-document coreference pass (optional) | Iris (worker process; operator schedules and scales) |
+| Propagating `auth_id` from `rag_embeddings` onto KG rows | Extraction worker (queue-driven) / phase-2 pipeline (for `pre_extracted` connectors) |
+| Provisioning the 5 KG tables + `kg_entity_aliases_mv` with the right engines | Iris (extend Authorization feature's create-database flow) |
+| Attaching row policies to the 5 KG tables + MV | Iris |
 | Graph-path execution + structural-block build | Iris RAG feature module |
 | Updated synthesis prompt template | Iris |
 

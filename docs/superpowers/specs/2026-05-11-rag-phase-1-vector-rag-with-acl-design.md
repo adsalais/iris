@@ -6,7 +6,7 @@
 - **Phase 1 (this spec)** — vector RAG with row-policy ACL.
 - Phase 2 (`2026-05-11-rag-phase-2-ingestion-design.md`) — data ingestion pipeline.
 - Phase 3 (`2026-05-11-rag-phase-3-knowledge-graph-design.md`) — knowledge graph extension.
-- Phase 4 (`2026-05-11-rag-phase-4-stix-vocab-and-bootstrap-design.md`) — STIX vocabulary + bootstrap.
+- Phase 4 (`2026-05-11-rag-phase-4-stix-vocab-and-bootstrap-design.md`) — STIX vocabulary + connector.
 
 ## Goal
 
@@ -88,7 +88,8 @@ without extra named namespaces.
 | `content` | `String` | Chunk text. |
 | `source_uri` | `String` | Original document URI. |
 | `page` | `Nullable(UInt32)` | PDF page number (Phase 2 populates from Docling); `NULL` for manual Phase-1 loads and non-paginated formats. |
-| `section_path` | `Array(String)` | Heading chain; Phase 2 populates from the parser's element list. Empty array if unavailable. |
+| `section_path` | `Array(String)` | Heading-chain components; Phase 2 populates from the parser's element list. Empty array if unavailable. |
+| `heading_chain` | `String` DEFAULT '' | Rendered heading chain (`# H1 > ## H2 > ### H3`) prepended to chunks in Phase 2. Stored for citation rendering. |
 | `language` | `LowCardinality(Nullable(String))` | Detected via langid/fasttext in Phase 2; `NULL` for manual Phase-1 loads. |
 | `mime_type` | `LowCardinality(Nullable(String))` | Sniffed in Phase 2; `NULL` for manual loads. |
 | `content_hash` | `FixedString(64)` | `sha256(content)` hex. Used by Phase 2 dedup and as input to `chunk_id`. |
@@ -121,28 +122,24 @@ helper reads `RAG_EMBEDDING_VECTOR_SIZE` at table-creation time and
 substitutes the integer into the DDL string before sending it to CH:
 
 ```sql
--- iris's helper formats this from RAG_EMBEDDING_VECTOR_SIZE
+-- iris's helper formats <dim> from RAG_EMBEDDING_VECTOR_SIZE
 ALTER TABLE rag_embeddings ADD INDEX embedding_hnsw embedding
 TYPE vector_similarity('hnsw', 'cosineDistance', <dim>)
 GRANULARITY 1
 ```
 
-For a `text-embedding-3-large` deployment, `<dim>` becomes `3072`. Common values: 768 (BGE-base), 1024
-(Voyage-3, Cohere-v3), 1536 (OpenAI `text-embedding-3-small`), 3072
-(OpenAI `text-embedding-3-large`). The index lets ANN queries (`ORDER
-BY cosineDistance(embedding, $q) LIMIT k`) prune granules instead of
-scanning. Falls back to brute force if disabled or unavailable in
-the CH version. ClickHouse's vector-similarity index is in active
-development; pin the CH version supported by ops and document a
-fallback path (`SETTINGS allow_experimental_vector_similarity_index = 1`
-where required).
+The index lets ANN queries (`ORDER BY cosineDistance(embedding, $q)
+LIMIT k`) prune granules; falls back to brute force if the index is
+absent. ClickHouse's vector-similarity index is in active development;
+pin the CH version supported by ops and add
+`SETTINGS allow_experimental_vector_similarity_index = 1` where
+required.
 
-**Changing the embedding model post-deployment** requires re-embedding
-every chunk AND rebuilding the index with a new dimension. Iris's
-DDL helper refuses to ALTER the dimension on an existing table; the
-migration path is "create rag_embeddings_v2 with the new
-RAG_EMBEDDING_VECTOR_SIZE, re-embed into it, atomically swap via a
-view". Out of v1 scope but flagged here so the constraint is visible.
+Changing the embedding model post-deployment requires re-embedding +
+re-indexing with a new dimension. Iris's helper refuses to ALTER the
+dimension on an existing table; the migration path is "create
+`rag_embeddings_v2`, re-embed into it, atomically swap via a view"
+— out of v1 scope but flagged so the constraint is visible.
 
 **Authorization is enforced exclusively by `auth_id` + `rag_acl` +
 the row policy.** No other column gates row visibility. Operators
@@ -482,14 +479,12 @@ the vars directly without a file on disk.
 
 ### Why skip-not-fail
 
-Phase-1 RAG tests need external network / paid API access. Failing the
-whole iris suite when those aren't configured would block contributors
-who aren't working on RAG. Skipping with a clear reason
-("`.rag_env` not configured; run `cp .rag_env.example .rag_env` and fill
-in to enable RAG tests") keeps the suite hermetic-by-default.
-
-A `.rag_env.example` template (committed) shows the expected keys with
-placeholder values.
+RAG tests need external network and paid API access; failing the iris
+suite when those aren't configured would block contributors who
+aren't working on RAG. Skipping with a clear reason
+("`.rag_env` not configured; copy `.rag_env.example` and fill in")
+keeps the suite hermetic-by-default. The `.rag_env.example` template
+is committed with placeholder values.
 
 ## What iris owns vs. what the operator owns
 

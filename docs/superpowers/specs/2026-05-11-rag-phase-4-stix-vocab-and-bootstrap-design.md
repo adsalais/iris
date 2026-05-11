@@ -6,7 +6,7 @@
 - Phase 1 (`2026-05-11-rag-phase-1-vector-rag-with-acl-design.md`) — vector RAG with row-policy ACL.
 - Phase 2 (`2026-05-11-rag-phase-2-ingestion-design.md`) — data ingestion pipeline.
 - Phase 3 (`2026-05-11-rag-phase-3-knowledge-graph-design.md`) — knowledge graph extension.
-- **Phase 4 (this spec)** — STIX vocabulary + bootstrap.
+- **Phase 4 (this spec)** — STIX vocabulary + connector.
 
 ## Goal
 
@@ -440,41 +440,30 @@ phase-3 resolution-job run derives `kg_edges` from `kg_relations_raw`
 + `kg_alias_map` via the standard derivation path. Operator runs the
 resolution job after each bundle ingest.
 
-### Idempotency
+### Idempotency and refresh
 
-Re-running the connector on the same bundle produces the same
-deterministic IDs for every row (every UUID derives from stable
-inputs: STIX object id, bundle source name). `ReplacingMergeTree`
-engines on `kg_entities` / `kg_alias_map` / `kg_mentions_raw` /
-`kg_relations_raw` dedupe naturally. Append-only / immutable tables
-need no special treatment because the IDs match.
+All UUIDs the connector emits derive from stable STIX inputs (object
+id, bundle source name), so re-running on the same bundle produces
+identical row keys; `ReplacingMergeTree` on `kg_entities` /
+`kg_alias_map` / `kg_mentions_raw` / `kg_relations_raw` dedupes
+naturally.
 
-### Re-derivation on bundle refresh
+On a new MITRE-CTI release (or any bundle refresh):
 
-When MITRE-CTI publishes a new release:
-
-1. The operator re-runs the same connector against the new bundle.
+1. Operator re-runs the connector against the new bundle.
 2. Updated SDOs (same `stix_id`, new content) overwrite the previous
    `kg_entities` / `kg_alias_map` rows via ReplacingMergeTree's
    `resolution_version` semantics.
-3. SDOs marked `revoked: true` in the new bundle: the connector sets
-   `stix_revoked = "true"` in the mention's `properties` payload, and
-   the resolution job propagates that to `kg_entities.properties_merged`.
-   The synthesis path filters `stix_revoked = true` by default; an
-   operator-controlled flag includes them for historical queries.
-4. Operator runs the resolution job to refresh `kg_edges`.
+3. SDOs marked `revoked: true`: the connector sets `stix_revoked =
+   "true"` in the mention's `properties`; the resolution job
+   propagates that to `kg_entities.properties_merged`. The synthesis
+   path filters revoked entries by default.
+4. Operator runs the phase-3 resolution job to refresh `kg_edges`.
 
-No separate STIX-only audit table is needed; the phase-2 pipeline's
-`ingest_runs` and `ingest_failures` audit every bundle ingest like
-any other connector run.
-
-## Refresh cadence
-
-MITRE-CTI publishes versioned releases (~quarterly). Recommended
-cadence: schedule the `StixConnector` invocation monthly (or on
-MITRE release), then trigger the phase-3 resolution job to refresh
-`kg_edges`. The bundle-refresh data flow is detailed in the
-"Re-derivation on bundle refresh" subsection above.
+Recommended cadence: run the connector monthly (or on MITRE release),
+then the resolution job. No separate STIX audit table — the phase-2
+pipeline's `ingest_runs` and `ingest_failures` audit every bundle
+ingest like any other connector run.
 
 ## What iris owns vs. what the operator owns
 
