@@ -24,10 +24,15 @@ In scope:
 1. STIX SDO / SRO → iris schema (entity/relation type) mapping.
 2. Where STIX content lands across `rag_embeddings` and the 5 KG tables
    (mentions, relations, entities, alias_map, edges).
-3. Authorization: TLP marking → `auth_id` mapping.
-4. ID-assignment rules (use STIX-native UUIDs for entities).
-5. Refresh / idempotency strategy.
-6. Loader workflow and operator interface.
+3. `auth_id` is supplied externally by the operator (same model as the
+   ingestion-pipeline spec) — the loader does not derive auth_id from
+   STIX TLP markings.
+4. TLP markings are parsed from `object_marking_refs` and stored in
+   `rag_embeddings.tlp` as **informational metadata** for analyst
+   awareness; they do not influence authorization.
+5. ID-assignment rules (use STIX-native UUIDs for entities).
+6. Refresh / idempotency strategy.
+7. Loader workflow and operator interface.
 
 Out of scope:
 - TAXII network client implementation (use `stix2` / `taxii2-client` or a
@@ -101,7 +106,10 @@ Critical STIX properties land in `properties_merged` on the entity:
   `external_references[*].external_id` where `source_name == "mitre-attack"`.
 - `cve_id` — from CVE external references on `vulnerability` SDOs.
 - `capec_id`, `cwe_id` — from corresponding external references.
-- `tlp` — derived from `object_marking_refs`.
+- `tlp` — parsed from `object_marking_refs` (TLP 1.0 `definition_type =
+  "tlp"` or TLP 2.0 extension form). Stored on the `rag_embeddings.tlp`
+  column for the SDO's description chunk as informational metadata
+  ONLY. Does not affect `auth_id` or row-policy evaluation.
 - `kill_chain_phases` — preserved as a denormalized list even though the
   graph also models them as separate entities (cheaper lookup for filters).
 - `stix_id` — the original STIX object id, for traceability and back-refs.
@@ -144,7 +152,8 @@ phases). This makes STIX descriptions retrievable as RAG chunks.
 |---|---|
 | `doc_id` | `f"stix:{stix_source}"` (e.g. `"stix:mitre-cti"`) |
 | `chunk_id` | `f"stix:{stix_id}:description"` |
-| `auth_id` | TLP-derived (see Authorization handling) |
+| `auth_id` | **supplied to the loader by the operator** (per-bundle CLI arg or per-object manifest; same external-classification model as the ingestion pipeline) |
+| `tlp` | parsed from the SDO's `object_marking_refs` if present, else `'clear'` (the column default). Informational only. |
 | `embedding` | computed by the loader |
 | `content` | `<header>\n\n<description>` |
 
@@ -199,7 +208,7 @@ and target mentions (looked up by their STIX SDO ids):
 |---|---|
 | `relation_id` | `uuid5(NS, f"{stix_relationship_id}")` |
 | `chunk_id` | `f"stix:{stix_relationship_id}"` (logical — see note below) |
-| `auth_id` | strictest of source / target / relationship markings |
+| `auth_id` | the same operator-supplied `auth_id` used for SDOs in the bundle (loader does not infer per-relation auth) |
 | `source_mention_id` | the synthetic mention of the SRO's source SDO |
 | `target_mention_id` | the synthetic mention of the SRO's target SDO |
 | `relation_type` | per the relation mapping |
@@ -227,61 +236,37 @@ single `kg_edges`-derivation invariant from the KG spec.
 edges materialize. Until that runs, traversal still works on
 `kg_relations_raw` / `kg_alias_map` but is slower.
 
-## Authorization handling
+## Authorization (`auth_id`)
 
-STIX content carries TLP markings via `object_marking_refs` pointing to
-`marking-definition` objects with `definition_type = "tlp"` (TLP 1.0) or
-the newer `extensions.extension-definition--<TLP2.0-UUID>` form.
+The loader does **not** interpret STIX TLP markings as authorization
+input. `auth_id` for every row written by the loader is supplied
+externally by the operator, exactly the same model as the ingestion
+starter-stack spec uses for ordinary documents.
 
-Map TLP markings to `auth_id`:
+Two supported delivery mechanisms (loader picks based on CLI flags):
 
-| TLP marking | `auth_id` |
-|---|---|
-| `TLP:CLEAR` / `TLP:WHITE` | `"tlp:white"` |
-| `TLP:GREEN` | `"tlp:green"` |
-| `TLP:AMBER` | `"tlp:amber"` |
-| `TLP:AMBER+STRICT` | **must be configured explicitly** — see security note below |
-| `TLP:RED` | `"tlp:red"` |
-| (no marking) | `"tlp:white"` (treat as public by default; operator-configurable) |
+1. **Per-bundle `auth_id`** — `--auth-id customer:acme` on the CLI.
+   Every SDO and SRO in the bundle gets the same `auth_id`. Simplest;
+   correct when the whole bundle has one classification.
+2. **Per-object manifest** — `--auth-id-manifest <path.json>` providing
+   `{stix_id: auth_id}` overrides. Falls back to the per-bundle default
+   for unlisted objects. Use this when a single bundle mixes
+   classifications (rare).
 
-The operator is responsible for ensuring corresponding `rag_acl` rows
-exist (e.g., `(auth_id="tlp:amber", allowed_roles=["TLP_AMBER_GRP"])`).
-**The loader does not auto-create ACL rows** — that's an explicit
-operator step. If a STIX object's `auth_id` has no `rag_acl` row, every
-user fails the row policy and the content is invisible (deny-by-default
-behaviour from the RAG spec).
+Operator pre-conditions (same as the ingestion-pipeline spec):
 
-For MITRE-CTI specifically (the most common bootstrap source), the
-entire bundle is unmarked / `TLP:CLEAR`, so everything lands under
-`auth_id = "tlp:white"` and is visible to every role granted via the
-public ACL row.
+- The supplied `auth_id` must already exist in `rag_acl` with a sensible
+  `allowed_roles` array. The loader **validates** every distinct
+  `auth_id` against `rag_acl` before any insert; missing rows cause the
+  bundle to be rejected with a clear error.
+- The loader **does not** auto-create `rag_acl` rows.
 
-**TLP propagation on relationships:** an SRO's effective `auth_id` is the
-strictest of `{source_marking, target_marking, sro_marking}`. Rationale:
-a `TLP:GREEN` `attributed-to` edge whose target is a `TLP:AMBER`
-threat-actor reveals that the actor exists — must be at least `TLP:AMBER`
-itself.
-
-### Security note: TLP:AMBER+STRICT
-
-`TLP:AMBER+STRICT` means "no further dissemination outside the recipient
-organization." Plain `TLP:AMBER` allows wider need-to-know dissemination
-within the recipient organization and its clients. **Collapsing STRICT
-into plain AMBER is a real authorization downgrade**, not a fidelity
-quirk.
-
-v1 requires the operator to choose one of:
-
-1. **Reject** TLP:AMBER+STRICT-marked content at load (loader option;
-   logs the rejection).
-2. **Carry it as its own `auth_id`** (`"tlp:amber-strict"`) with a
-   separate `rag_acl` row whose `allowed_roles` is a tighter group
-   (e.g., `["TLP_AMBER_STRICT_GRP"]`). Operator must provision both.
-3. **Explicitly accept the downgrade** via a loader flag
-   (`--accept-amber-strict-downgrade`) which maps to `"tlp:amber"`. The
-   flag exists to make the downgrade auditable, not to be the default.
-
-Default: option (1) — reject. Loader does not silently collapse.
+The TLP marker inside each STIX object is parsed and stored in
+`rag_embeddings.tlp` (informational), independently of `auth_id`. An
+operator may *choose* to align `auth_id` with TLP (e.g., set
+`--auth-id tlp:amber` for an AMBER bundle and provision a matching
+`rag_acl` row), but that's an organizational convention, not a loader
+behaviour.
 
 ## Loader workflow
 
@@ -290,27 +275,34 @@ A new CLI entry point — proposed: `uv run iris stix-bootstrap <bundle.json>`
 
 ```
 1. Parse the STIX bundle with `stix2`. Validate version == 2.1.
-2. Build the marking-definition table:
-   marking_id → tlp_string → auth_id.
-3. First pass: SDOs.
+2. Resolve auth_id for the run:
+   - From --auth-id (per-bundle) and/or --auth-id-manifest (per-object).
+   - Build the set of distinct auth_ids referenced.
+   - SELECT auth_id FROM rag_acl WHERE auth_id IN (...). Reject the
+     whole bundle if any referenced auth_id is missing.
+3. Build the marking-definition table:
+   marking_id -> tlp_string (for the rag_embeddings.tlp column only;
+   no auth_id implication).
+4. First pass: SDOs.
    For each entity-like object:
      a. If revoked == True:
         - On first load: hard-skip (loader option).
         - On refresh load: flip stix_revoked=true on the existing entity.
-     b. Compute auth_id from the object's TLP marking (or bundle default).
-     c. Build the chunk content (header + description).
-     d. Compute chunk embedding and mention embedding.
-     e. Insert rag_embeddings, kg_mentions_raw, kg_entities, kg_alias_map
-        rows per the layout above.
-4. Second pass: SROs.
+     b. Resolve auth_id (from manifest if listed, else bundle default).
+     c. Resolve tlp from object_marking_refs (default 'clear').
+     d. Build the chunk content (header + description).
+     e. Compute chunk embedding and mention embedding.
+     f. Insert rag_embeddings (with auth_id and tlp), kg_mentions_raw,
+        kg_entities, kg_alias_map rows per the layout above.
+5. Second pass: SROs.
    For each relationship:
      a. Validate both endpoints exist; skip dangling refs with logging.
-     b. Compute auth_id (strictest of source/target/SRO markings).
+     b. Resolve auth_id the same way (manifest or bundle default).
      c. Insert kg_relations_raw row.
-5. Stamp the run in kg_stix_bootstrap_runs (audit table; iris-provided):
+6. Stamp the run in kg_stix_bootstrap_runs (audit table; iris-provided):
    (bundle_name, bundle_version, loaded_at, sdo_count, sro_count,
     skipped_count, errors).
-6. Operator follow-up: run the resolution job to materialise kg_edges.
+7. Operator follow-up: run the resolution job to materialise kg_edges.
 ```
 
 **Idempotency.** Re-running the loader on the same bundle produces the
@@ -345,7 +337,8 @@ MITRE-CTI publishes versioned releases (~quarterly). Recommended cadence:
 | Providing the `kg_stix_bootstrap_runs` audit table | Iris |
 | Fetching STIX bundles (TAXII / file download / `mitre/cti` git submodule) | Operator |
 | Scheduling and invoking the loader | Operator |
-| Ensuring TLP-mapped `rag_acl` rows exist before loading TLP-marked content | Operator |
+| **Choosing `auth_id`(s) for each bundle / object** (the classification decision) | Operator |
+| Ensuring the chosen `auth_id`(s) exist in `rag_acl` before loading | Operator |
 | Running the resolution job after a bootstrap load to refresh `kg_edges` | Operator |
 | Pruning duplicate rows in append-only tables (`OPTIMIZE … DEDUPLICATE`) | Operator |
 
@@ -353,7 +346,11 @@ MITRE-CTI publishes versioned releases (~quarterly). Recommended cadence:
 
 - No live TAXII subscription / push-driven updates in v1.
 - No vendor STIX dialect normalization beyond MITRE-CTI's `x-mitre-*`.
-- No automatic creation of missing TLP-mapped `rag_acl` rows.
+- **No content-based `auth_id` inference.** TLP markings inside STIX
+  objects are *not* read as authorization input; they only populate the
+  informational `rag_embeddings.tlp` column. `auth_id` is supplied
+  externally by the operator.
+- No automatic creation of missing `rag_acl` rows.
 - No LLM re-extraction over STIX descriptions.
 - No two-way sync (iris-extracted entities never exported as STIX).
 - No fine-grained masking inside a single STIX object — the whole
@@ -374,10 +371,7 @@ MITRE-CTI publishes versioned releases (~quarterly). Recommended cadence:
    Alternative: model children only as a `subtechniques` array property
    on the parent. v1 keeps both (edge for traversal, property for fast
    lookup) — revisit if storage cost matters.
-3. **TLP:AMBER+STRICT fidelity.** v1 collapses STRICT into plain AMBER.
-   If your sharing groups distinguish them, the mapping needs a
-   `tlp:amber-strict` `auth_id` and a separate `rag_acl` entry.
-4. **Handling vendor-CTI STIX with non-standard relationship types.**
+3. **Handling vendor-CTI STIX with non-standard relationship types.**
    Currently fall back to `RELATED_TO`. If a frequent unmapped type
    appears, the operator extends the mapping; a metrics tab on the
    admin UI counting "fallback edges by stix_relationship_type" would

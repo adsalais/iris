@@ -22,9 +22,18 @@ Three ClickHouse objects per RAG dataset, all colocated in the same database
 |---|---|---|
 | `doc_id` | `String` | Parent document. Chunks of the same document share this. Used for grouping / re-ranking / display, **not** for auth. |
 | `auth_id` | `String` | Authorization key. References `rag_acl.auth_id`. Many `doc_id`s can map to the same `auth_id`. |
+| `tlp` | `Enum8('clear' = 1, 'green' = 2, 'amber' = 3, 'amber_strict' = 4, 'red' = 5)` DEFAULT `'clear'` | Informational TLP marker for analyst awareness. **Not used for authorization** — that's `auth_id` + `rag_acl`. Loaders may parse it from source-document markings (e.g., STIX `object_marking_refs`) or leave it at the default. UI surfaces it next to retrieved chunks so analysts know dissemination constraints when sharing. |
 | `embedding` | `Array(Float32)` | Vector. Optional ANN index. |
 | `content` | `String` | The chunk text. |
 | … | | Loader-specific metadata as needed. |
+
+**Important: `tlp` is metadata, not an access control.** Authorization
+is enforced exclusively by `auth_id` + `rag_acl` + the row policy. The
+`tlp` column exists so the UI can label retrieved chunks ("this content
+is TLP:AMBER, treat accordingly when sharing externally") — it does not
+gate access. Operators may *choose* to encode TLP intent into `auth_id`
+naming (e.g., `auth_id = "tlp:amber"` with a matching `rag_acl` row),
+but that's an organizational convention, not an iris-enforced linkage.
 
 ### 2. `rag_acl` — source of truth, owned by the ingestion pipeline
 

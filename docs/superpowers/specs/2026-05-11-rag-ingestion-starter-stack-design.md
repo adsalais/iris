@@ -81,8 +81,18 @@ A source-specific connector yields tuples:
 (source_uri: str, raw_bytes: bytes, auth_id: str, source_metadata: dict)
 ```
 
+`source_metadata` is the catch-all for fields the connector knows up
+front but the pipeline doesn't compute. The pipeline reads:
+
+- `tlp` — optional; one of `'clear' | 'green' | 'amber' | 'amber_strict' | 'red'`.
+  Stored on `rag_embeddings.tlp` for every chunk derived from the
+  document. Informational only — does NOT affect authorization. If
+  absent, the column default (`'clear'`) is used.
+
 **The connector is the authoritative source of `auth_id`.** See the next
 section for the three supported mechanisms by which connectors obtain it.
+`tlp` follows the same mechanisms (sidecar manifest field / directory
+convention / API field).
 
 The connector must guarantee at most one `auth_id` per document. If a
 document genuinely needs split authorization (rare), it is split into
@@ -155,6 +165,7 @@ Every chunk receives:
 | `doc_id` | `uuid5(NS, source_uri \|\| source_hash)` |
 | `chunk_id` | `uuid5(doc_id, ordinal \|\| content_hash)` |
 | `auth_id` | from stage 1, **unchanged** |
+| `tlp` | from stage 1's `source_metadata` if supplied; otherwise `'clear'` (the column default). Informational only — never used for authorization. |
 | `source_uri` | from stage 1 |
 | `source_hash` | from stage 1 |
 | `page` | (PDF) page number from Docling |
