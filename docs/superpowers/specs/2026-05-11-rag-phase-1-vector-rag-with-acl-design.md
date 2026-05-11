@@ -268,13 +268,18 @@ A new `src/iris/features/rag/`:
 
 The phase-1 test suite needs four external resources:
 
-- A ClickHouse instance to write/read.
-- An embedding model (vendor + API key).
-- A synthesis LLM (vendor + API key).
-- A reranker (optional; vendor + API key).
+- **A ClickHouse instance to write/read** — reuses iris's standard
+  CH env vars (`CLICKHOUSE_HOST`, `_PORT`, `_USER`, `_PASSWORD`,
+  `_SECURE`, `_VERIFY`, `_CA_CERT_PATH`, per `CLAUDE.md`). These live
+  in iris's main `.env`, not in `.rag_env` — the RAG feature shares
+  the connection like every other iris subsystem.
+- **An embedding model** (URL + model name + API key).
+- **A synthesis LLM** (URL + model name + API key).
+- **A reranker** (optional; URL + model name + API key).
 
-These live in a `.rag_env` file at the repo root (sibling to `.env`).
-The file is **never committed** — it's in `.gitignore` from day one.
+The three model-provider configs live in a `.rag_env` file at the
+repo root (sibling to `.env`). The file is **never committed** —
+it's in `.gitignore` from day one.
 
 **`.rag_env` is iris's RAG config source for BOTH runtime and tests**
 — a single file, loaded by:
@@ -293,12 +298,11 @@ file lookup, exactly the same pattern as iris's existing
 
 ```
 # .rag_env
-# --- ClickHouse for the rag_docs database -----------------
-RAG_CLICKHOUSE_HOST=localhost
-RAG_CLICKHOUSE_PORT=9000
-RAG_CLICKHOUSE_DATABASE=rag_docs_test
-RAG_CLICKHOUSE_USER=default
-RAG_CLICKHOUSE_PASSWORD=
+# ClickHouse connection: NOT here -- iris's standard env vars are
+# reused (CLICKHOUSE_HOST / _PORT / _USER / _PASSWORD / _SECURE /
+# _VERIFY / _CA_CERT_PATH, per CLAUDE.md). The RAG feature picks the
+# CH database to use per-request via the route's `database` field;
+# there's no global RAG_CLICKHOUSE_DATABASE.
 
 # --- Embedding model (OpenAI-compatible /v1/embeddings) ---
 RAG_EMBEDDING_URL=https://api.openai.com/v1
@@ -378,7 +382,9 @@ A session-scoped `rag_env` fixture (`tests/conftest.py` or
 
 Required vars (must all be present for tests to run):
 
-- `RAG_CLICKHOUSE_HOST` (other CH vars get sensible defaults).
+- `CLICKHOUSE_HOST` — iris's standard CH var, **not** a RAG-specific
+  one (other `CLICKHOUSE_*` vars get sensible defaults; the same set
+  iris uses everywhere else).
 - `RAG_EMBEDDING_URL`, `RAG_EMBEDDING_MODEL`, `RAG_EMBEDDING_API_KEY`.
 - `RAG_LLM_URL`, `RAG_LLM_MODEL`, `RAG_LLM_API_KEY`.
 
