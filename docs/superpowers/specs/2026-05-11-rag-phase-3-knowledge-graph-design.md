@@ -121,8 +121,8 @@ Five tables, colocated with phase-1's `rag_embeddings`.
 
 | Column | Type | Notes |
 |---|---|---|
-| `mention_id` | `UUID` | `uuid5(NS, f"{chunk_id}::{span_start}::{span_end}")`. |
-| `chunk_id` | `UUID` | Joins to `rag_embeddings`. (Unified `UUID` type — STIX-derived chunk_ids are also `uuid5(NS_CHUNK, f"stix:{stix_id}:description")` so the column is never a non-UUID string.) |
+| `mention_id` | `UUID` | `uuid5(chunk_id, f"{span_start}::{span_end}")` — `chunk_id` is the namespace (see Phase 1 "UUID derivation"). |
+| `chunk_id` | `UUID` | Joins to `rag_embeddings`. UUID-typed everywhere; see Phase 1's UUID derivation table for the formula. |
 | `doc_id` | `UUID` | Copied for convenience. |
 | `auth_id` | `String` | Inherited from the source chunk. Gates row visibility. |
 | `entity_type` | `LowCardinality(String)` | From the schema. |
@@ -146,9 +146,10 @@ new `prompt_version`) keeps the newest row by `extracted_at`. Read
 via a view that applies `FINAL`. ANN index:
 
 ```sql
+-- iris's DDL helper substitutes <dim> from RAG_EMBEDDING_VECTOR_SIZE
 ALTER TABLE kg_mentions_raw ADD INDEX mention_embedding_hnsw
 mention_embedding
-TYPE vector_similarity('hnsw', 'cosineDistance', ${RAG_EMBEDDING_VECTOR_SIZE})
+TYPE vector_similarity('hnsw', 'cosineDistance', <dim>)
 GRANULARITY 1
 ```
 
@@ -156,12 +157,15 @@ The dimension reuses `RAG_EMBEDDING_VECTOR_SIZE` on the assumption
 that mentions and chunks share an embedding model (v1 default). If
 the mention-embedding model differs (see Open Question 1), introduce
 a separate `RAG_MENTION_EMBEDDING_VECTOR_SIZE` and reference it here.
+CH DDL doesn't expand env vars; iris's helper formats the integer
+into the DDL string before issuing the statement (same mechanism as
+Phase 1's `rag_embeddings` vector index).
 
 ### `kg_relations_raw` — extractor output, one row per relation
 
 | Column | Type |
 |---|---|
-| `relation_id` | `UUID` (`uuid5` of `chunk_id::source_mention_id::target_mention_id::relation_type`) |
+| `relation_id` | `UUID` — `uuid5(chunk_id, f"{source_mention_id}::{target_mention_id}::{relation_type}")` (chunk_id as namespace). |
 | `chunk_id` | `UUID` (inherited; same unified type as `kg_mentions_raw.chunk_id`) |
 | `doc_id` | `UUID` |
 | `auth_id` | `String` |
@@ -184,7 +188,7 @@ Same refresh semantics as `kg_mentions_raw`.
 
 | Column | Type |
 |---|---|
-| `entity_id` | `UUID` (`uuid5(NS, f"{canonical_name_normalized}::{entity_type}")` for LLM-extracted; STIX-native UUIDs for phase-4-bootstrapped entries) |
+| `entity_id` | `UUID` — `uuid5(NS_ENTITY, f"{entity_type}::{canonical_name_normalized}")` for LLM-extracted; STIX-native UUIDs for phase-4-bootstrapped entries. (`NS_ENTITY` defined in Phase 1's UUID-derivation section.) |
 | `entity_type` | `LowCardinality(String)` |
 | `canonical_name` | `String` |
 | `canonical_name_normalized` | `String` | Normalized form (the input to `entity_id`'s uuid5). Stored explicitly so Stage 1.5 can do a primary-key lookup on the table's ORDER BY tuple `(entity_type, canonical_name_normalized)` instead of recomputing per query. |
@@ -206,10 +210,10 @@ ORDER BY (entity_type, canonical_name_normalized)
 ```
 
 The `(entity_type, canonical_name_normalized)` tuple is the entity's
-logical primary key — `entity_id` is `uuid5(canonical_name_normalized
-|| entity_type)` for LLM-extracted entries, and STIX-bootstrapped
-entries get distinct normalized names by virtue of distinct STIX
-content. ReplacingMergeTree dedup by this tuple matches the semantic
+logical primary key — `entity_id` is
+`uuid5(NS_ENTITY, f"{entity_type}::{canonical_name_normalized}")` for
+LLM-extracted entries, and STIX-bootstrapped entries get distinct
+normalized names by virtue of distinct STIX content. ReplacingMergeTree dedup by this tuple matches the semantic
 invariant ("one canonical entity per type + normalized name") and
 makes Stage 1.5's lookup a direct primary-key match without an
 auxiliary projection.
@@ -221,19 +225,19 @@ JOIN; ORDER BY doesn't affect hash JOIN performance. So the
 reordering is a free win for Stage 1.5 with no impact on the
 downstream graph-path JOINs.
 
-ANN index:
+ANN index (iris's DDL helper substitutes `<dim>` from
+`RAG_EMBEDDING_VECTOR_SIZE` before issuing — CH DDL doesn't expand env
+vars):
 ```sql
 ALTER TABLE kg_entities ADD INDEX repr_embedding_hnsw
 representative_embedding
-TYPE vector_similarity('hnsw', 'cosineDistance', ${RAG_EMBEDDING_VECTOR_SIZE})
+TYPE vector_similarity('hnsw', 'cosineDistance', <dim>)
 GRANULARITY 1
 ```
 
-The dimension reuses `RAG_EMBEDDING_VECTOR_SIZE` (phase-1 .rag_env)
-on the assumption that the mention-embedding model is the same as
-the chunk-embedding model (v1 default). If an operator picks a
-different mention-embedding model (see Open Question 1), add a
-separate `RAG_MENTION_EMBEDDING_VECTOR_SIZE` and use that here.
+If the mention-embedding model differs from the chunk-embedding
+model (see Open Question 1), introduce a separate
+`RAG_MENTION_EMBEDDING_VECTOR_SIZE` and use it here.
 
 ### `kg_entity_aliases_mv` — alias → entity lookup (materialized view)
 
@@ -293,7 +297,7 @@ primary-key-style scan instead of a full-table read.
 
 | Column | Type |
 |---|---|
-| `edge_id` | `UUID` (`uuid5` of `source_entity_id::relation_type::target_entity_id`) |
+| `edge_id` | `UUID` — `uuid5(NS_EDGE, f"{source_entity_id}::{relation_type}::{target_entity_id}")` (`NS_EDGE` defined in Phase 1's UUID-derivation section). |
 | `source_entity_id` / `target_entity_id` | `UUID` |
 | `relation_type` | `LowCardinality(String)` |
 | `evidence_chunks` | `Array(UUID)` (chunk_id type is unified across the schema) |
@@ -443,7 +447,7 @@ Captures 60–80% of direct mentions cheaply.
    Do NOT create a new canonical.
 3. Multiple matches → defer to Stage 3.
 4. No match → create new canonical in Stage 2 / 5 with `entity_id =
-   uuid5(NS, f"{canonical_name_normalized}::{entity_type}")`.
+   uuid5(NS_ENTITY, f"{entity_type}::{canonical_name_normalized}")`.
 
 This is what lets LLM-extracted mentions ("T1059", "Mimikatz", "APT29")
 from later corpus ingests resolve into the STIX-sourced canonicals
@@ -541,8 +545,9 @@ references via a JSON field: `unresolved_references: [{span, hint}]`.
      ```
    - For each non-null answer above the cutoff:
      - Synthesize a `kg_mentions_raw` row. `mention_id` is derived as
-       `uuid5(NS, f"{chunk_id}::coref::{entity_id}::{resolution_version}")`
-       (not the span-based form, since synthetic mentions have no
+       `uuid5(chunk_id, f"coref::{entity_id}::{resolution_version}")`
+       (chunk_id as namespace, like direct mentions; the name encodes
+       coref-specific disambiguation since synthetic mentions have no
        span).
      - `mention_kind = 'coreference_cross_doc'`, `auth_id` from the
        chunk, `name_surface` = the referring expression text.

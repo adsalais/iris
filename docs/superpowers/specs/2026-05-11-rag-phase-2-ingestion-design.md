@@ -171,8 +171,8 @@ Every chunk receives:
 
 | Field | Source |
 |---|---|
-| `doc_id` | `uuid5(NS, source_uri \|\| source_hash)` |
-| `chunk_id` | `uuid5(doc_id, ordinal \|\| content_hash)` |
+| `doc_id` | `uuid5(NS_DOC, f"{source_uri}::{source_hash}")` — see Phase 1 "UUID derivation" for the namespace definition. |
+| `chunk_id` | `uuid5(doc_id, f"{ordinal}::{content_hash}")` — `doc_id` itself is the namespace; chunks are naturally parented to their document. |
 | `auth_id` | from stage 1, **unchanged** |
 | `tlp` | from `source_metadata['tlp']` if supplied; else `'clear'` |
 | `source_uri` | from stage 1 |
@@ -346,12 +346,20 @@ silent authorization bug waiting to happen.
 | `error_message` | `String` |
 | `failed_at` | `DateTime` |
 
-Engine for both:
+Engines, per table:
+
 ```sql
+-- ingest_runs
 ENGINE = MergeTree
-PARTITION BY toYYYYMM(started_at)   -- failed_at for ingest_failures
+PARTITION BY toYYYYMM(started_at)
 ORDER BY (run_id, source_uri)
-TTL <date-column> + INTERVAL 365 DAY DELETE
+TTL started_at + INTERVAL 365 DAY DELETE
+
+-- ingest_failures
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(failed_at)
+ORDER BY (run_id, source_uri)
+TTL failed_at + INTERVAL 365 DAY DELETE
 ```
 
 Audit retention is operator-tunable but 365 days is the safe default —

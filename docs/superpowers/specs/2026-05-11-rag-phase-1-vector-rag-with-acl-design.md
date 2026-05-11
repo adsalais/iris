@@ -49,19 +49,59 @@ Out of scope:
 Three ClickHouse objects per RAG dataset, all colocated in one CH
 database (e.g. `rag_docs`).
 
+### UUID derivation (used across all four phases)
+
+All deterministic IDs use Python's `uuid.uuid5(namespace, name)` so
+re-ingestion produces identical IDs. Three fixed deployment-scoped
+namespaces are defined once at deployment and **never rotated**
+(rotation invalidates every derived ID in the system):
+
+- `NS_DOC` — namespace for `doc_id`s.
+- `NS_ENTITY` — namespace for canonical entity IDs (LLM-extracted;
+  STIX-native UUIDs bypass this).
+- `NS_EDGE` — namespace for canonical edge IDs.
+
+All other IDs are derived hierarchically using the parent ID as the
+namespace:
+
+| ID | Formula |
+|---|---|
+| `doc_id` | `uuid5(NS_DOC, <doc_identifier_string>)` |
+| `chunk_id` | `uuid5(doc_id, <chunk_identifier_string>)` |
+| `mention_id` | `uuid5(chunk_id, <mention_identifier_string>)` |
+| `relation_id` | `uuid5(chunk_id, <relation_identifier_string>)` |
+| `entity_id` | `uuid5(NS_ENTITY, f"{entity_type}::{canonical_name_normalized}")` for LLM-extracted; the STIX-native UUID for Phase-4-bootstrapped entries. |
+| `edge_id` | `uuid5(NS_EDGE, f"{source_entity_id}::{relation_type}::{target_entity_id}")` |
+
+The hierarchical pattern (parent ID as namespace) is intentional:
+chunks are naturally parented to their document, mentions to their
+chunk, etc. The ID derivation encodes that parent relationship
+without extra named namespaces.
+
 ### `rag_embeddings` — one row per chunk
 
 | Column | Type | Notes |
 |---|---|---|
-| `doc_id` | `UUID` | Parent document. Many chunks share. Used for grouping / display, **not** for auth. |
-| `chunk_id` | `UUID` | `uuid5(NS_CHUNK, f"{doc_id}::{content_hash}")` — `content_hash = sha256(chunk_text)`. Phase 2 extends to `uuid5(NS_CHUNK, f"{doc_id}::{ordinal}::{content_hash}")` so two chunks with identical content but different positions stay distinct; Phase 1 has no ordinal because there's no automated chunking yet. Phase-4 STIX-derived chunks also use `uuid5` (`uuid5(NS_CHUNK, f"stix:{stix_id}:description")`), so this column is uniformly `UUID` — no mixing with non-UUID strings. `NS_CHUNK` is fixed once at deployment and never rotated. |
+| `doc_id` | `UUID` | Parent document. Many chunks share. Used for grouping / display, **not** for auth. `uuid5(NS_DOC, <doc_identifier>)`. Phase-2 ingest uses `<doc_identifier> = source_uri \|\| source_hash`; Phase-4 STIX bootstrap uses `<doc_identifier> = "stix:" + stix_source` (one doc_id per bundle). |
+| `chunk_id` | `UUID` | `uuid5(doc_id, <chunk_identifier>)` — **`doc_id` itself is the namespace**, so chunks are naturally parented to their document in the ID derivation. `<chunk_identifier>` is `content_hash` (Phase 1 manual loads), `f"{ordinal}::{content_hash}"` (Phase 2 pipeline), `f"stix:{stix_id}:description"` (Phase 4 STIX SDO chunks), or `f"stix:{stix_relationship_id}"` (Phase 4 STIX SRO logical chunk_ids). |
 | `auth_id` | `String` | Authorization key. References `rag_acl.auth_id`. |
 | `tlp` | `Enum8('clear' = 1, 'green' = 2, 'amber' = 3, 'amber_strict' = 4, 'red' = 5)` DEFAULT `'clear'` | Informational TLP marker for analyst awareness. **Not used for authorization.** UI surfaces it next to retrieved chunks so analysts know dissemination constraints when sharing. |
 | `embedding` | `Array(Float32)` | Vector. Has an HNSW ANN index — see "Vector indexes" below. |
 | `content` | `String` | Chunk text. |
 | `source_uri` | `String` | Original document URI. |
+| `page` | `Nullable(UInt32)` | PDF page number (Phase 2 populates from Docling); `NULL` for manual Phase-1 loads and non-paginated formats. |
+| `section_path` | `Array(String)` | Heading chain; Phase 2 populates from the parser's element list. Empty array if unavailable. |
+| `language` | `LowCardinality(Nullable(String))` | Detected via langid/fasttext in Phase 2; `NULL` for manual Phase-1 loads. |
+| `mime_type` | `LowCardinality(Nullable(String))` | Sniffed in Phase 2; `NULL` for manual loads. |
+| `content_hash` | `FixedString(64)` | `sha256(content)` hex. Used by Phase 2 dedup and as input to `chunk_id`. |
 | `ingested_at` | `DateTime` | Wall-clock UTC. |
-| … | | Loader-specific metadata (page, section, language, etc.). |
+| `pipeline_version` | `LowCardinality(String) DEFAULT 'manual'` | Phase-1 manual loads use `'manual'`; Phase 2 overrides. |
+
+All schema columns are declared from Phase 1 so the SOURCES prompt
+block (which references `section_path[0]`, `page`, `tlp`) renders
+cleanly on day one. Phase-1 manual loaders may leave the
+Nullable / Array-default fields empty; Phase 2 populates them.
+This avoids a Phase-1→Phase-2 schema migration.
 
 Engine:
 ```sql
@@ -78,14 +118,18 @@ many times per granule) and accelerates `redocument(doc_id)` deletes.
 
 ### Vector index on `embedding`
 
+ClickHouse DDL doesn't expand environment variables. Iris's DDL
+helper reads `RAG_EMBEDDING_VECTOR_SIZE` at table-creation time and
+substitutes the integer into the DDL string before sending it to CH:
+
 ```sql
+-- iris's helper formats this from RAG_EMBEDDING_VECTOR_SIZE
 ALTER TABLE rag_embeddings ADD INDEX embedding_hnsw embedding
-TYPE vector_similarity('hnsw', 'cosineDistance', ${RAG_EMBEDDING_VECTOR_SIZE})
+TYPE vector_similarity('hnsw', 'cosineDistance', <dim>)
 GRANULARITY 1
 ```
 
-The dimension is read from `RAG_EMBEDDING_VECTOR_SIZE` in `.rag_env`
-at table-creation time. Common values: 768 (BGE-base), 1024
+For a `text-embedding-3-large` deployment, `<dim>` becomes `3072`. Common values: 768 (BGE-base), 1024
 (Voyage-3, Cohere-v3), 1536 (OpenAI `text-embedding-3-small`), 3072
 (OpenAI `text-embedding-3-large`). The index lets ANN queries (`ORDER
 BY cosineDistance(embedding, $q) LIMIT k`) prune granules instead of

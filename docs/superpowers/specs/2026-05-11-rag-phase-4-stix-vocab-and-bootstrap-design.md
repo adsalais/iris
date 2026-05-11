@@ -295,7 +295,7 @@ Critical STIX properties land in `properties_merged` on the entity:
 
 STIX-sourced entities use the **STIX-native UUID** (parsed out of the
 `<type>--<uuid>` form) as their `entity_id`. This bypasses the
-`uuid5(NS, canonical_name||entity_type)` scheme used for LLM-extracted
+`uuid5(NS_ENTITY, f"{entity_type}::{canonical_name_normalized}")` scheme used for LLM-extracted
 entities.
 
 Rationale:
@@ -306,7 +306,7 @@ Rationale:
   into STIX-sourced canonicals via phase-3's Stage 1.5 lookup.
 
 **Edge IDs** continue to use
-`uuid5(NS, source_entity_id || relation_type || target_entity_id)` —
+`uuid5(NS_EDGE, f"{source_entity_id}::{relation_type}::{target_entity_id}")` —
 STIX SROs have their own UUIDs but those change when MITRE re-issues
 the same relationship; we don't want edge identity to flap.
 
@@ -351,7 +351,7 @@ phases).
 | Column | Value |
 |---|---|
 | `doc_id` | `uuid5(NS_DOC, f"stix:{stix_source}")` (e.g. for `"stix:mitre-cti"`). UUID type, uniform with phase-1 rag_embeddings. |
-| `chunk_id` | `uuid5(NS_CHUNK, f"stix:{stix_id}:description")`. UUID type, uniform with phase-1 rag_embeddings. The original `stix:<stix_id>:description` string lives in the `source_uri` column for traceability. |
+| `chunk_id` | `uuid5(doc_id, f"stix:{stix_id}:description")` — `doc_id` is the namespace, per Phase 1's UUID derivation. UUID type, uniform with phase-1 rag_embeddings. The original `stix:<stix_id>:description` string lives in the `source_uri` column for traceability. |
 | `auth_id` | operator-supplied (per-bundle / per-object) |
 | `tlp` | parsed from `object_marking_refs`, else `'clear'`. Informational. |
 | `embedding` | computed by the loader |
@@ -362,7 +362,7 @@ the chunk above:
 
 | Column | Value |
 |---|---|
-| `mention_id` | `uuid5(NS, f"{chunk_id}::stix")` |
+| `mention_id` | `uuid5(chunk_id, "stix")` — `chunk_id` is the namespace, per Phase 1's UUID derivation. The synthetic mention has no span, so the name is a fixed marker. |
 | `chunk_id` | matches the chunk (UUID, derived above) |
 | `doc_id` | matches the chunk (UUID) |
 | `auth_id` | matches the chunk |
@@ -408,8 +408,8 @@ For each STIX SRO (relationship):
 
 | Column | Value |
 |---|---|
-| `relation_id` | `uuid5(NS, f"{stix_relationship_id}")` |
-| `chunk_id` | `uuid5(NS_CHUNK, f"stix:{stix_relationship_id}")` — UUID (no `rag_embeddings` row backs it; it's a logical anchor). The synthesis stage filters these out because they never appear in `authorized_chunk_ids` (which comes from row-policied `rag_embeddings` reads). |
+| `relation_id` | `uuid5(chunk_id, stix_relationship_id)` — `chunk_id` is the namespace (the logical SRO chunk_id derived below), per Phase 1's UUID derivation. |
+| `chunk_id` | `uuid5(doc_id, f"stix:{stix_relationship_id}")` — `doc_id` is the namespace. UUID (no `rag_embeddings` row backs it; it's a logical anchor). The synthesis stage filters these out because they never appear in `authorized_chunk_ids` (which comes from row-policied `rag_embeddings` reads). |
 | `auth_id` | resolved by the precedence rules below |
 | `source_mention_id` / `target_mention_id` | synthetic mentions of the SRO's endpoints |
 | `relation_type` | per the relation mapping |
