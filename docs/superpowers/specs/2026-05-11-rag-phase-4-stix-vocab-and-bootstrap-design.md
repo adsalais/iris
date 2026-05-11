@@ -294,27 +294,37 @@ Falls are logged so the operator can extend the mapping.
 
 ### Property preservation
 
-STIX identifiers go into `kg_entities.external_ids` (keyed by namespace);
-other STIX metadata goes into `kg_entities.properties_merged`.
+Everything STIX-specific lands in `kg_entities.metadata` (JSON-encoded
+string column). The connector emits a single JSON-object payload per
+SDO:
 
-**Into `external_ids`** (one Map, one bloom-filter index, generic
-across all connectors):
+```json
+{
+  "mitre_attack": "T1059.001",
+  "cve": null,
+  "capec": null,
+  "cwe": null,
+  "stix": "attack-pattern--abc...",
+  "kill_chain_phases": ["execution"],
+  "stix_revoked": false,
+  "stix_source": "mitre-cti",
+  "stix_source_version": "15.1"
+}
+```
 
-- `mitre_attack`: e.g. `"T1059.001"` — from
-  `external_references[*].external_id` where `source_name == "mitre-attack"`.
-- `cve`: e.g. `"CVE-2024-1234"` — from CVE external references.
-- `capec`: e.g. `"CAPEC-242"` — from corresponding external references.
-- `cwe`: e.g. `"CWE-78"` — from corresponding external references.
-- `stix`: the original STIX object id (e.g. `"attack-pattern--abc..."`)
-  for traceability back to the source bundle.
-
-**Into `properties_merged`** (non-identifier metadata):
-
-- `kill_chain_phases` — denormalized list.
-- `stix_revoked` — bool (default `false`); flipped to `true` on
+- **Identifier keys** (`mitre_attack`, `cve`, `capec`, `cwe`, `stix`)
+  pulled from `external_references[*].external_id` matched by
+  `source_name` (or directly from `sdo.id` for `stix`).
+- **`kill_chain_phases`** — denormalized list from the SDO.
+- **`stix_revoked`** — `false` initially; flipped to `true` on
   refresh when a newer bundle marks the object revoked. The synthesis
-  path filters `stix_revoked = "true"` by default.
-- `stix_source`, `stix_source_version` — bundle provenance.
+  path filters out revoked entries by default via
+  `JSONExtractBool(metadata, 'stix_revoked')`.
+- **`stix_source`, `stix_source_version`** — bundle provenance.
+
+Operators with their own connectors pick any JSON keys they need
+(`{"jira": "PROJ-123"}`, `{"message_id": "<...>"}`, etc.) — no schema
+change.
 
 ## ID-assignment policy
 
@@ -385,18 +395,16 @@ AcquiredDocument(
             entity_type = <per the mapping table>,
             name_surface = sdo.name,
             aliases = sdo.get("aliases", []),
-            # identifiers -> external_ids on kg_entities (resolver routes them)
-            external_ids = {
+            # All non-graph data in one JSON-shaped dict ->
+            # kg_entities.metadata (JSON-encoded string column)
+            metadata = {
                 "mitre_attack": <from external_references>,  # optional
                 "cve": <from external_references>,           # optional
                 "capec": <from external_references>,         # optional
                 "cwe": <from external_references>,           # optional
                 "stix": sdo.id,
-            },
-            # non-identifier metadata -> properties_merged
-            properties = {
-                "kill_chain_phases": ...,
-                "stix_revoked": str(sdo.get("revoked", False)),
+                "kill_chain_phases": sdo.get("kill_chain_phases", []),
+                "stix_revoked": sdo.get("revoked", False),
                 "stix_source": "mitre-cti",
                 "stix_source_version": "15.1",
             },
@@ -469,10 +477,11 @@ On a new MITRE-CTI release (or any bundle refresh):
 2. Updated SDOs (same `stix_id`, new content) overwrite the previous
    `kg_entities` / `kg_alias_map` rows via ReplacingMergeTree's
    `resolution_version` semantics.
-3. SDOs marked `revoked: true`: the connector sets `stix_revoked =
-   "true"` in the mention's `properties`; the resolution job
-   propagates that to `kg_entities.properties_merged`. The synthesis
-   path filters revoked entries by default.
+3. SDOs marked `revoked: true`: the connector sets
+   `metadata["stix_revoked"] = true`; the resolution job propagates
+   that into the merged `kg_entities.metadata` JSON blob. The
+   synthesis path filters revoked entries by default via
+   `JSONExtractBool(metadata, 'stix_revoked')`.
 4. Operator runs the phase-3 resolution job to refresh `kg_edges`.
 
 Recommended cadence: run the connector monthly (or on MITRE release),

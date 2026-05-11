@@ -142,16 +142,14 @@ class PreExtractedMention:
     entity_type: str
     name_surface: str
     aliases: list[str]
-    # External identifiers, keyed by namespace (e.g. "mitre_attack",
-    # "cve", "jira", "message_id"). Routed to kg_entities.external_ids
-    # by the resolver; indexed by bloom_filter for fast point-lookup.
-    external_ids: dict[str, str] = field(default_factory=dict)
-    # Non-identifier free-form metadata. Routed to
-    # kg_entities.properties_merged.
-    properties: dict[str, str] = field(default_factory=dict)
+    # All non-graph entity data: external identifiers, source
+    # provenance, status flags. JSON-serialized into
+    # kg_entities.metadata by the resolver. No fixed schema -- pick
+    # any keys the application needs.
+    metadata: dict[str, object] = field(default_factory=dict)
     # If the connector knows the canonical entity already (e.g., STIX
-    # provides a stable per-object UUID), populate this. Otherwise NULL
-    # and the resolver does Stage 1.5 lookup.
+    # provides a stable per-object UUID), populate this. Otherwise
+    # NULL and the resolver does Stage 1.5 lookup.
     canonical_entity_id: str | None = None
 
 @dataclass(frozen=True)
