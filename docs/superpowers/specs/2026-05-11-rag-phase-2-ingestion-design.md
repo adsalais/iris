@@ -143,9 +143,10 @@ class PreExtractedMention:
     name_surface: str
     aliases: list[str]
     # All non-graph entity data: external identifiers, source
-    # provenance, status flags. JSON-serialized into
-    # kg_entities.metadata by the resolver. No fixed schema -- pick
-    # any keys the application needs.
+    # provenance, status flags. Written as a JSON object into
+    # kg_entities.metadata (CH native JSON type). No fixed schema --
+    # pick any keys the application needs; CH infers new paths
+    # automatically.
     metadata: dict[str, object] = field(default_factory=dict)
     # If the connector knows the canonical entity already (e.g., STIX
     # provides a stable per-object UUID), populate this. Otherwise

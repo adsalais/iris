@@ -294,9 +294,9 @@ Falls are logged so the operator can extend the mapping.
 
 ### Property preservation
 
-Everything STIX-specific lands in `kg_entities.metadata` (JSON-encoded
-string column). The connector emits a single JSON-object payload per
-SDO:
+Everything STIX-specific lands in `kg_entities.metadata` (ClickHouse
+native `JSON` column). The connector emits a single JSON-object
+payload per SDO:
 
 ```json
 {
@@ -312,19 +312,21 @@ SDO:
 }
 ```
 
+CH parses this into per-path subcolumns automatically.
+
 - **Identifier keys** (`mitre_attack`, `cve`, `capec`, `cwe`, `stix`)
   pulled from `external_references[*].external_id` matched by
   `source_name` (or directly from `sdo.id` for `stix`).
 - **`kill_chain_phases`** — denormalized list from the SDO.
 - **`stix_revoked`** — `false` initially; flipped to `true` on
   refresh when a newer bundle marks the object revoked. The synthesis
-  path filters out revoked entries by default via
-  `JSONExtractBool(metadata, 'stix_revoked')`.
+  path filters out revoked entries via direct path access:
+  `WHERE metadata.stix_revoked = false`.
 - **`stix_source`, `stix_source_version`** — bundle provenance.
 
 Operators with their own connectors pick any JSON keys they need
-(`{"jira": "PROJ-123"}`, `{"message_id": "<...>"}`, etc.) — no schema
-change.
+(`{"jira": "PROJ-123"}`, `{"message_id": "<...>"}`, etc.) — CH
+infers new paths automatically, no schema migration.
 
 ## ID-assignment policy
 
@@ -396,7 +398,8 @@ AcquiredDocument(
             name_surface = sdo.name,
             aliases = sdo.get("aliases", []),
             # All non-graph data in one JSON-shaped dict ->
-            # kg_entities.metadata (JSON-encoded string column)
+            # kg_entities.metadata (CH native JSON column;
+            # per-path subcolumn storage, dot-access at read time)
             metadata = {
                 "mitre_attack": <from external_references>,  # optional
                 "cve": <from external_references>,           # optional
@@ -479,9 +482,10 @@ On a new MITRE-CTI release (or any bundle refresh):
    `resolution_version` semantics.
 3. SDOs marked `revoked: true`: the connector sets
    `metadata["stix_revoked"] = true`; the resolution job propagates
-   that into the merged `kg_entities.metadata` JSON blob. The
+   that into the merged `kg_entities.metadata` JSON object. The
    synthesis path filters revoked entries by default via
-   `JSONExtractBool(metadata, 'stix_revoked')`.
+   `WHERE metadata.stix_revoked = false` (CH native JSON path
+   access).
 4. Operator runs the phase-3 resolution job to refresh `kg_edges`.
 
 Recommended cadence: run the connector monthly (or on MITRE release),

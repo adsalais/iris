@@ -198,7 +198,7 @@ Same refresh semantics as `kg_mentions_raw`.
 | `canonical_name` | `String` |
 | `canonical_name_normalized` | `String` | Normalized form (the input to `entity_id`'s uuid5). Stored explicitly so Stage 1.5 can do a primary-key lookup on the table's ORDER BY tuple `(entity_type, canonical_name_normalized)` instead of recomputing per query. |
 | `aliases` | `Array(String)` |
-| `metadata` | `String` (JSON-encoded) — single generic blob for all non-graph entity data: external identifiers, source provenance, status flags, anything connector-specific. Read primarily by the application layer at synthesis time (rare manual SELECT on this column); operators don't routinely filter by its contents. Examples: STIX connector writes `{"mitre_attack": "T1059", "cve": null, "stix": "attack-pattern--abc", "stix_revoked": false, "kill_chain_phases": [...]}`. JIRA connector writes `{"jira": "PROJ-123", "status": "open"}`. Email connector writes `{"message_id": "<...>", "thread_id": "..."}`. No schema migration when a new connector starts emitting new keys. |
+| `metadata` | `JSON` (ClickHouse native JSON type, CH 24.8+; enable via `SET allow_experimental_json_type = 1` until it stabilizes) — single generic blob for all non-graph entity data: external identifiers, source provenance, status flags, anything connector-specific. Native JSON gives per-path subcolumn storage and direct dot-access (`metadata.stix_revoked`, `metadata.mitre_attack`) without `JSONExtract` calls. Examples: STIX connector writes `{"mitre_attack": "T1059", "cve": null, "stix": "attack-pattern--abc", "stix_revoked": false, "kill_chain_phases": [...]}`. JIRA connector writes `{"jira": "PROJ-123", "status": "open"}`. Email connector writes `{"message_id": "<...>", "thread_id": "..."}`. No schema migration when a new connector starts emitting new keys — CH infers new paths automatically. |
 | `representative_embedding` | `Array(Float32)` — centroid of contributing direct-mention `mention_embedding`s, computed at Stage 5. Used by Stage 2's pre-existing-canonical lookup AND by the graph-path query's question-entity matching. For STIX-bootstrapped entities with one synthetic mention, the centroid equals that single mention's embedding. HNSW ANN index. |
 | `auth_ids` | `Array(String)` — union over contributing mentions. ANY-match policy. |
 | `normalization_rules_hash` | `LowCardinality(String)` — hash of the normalization rules used to compute this entity's `canonical_name`. Lets drift be detected: when the rules-hash changes, the operator knows entity_ids must be re-derived. |
@@ -241,13 +241,20 @@ If the mention-embedding model differs from the chunk-embedding
 model (see Open Question 1), introduce a separate
 `RAG_MENTION_EMBEDDING_VECTOR_SIZE` and use it here.
 
-The `metadata` column has **no index** by design. Queries that need
-to filter by JSON contents (e.g., `JSONExtractBool(metadata,
-'stix_revoked') = true`) full-scan the surviving granules after the
-ANN / primary-key prefilter. That's acceptable because the
-manual-SELECT-on-metadata workload is rare; the synthesis stage's hot
-path reads `metadata` per-row only for chunks already narrowed by
-the row-policied retrieval.
+The `metadata` column relies on **CH's native JSON subcolumn
+storage** — each JSON path (`metadata.mitre_attack`,
+`metadata.stix_revoked`, etc.) is physically stored as its own
+subcolumn with appropriate compression, and direct path access
+(`WHERE metadata.stix_revoked = false`) reads only that subcolumn
+rather than parsing the whole JSON blob. No explicit data-skipping
+index is needed: subcolumn access is already efficient at granule
+level for the workload (synthesis reads `metadata` per-row on
+already-narrowed retrievals; manual table-wide filters on JSON
+contents are rare).
+
+The same path syntax works in INSERTs (CH parses the literal JSON
+object into subcolumns automatically) and SELECTs (`metadata.foo`,
+`metadata.foo.:String`, `metadata.foo.:Bool`, etc. for typed access).
 
 ### `kg_entity_aliases_mv` — alias → entity lookup (materialized view)
 
@@ -552,10 +559,12 @@ the resolved target. The resolver writes `kg_alias_map` rows with
 
 1. Build `kg_entities` by aggregating per `entity_id`:
    - merge `aliases` (`groupUniqArray`),
-   - merge `metadata` — JSON-object merge across contributing
-     mentions, last-write-wins per top-level key. Conflicts on stable
-     identifier keys (`mitre_attack`, `cve`, etc.) are logged as
-     upstream data inconsistency.
+   - merge `metadata` — Stage 5 builds the merged JSON object
+     client-side (last-write-wins per top-level key, picked by
+     `extracted_at`) and INSERTs the resulting literal as the
+     `metadata` value. CH parses it into subcolumns automatically.
+     Conflicts on stable identifier keys (`mitre_attack`, `cve`,
+     etc.) are logged as upstream data inconsistency.
    - pick the most frequent surface form (among direct mentions
      only) as `canonical_name`,
    - **compute `representative_embedding` as the L2-normalized
