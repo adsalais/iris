@@ -350,8 +350,8 @@ phases).
 
 | Column | Value |
 |---|---|
-| `doc_id` | `f"stix:{stix_source}"` (e.g. `"stix:mitre-cti"`) |
-| `chunk_id` | `f"stix:{stix_id}:description"` |
+| `doc_id` | `uuid5(NS_DOC, f"stix:{stix_source}")` (e.g. for `"stix:mitre-cti"`). UUID type, uniform with phase-1 rag_embeddings. |
+| `chunk_id` | `uuid5(NS_CHUNK, f"stix:{stix_id}:description")`. UUID type, uniform with phase-1 rag_embeddings. The original `stix:<stix_id>:description` string lives in the `source_uri` column for traceability. |
 | `auth_id` | operator-supplied (per-bundle / per-object) |
 | `tlp` | parsed from `object_marking_refs`, else `'clear'`. Informational. |
 | `embedding` | computed by the loader |
@@ -363,7 +363,9 @@ the chunk above:
 | Column | Value |
 |---|---|
 | `mention_id` | `uuid5(NS, f"{chunk_id}::stix")` |
-| `chunk_id` / `doc_id` / `auth_id` | matches the chunk |
+| `chunk_id` | matches the chunk (UUID, derived above) |
+| `doc_id` | matches the chunk (UUID) |
+| `auth_id` | matches the chunk |
 | `entity_type` | per the mapping table |
 | `name_surface` | SDO's `name` |
 | `aliases` | SDO's `aliases` list |
@@ -380,9 +382,15 @@ the chunk above:
 | `entity_id` | the STIX-native UUID |
 | `entity_type` | per the mapping table |
 | `canonical_name` | SDO's `name` |
+| `canonical_name_normalized` | normalize(`canonical_name`) using iris's active normalization rules |
 | `aliases` | SDO's `aliases` |
-| `properties_merged` | the property set |
+| `mitre_attack_id` | parsed from `external_references` where `source_name == "mitre-attack"`; else `NULL` |
+| `cve_id` | parsed from `external_references` where `source_name == "cve"`; else `NULL` |
+| `stix_id` | the original STIX object id (string, e.g. `"attack-pattern--abc..."`) |
+| `properties_merged` | remaining keys (`capec_id`, `cwe_id`, `kill_chain_phases`, `stix_revoked`, `stix_source`, `stix_source_version`, etc.) — the hoisted columns above are NOT duplicated here |
+| `representative_embedding` | equals the single synthetic mention's `mention_embedding` (the centroid of one element) |
 | `auth_ids` | `[auth_id]` (singleton; resolution may extend later) |
+| `normalization_rules_hash` | hash of the active normalization-rules config used to compute `canonical_name_normalized` |
 | `resolution_version` | loader's stamp |
 
 **4. One row in `kg_alias_map`**:
@@ -401,7 +409,7 @@ For each STIX SRO (relationship):
 | Column | Value |
 |---|---|
 | `relation_id` | `uuid5(NS, f"{stix_relationship_id}")` |
-| `chunk_id` | `f"stix:{stix_relationship_id}"` (logical — no `rag_embeddings` row) |
+| `chunk_id` | `uuid5(NS_CHUNK, f"stix:{stix_relationship_id}")` — UUID (no `rag_embeddings` row backs it; it's a logical anchor). The synthesis stage filters these out because they never appear in `authorized_chunk_ids` (which comes from row-policied `rag_embeddings` reads). |
 | `auth_id` | resolved by the precedence rules below |
 | `source_mention_id` / `target_mention_id` | synthetic mentions of the SRO's endpoints |
 | `relation_type` | per the relation mapping |
@@ -477,12 +485,18 @@ A new CLI entry point: `uv run iris stix-bootstrap <bundle.json> [opts]`.
      a. Validate both endpoints exist; skip dangling refs with logging.
      b. Resolve auth_id (manifest or default).
      c. Insert kg_relations_raw row.
-6. Stamp kg_stix_bootstrap_runs (audit table; iris-provided):
+6. Stamp kg_stix_bootstrap_runs (audit table; iris-provided; same
+   TTL discipline as phase-2's ingest_runs):
    (bundle_name, bundle_version, loaded_at, sdo_count, sro_count,
     skipped_count, errors).
 7. Operator follow-up: run the phase-3 resolution job to materialise
    kg_edges.
 ```
+
+The `kg_stix_bootstrap_runs` table is a small `MergeTree PARTITION BY
+toYYYYMM(loaded_at) ORDER BY (loaded_at, bundle_name) TTL loaded_at +
+INTERVAL 365 DAY DELETE` — same retention shape as the phase-2 audit
+tables.
 
 **Idempotency.** Re-running on the same bundle produces the same row
 primary keys. `ReplacingMergeTree` on `kg_entities` / `kg_alias_map`

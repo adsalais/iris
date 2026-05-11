@@ -53,17 +53,45 @@ database (e.g. `rag_docs`).
 
 | Column | Type | Notes |
 |---|---|---|
-| `doc_id` | `String` | Parent document. Many chunks share. Used for grouping / display, **not** for auth. |
-| `chunk_id` | `String` | `uuid5(NS_CHUNK, f"{doc_id}::{content_hash}")` — `content_hash = sha256(chunk_text)`. Phase 2 extends to `uuid5(NS_CHUNK, f"{doc_id}::{ordinal}::{content_hash}")` so two chunks with identical content but different positions stay distinct; Phase 1 has no ordinal because there's no automated chunking yet. `NS_CHUNK` is fixed once at deployment and never rotated. |
+| `doc_id` | `UUID` | Parent document. Many chunks share. Used for grouping / display, **not** for auth. |
+| `chunk_id` | `UUID` | `uuid5(NS_CHUNK, f"{doc_id}::{content_hash}")` — `content_hash = sha256(chunk_text)`. Phase 2 extends to `uuid5(NS_CHUNK, f"{doc_id}::{ordinal}::{content_hash}")` so two chunks with identical content but different positions stay distinct; Phase 1 has no ordinal because there's no automated chunking yet. Phase-4 STIX-derived chunks also use `uuid5` (`uuid5(NS_CHUNK, f"stix:{stix_id}:description")`), so this column is uniformly `UUID` — no mixing with non-UUID strings. `NS_CHUNK` is fixed once at deployment and never rotated. |
 | `auth_id` | `String` | Authorization key. References `rag_acl.auth_id`. |
 | `tlp` | `Enum8('clear' = 1, 'green' = 2, 'amber' = 3, 'amber_strict' = 4, 'red' = 5)` DEFAULT `'clear'` | Informational TLP marker for analyst awareness. **Not used for authorization.** UI surfaces it next to retrieved chunks so analysts know dissemination constraints when sharing. |
-| `embedding` | `Array(Float32)` | Vector. Optional ANN index (HNSW). |
+| `embedding` | `Array(Float32)` | Vector. Has an HNSW ANN index — see "Vector indexes" below. |
 | `content` | `String` | Chunk text. |
 | `source_uri` | `String` | Original document URI. |
 | `ingested_at` | `DateTime` | Wall-clock UTC. |
 | … | | Loader-specific metadata (page, section, language, etc.). |
 
-Engine: `MergeTree ORDER BY (doc_id, chunk_id)`.
+Engine:
+```sql
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(ingested_at)
+ORDER BY (doc_id, chunk_id)
+```
+
+Partitioning by ingest-month makes retention drops cheap (`ALTER TABLE
+DROP PARTITION`) and gives query pruning for time-bounded analyst
+queries. ORDER BY `(doc_id, chunk_id)` clusters chunks of the same
+document together — both compresses better (UUID prefix gets repeated
+many times per granule) and accelerates `redocument(doc_id)` deletes.
+
+### Vector index on `embedding`
+
+```sql
+ALTER TABLE rag_embeddings ADD INDEX embedding_hnsw embedding
+TYPE vector_similarity('hnsw', 'cosineDistance', <dim>)
+GRANULARITY 1
+```
+
+`<dim>` matches the embedding model's output (e.g., 1536 for OpenAI
+`text-embedding-3-large`). The index lets ANN queries (`ORDER BY
+cosineDistance(embedding, $q) LIMIT k`) prune granules instead of
+scanning. Falls back to brute force if disabled or unavailable in
+the CH version. ClickHouse's vector-similarity index is in active
+development; pin the CH version supported by ops and document a
+fallback path (`SETTINGS allow_experimental_vector_similarity_index = 1`
+where required).
 
 **`tlp` is metadata, not access control.** Authorization is enforced
 exclusively by `auth_id` + `rag_acl` + the row policy. Operators may

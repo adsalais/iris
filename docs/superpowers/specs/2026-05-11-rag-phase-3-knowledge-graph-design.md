@@ -122,40 +122,61 @@ Five tables, colocated with phase-1's `rag_embeddings`.
 | Column | Type | Notes |
 |---|---|---|
 | `mention_id` | `UUID` | `uuid5(NS, f"{chunk_id}::{span_start}::{span_end}")`. |
-| `chunk_id` | `String` | Joins to `rag_embeddings`. |
-| `doc_id` | `String` | Copied for convenience. |
+| `chunk_id` | `UUID` | Joins to `rag_embeddings`. (Unified `UUID` type — STIX-derived chunk_ids are also `uuid5(NS_CHUNK, f"stix:{stix_id}:description")` so the column is never a non-UUID string.) |
+| `doc_id` | `UUID` | Copied for convenience. |
 | `auth_id` | `String` | Inherited from the source chunk. Gates row visibility. |
 | `entity_type` | `LowCardinality(String)` | From the schema. |
 | `name_surface` | `String` | Verbatim surface form (or referring expression for coreference). |
 | `aliases` | `Array(String)` | Other surface forms. |
 | `mention_kind` | `Enum8('direct' = 1, 'coreference_in_doc' = 2, 'coreference_cross_doc' = 3)` | |
 | `properties` | `Map(String, String)` | Free-form. |
-| `mention_embedding` | `Array(Float32)` | Embedding of `name + type + context`. |
+| `mention_embedding` | `Array(Float32)` | Embedding of `name + type + context`. HNSW ANN index for Stage 2 nearest-neighbour lookups. |
 | `extractor_version` / `prompt_version` | `LowCardinality(String)` | |
 | `extracted_at` | `DateTime` | |
 
-Engine: `ReplacingMergeTree(extracted_at) ORDER BY (chunk_id, mention_id)`.
-Re-running extraction over the same chunk (e.g. STIX bundle refresh
-with updated SDO content, or LLM extractor with a new
-`prompt_version`) keeps the newest row by `extracted_at`. Read via a
-view that applies `FINAL`. The trade-off: we lose strict
-"every extraction is preserved forever" — for that, archive
-`extractor_version`-tagged snapshots externally before each
-re-extraction run.
+Engine:
+```sql
+ENGINE = ReplacingMergeTree(extracted_at)
+PARTITION BY toYYYYMM(extracted_at)
+ORDER BY (chunk_id, mention_id)
+```
+
+Re-running extraction over the same chunk (STIX bundle refresh,
+new `prompt_version`) keeps the newest row by `extracted_at`. Read
+via a view that applies `FINAL`. ANN index:
+
+```sql
+ALTER TABLE kg_mentions_raw ADD INDEX mention_embedding_hnsw
+mention_embedding
+TYPE vector_similarity('hnsw', 'cosineDistance', <dim>)
+GRANULARITY 1
+```
+
+The mention-embedding model may differ from the chunk-embedding
+model (see Open Question 1); the index dimension follows whichever is
+configured for mentions.
 
 ### `kg_relations_raw` — extractor output, one row per relation
 
 | Column | Type |
 |---|---|
 | `relation_id` | `UUID` (`uuid5` of `chunk_id::source_mention_id::target_mention_id::relation_type`) |
-| `chunk_id` / `doc_id` / `auth_id` | `String` (inherited from source chunk) |
+| `chunk_id` | `UUID` (inherited; same unified type as `kg_mentions_raw.chunk_id`) |
+| `doc_id` | `UUID` |
+| `auth_id` | `String` |
 | `source_mention_id` / `target_mention_id` | `UUID` |
 | `relation_type` | `LowCardinality(String)` |
 | `evidence` | `String` (verbatim quote) |
 | `extractor_version` / `prompt_version` | `LowCardinality(String)` |
 | `extracted_at` | `DateTime` |
 
-Engine: `ReplacingMergeTree(extracted_at) ORDER BY (chunk_id, relation_id)`.
+Engine:
+```sql
+ENGINE = ReplacingMergeTree(extracted_at)
+PARTITION BY toYYYYMM(extracted_at)
+ORDER BY (chunk_id, relation_id)
+```
+
 Same refresh semantics as `kg_mentions_raw`.
 
 ### `kg_entities` — canonical entities after resolution
@@ -165,15 +186,63 @@ Same refresh semantics as `kg_mentions_raw`.
 | `entity_id` | `UUID` (`uuid5(NS, f"{canonical_name_normalized}::{entity_type}")` for LLM-extracted; STIX-native UUIDs for phase-4-bootstrapped entries) |
 | `entity_type` | `LowCardinality(String)` |
 | `canonical_name` | `String` |
+| `canonical_name_normalized` | `String` | Normalized form (the input to `entity_id`'s uuid5). Stored explicitly so Stage 1.5 lookups can use the `by_normalized_name` projection instead of recomputing per query. |
 | `aliases` | `Array(String)` |
-| `properties_merged` | `Map(String, String)` |
-| `representative_embedding` | `Array(Float32)` — centroid of contributing direct-mention `mention_embedding`s, computed at Stage 5. Used by Stage 2's pre-existing-canonical lookup AND by the graph-path query's question-entity matching. For STIX-bootstrapped entities with one synthetic mention, the centroid equals that single mention's embedding. |
+| `mitre_attack_id` | `LowCardinality(Nullable(String))` — hoisted from `properties_merged` for DFIR analyst lookups (`T1059.001`, etc.). Direct point-query target. |
+| `cve_id` | `LowCardinality(Nullable(String))` — hoisted; same rationale (`CVE-2024-1234`). |
+| `stix_id` | `Nullable(String)` — hoisted; for traceability back to the source STIX object on bootstrapped entities. |
+| `properties_merged` | `Map(String, String)` — remaining free-form properties; hot keys live in their own columns above. |
+| `representative_embedding` | `Array(Float32)` — centroid of contributing direct-mention `mention_embedding`s, computed at Stage 5. Used by Stage 2's pre-existing-canonical lookup AND by the graph-path query's question-entity matching. For STIX-bootstrapped entities with one synthetic mention, the centroid equals that single mention's embedding. HNSW ANN index. |
 | `auth_ids` | `Array(String)` — union over contributing mentions. ANY-match policy. |
 | `normalization_rules_hash` | `LowCardinality(String)` — hash of the normalization rules used to compute this entity's `canonical_name`. Lets drift be detected: when the rules-hash changes, the operator knows entity_ids must be re-derived. |
 | `resolution_version` | `LowCardinality(String)` |
 | `first_seen` / `last_seen` | `DateTime` |
 
-Engine: `ReplacingMergeTree(resolution_version) ORDER BY entity_id`.
+Engine:
+```sql
+ENGINE = ReplacingMergeTree(resolution_version)
+ORDER BY entity_id
+-- projection for Stage 1.5 fast lookup by normalized name
+PROJECTION by_normalized_name (
+    SELECT entity_id, entity_type, canonical_name_normalized,
+           canonical_name, aliases, representative_embedding,
+           mitre_attack_id, cve_id, stix_id, auth_ids
+    ORDER BY (entity_type, canonical_name_normalized)
+)
+```
+
+ANN index:
+```sql
+ALTER TABLE kg_entities ADD INDEX repr_embedding_hnsw
+representative_embedding
+TYPE vector_similarity('hnsw', 'cosineDistance', <dim>)
+GRANULARITY 1
+```
+
+### `kg_entity_aliases_mv` — alias → entity lookup (materialized view)
+
+Stage 1.5's "OR `normalized_name` appears in `aliases`" clause cannot
+use the `by_normalized_name` projection because aliases is an Array.
+A small materialized view unnests the array and indexes by it:
+
+```sql
+CREATE MATERIALIZED VIEW kg_entity_aliases_mv
+ENGINE = MergeTree
+ORDER BY (entity_type, alias_normalized)
+POPULATE
+AS SELECT
+    entity_id,
+    entity_type,
+    arrayJoin(aliases) AS alias_raw,
+    <normalize_fn>(alias_raw) AS alias_normalized,
+    auth_ids
+FROM kg_entities
+```
+
+`<normalize_fn>` applies the same normalization as `canonical_name_normalized`.
+Stage 1.5's alias-match path becomes a point lookup. The MV carries
+`auth_ids` so the same ANY-match row-policy expression as `kg_entities`
+applies.
 
 ### `kg_alias_map` — mention → canonical entity
 
@@ -186,7 +255,22 @@ Engine: `ReplacingMergeTree(resolution_version) ORDER BY entity_id`.
 | `confidence` | `Float32` |
 | `resolution_version` | `LowCardinality(String)` |
 
-Engine: `ReplacingMergeTree(resolution_version) ORDER BY mention_id`.
+Engine:
+```sql
+ENGINE = ReplacingMergeTree(resolution_version)
+ORDER BY mention_id
+-- projection for graph-path entity -> mentions traversal
+PROJECTION by_entity (
+    SELECT mention_id, entity_id, auth_id, resolution_method,
+           confidence, resolution_version
+    ORDER BY (entity_id, mention_id)
+)
+```
+
+The primary ORDER BY (`mention_id`) is the natural dedup key — one
+canonical resolution per mention. The `by_entity` projection makes the
+graph-path query (*"for entities X, give me their mentions"*) a
+primary-key-style scan instead of a full-table read.
 
 ### `kg_edges` — canonical edges, derived
 
@@ -195,12 +279,31 @@ Engine: `ReplacingMergeTree(resolution_version) ORDER BY mention_id`.
 | `edge_id` | `UUID` (`uuid5` of `source_entity_id::relation_type::target_entity_id`) |
 | `source_entity_id` / `target_entity_id` | `UUID` |
 | `relation_type` | `LowCardinality(String)` |
-| `evidence_chunks` | `Array(String)` |
+| `evidence_chunks` | `Array(UUID)` (chunk_id type is unified across the schema) |
 | `auth_ids` | `Array(String)` — union over contributing relations. ANY-match policy. |
 | `support_count` | `UInt32` |
 | `resolution_version` | `LowCardinality(String)` |
 
-Engine: `ReplacingMergeTree(resolution_version) ORDER BY edge_id`.
+Engine:
+```sql
+ENGINE = ReplacingMergeTree(resolution_version)
+ORDER BY (source_entity_id, relation_type, target_entity_id)
+-- inverse-traversal projection: incoming-edges-for-target queries
+PROJECTION by_target (
+    SELECT source_entity_id, target_entity_id, relation_type,
+           evidence_chunks, auth_ids, support_count, edge_id
+    ORDER BY (target_entity_id, relation_type, source_entity_id)
+)
+```
+
+Primary ORDER BY `(source_entity_id, relation_type, target_entity_id)`
+makes the dominant graph-traversal query (*"outgoing edges from these
+entities"* — `WHERE source_entity_id IN (...)`) a primary-key scan.
+The tuple is unique (it's what `edge_id` is derived from), so
+ReplacingMergeTree dedup semantics are preserved without a separate
+`edge_id` dedup key. The `by_target` projection covers the inverse
+*"incoming edges to entity X"* pattern (e.g. *"who cited this paper?"*,
+*"what TTPs target this asset?"*).
 
 ### Row policies on KG tables
 

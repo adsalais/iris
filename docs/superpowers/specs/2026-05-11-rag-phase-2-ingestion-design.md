@@ -346,7 +346,17 @@ silent authorization bug waiting to happen.
 | `error_message` | `String` |
 | `failed_at` | `DateTime` |
 
-Engine: `MergeTree ORDER BY (run_id, source_uri)`.
+Engine for both:
+```sql
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(started_at)   -- failed_at for ingest_failures
+ORDER BY (run_id, source_uri)
+TTL <date-column> + INTERVAL 365 DAY DELETE
+```
+
+Audit retention is operator-tunable but 365 days is the safe default —
+long enough to debug last quarter's incidents, short enough that the
+audit tables don't dominate storage.
 
 ## Concrete dependency list
 
