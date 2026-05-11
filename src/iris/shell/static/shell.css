@@ -18,10 +18,18 @@ body.nav-collapsed .iris-chev-collapse { display: inline; }
 /* Preview tab (single-click temporary): italic title until user interacts. */
 .tab-temp { font-style: italic; }
 
-/* Left panel */
+/* Left panel — flex column so the user element pins to the bottom. */
 .iris-left-panel {
   border-right: 1px solid #ddd;
   padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+}
+.iris-nav-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
 }
 .iris-top-buttons {
@@ -29,6 +37,10 @@ body.nav-collapsed .iris-chev-collapse { display: inline; }
   gap: 0.25rem;
   padding-bottom: 0.5rem;
   border-bottom: 1px solid #eee;
+  flex: 0 0 auto;
+}
+body.nav-collapsed .iris-top-buttons {
+  flex-direction: column;
 }
 .iris-top-btn {
   background: none;
@@ -37,6 +49,35 @@ body.nav-collapsed .iris-chev-collapse { display: inline; }
   cursor: pointer;
   padding: 0.25rem 0.5rem;
 }
+
+/* Bottom user element — pinned to the bottom of the left panel. */
+.iris-bottom-user {
+  flex: 0 0 auto;
+  padding-top: 0.5rem;
+  border-top: 1px solid #eee;
+}
+.iris-user-btn {
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0.35rem 0.5rem;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: left;
+}
+.iris-user-btn:hover { background: #f4f4f4; }
+.iris-user-icon { flex: 0 0 auto; }
+.iris-user-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.nav-collapsed .iris-user-name { display: none; }
+body.nav-collapsed .iris-user-btn { justify-content: center; padding: 0.35rem 0; }
 .iris-nav { padding-top: 0.5rem; }
 .iris-nav-group { margin-bottom: 1rem; }
 .iris-nav-group-label {
@@ -96,9 +137,9 @@ body.nav-collapsed .iris-nav-badge {
 .iris-tab-close:hover { opacity: 1; }
 .iris-tab-content { position: relative; overflow-y: auto; padding: 1rem; }
 
-/* Account popover */
+/* Account popover — anchored above the bottom user element. */
 .iris-account-popover {
-  position: fixed; top: 1rem; left: 4rem;
+  position: fixed; bottom: 4rem; left: 0.5rem;
   background: #fff; border: 1px solid #ddd; border-radius: 4px;
   padding: 0.75rem; box-shadow: 0 4px 12px rgba(0,0,0,0.1);
   z-index: 100;
