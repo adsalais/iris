@@ -294,16 +294,26 @@ Falls are logged so the operator can extend the mapping.
 
 ### Property preservation
 
-Critical STIX properties land in `properties_merged` on the entity:
+STIX identifiers go into `kg_entities.external_ids` (keyed by namespace);
+other STIX metadata goes into `kg_entities.properties_merged`.
 
-- `mitre_attack_id` (e.g. `T1059.001`) — from
+**Into `external_ids`** (one Map, one bloom-filter index, generic
+across all connectors):
+
+- `mitre_attack`: e.g. `"T1059.001"` — from
   `external_references[*].external_id` where `source_name == "mitre-attack"`.
-- `cve_id` — from CVE external references.
-- `capec_id`, `cwe_id` — from corresponding external references.
+- `cve`: e.g. `"CVE-2024-1234"` — from CVE external references.
+- `capec`: e.g. `"CAPEC-242"` — from corresponding external references.
+- `cwe`: e.g. `"CWE-78"` — from corresponding external references.
+- `stix`: the original STIX object id (e.g. `"attack-pattern--abc..."`)
+  for traceability back to the source bundle.
+
+**Into `properties_merged`** (non-identifier metadata):
+
 - `kill_chain_phases` — denormalized list.
-- `stix_id` — original STIX object id, for traceability.
 - `stix_revoked` — bool (default `false`); flipped to `true` on
-  refresh when a newer bundle marks the object revoked.
+  refresh when a newer bundle marks the object revoked. The synthesis
+  path filters `stix_revoked = "true"` by default.
 - `stix_source`, `stix_source_version` — bundle provenance.
 
 ## ID-assignment policy
@@ -375,11 +385,16 @@ AcquiredDocument(
             entity_type = <per the mapping table>,
             name_surface = sdo.name,
             aliases = sdo.get("aliases", []),
-            properties = {  # hot keys hoisted to kg_entities columns later
-                "mitre_attack_id": <from external_references>,
-                "cve_id": <from external_references>,
-                "stix_id": sdo.id,
-                "capec_id": ..., "cwe_id": ...,
+            # identifiers -> external_ids on kg_entities (resolver routes them)
+            external_ids = {
+                "mitre_attack": <from external_references>,  # optional
+                "cve": <from external_references>,           # optional
+                "capec": <from external_references>,         # optional
+                "cwe": <from external_references>,           # optional
+                "stix": sdo.id,
+            },
+            # non-identifier metadata -> properties_merged
+            properties = {
                 "kill_chain_phases": ...,
                 "stix_revoked": str(sdo.get("revoked", False)),
                 "stix_source": "mitre-cti",

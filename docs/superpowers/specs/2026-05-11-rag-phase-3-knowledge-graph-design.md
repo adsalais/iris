@@ -198,10 +198,8 @@ Same refresh semantics as `kg_mentions_raw`.
 | `canonical_name` | `String` |
 | `canonical_name_normalized` | `String` | Normalized form (the input to `entity_id`'s uuid5). Stored explicitly so Stage 1.5 can do a primary-key lookup on the table's ORDER BY tuple `(entity_type, canonical_name_normalized)` instead of recomputing per query. |
 | `aliases` | `Array(String)` |
-| `mitre_attack_id` | `LowCardinality(Nullable(String))` — hoisted external-ID column; populated by the phase-4 STIX connector for `AttackPattern` entities. Optional for other corpora. |
-| `cve_id` | `LowCardinality(Nullable(String))` — hoisted external-ID column; populated by the phase-4 STIX connector for `Vulnerability` entities. |
-| `stix_id` | `Nullable(String)` — STIX-object provenance; populated by the phase-4 STIX connector. |
-| `properties_merged` | `Map(String, String)` — free-form properties for everything else. Operators with their own structured-data connectors can hoist additional well-known keys to dedicated columns by extending this table (e.g., `email_message_id`, `jira_ticket_id`, `confluence_page_id`). The three above are pre-defined because phase 4 ships with them. |
+| `external_ids` | `Map(LowCardinality(String), String)` — external identifiers keyed by namespace. The phase-4 STIX connector writes `{"mitre_attack": ..., "cve": ..., "stix": ..., "capec": ..., "cwe": ...}`. A JIRA connector would write `{"jira": "PROJ-123"}`. An email connector `{"message_id": "<...@example.com>"}`. Indexed by `bloom_filter` on `mapValues` for fast point-lookup by ID value (e.g. `WHERE external_ids['mitre_attack'] = 'T1059'`). Generic across domains; no schema change needed for new connectors. |
+| `properties_merged` | `Map(String, String)` — free-form non-identifier properties (e.g., `stix_revoked`, `kill_chain_phases`, source-version stamps). Operators add additional connector-specific keys here as needed. |
 | `representative_embedding` | `Array(Float32)` — centroid of contributing direct-mention `mention_embedding`s, computed at Stage 5. Used by Stage 2's pre-existing-canonical lookup AND by the graph-path query's question-entity matching. For STIX-bootstrapped entities with one synthetic mention, the centroid equals that single mention's embedding. HNSW ANN index. |
 | `auth_ids` | `Array(String)` — union over contributing mentions. ANY-match policy. |
 | `normalization_rules_hash` | `LowCardinality(String)` — hash of the normalization rules used to compute this entity's `canonical_name`. Lets drift be detected: when the rules-hash changes, the operator knows entity_ids must be re-derived. |
@@ -230,15 +228,28 @@ JOIN; ORDER BY doesn't affect hash JOIN performance. So the
 reordering is a free win for Stage 1.5 with no impact on the
 downstream graph-path JOINs.
 
-ANN index (iris's DDL helper substitutes `<dim>` from
-`RAG_EMBEDDING_VECTOR_SIZE` before issuing — CH DDL doesn't expand env
-vars):
+Indexes:
+
 ```sql
+-- HNSW vector index (iris's DDL helper substitutes <dim> from
+-- RAG_EMBEDDING_VECTOR_SIZE before issuing -- CH DDL doesn't expand env vars):
 ALTER TABLE kg_entities ADD INDEX repr_embedding_hnsw
 representative_embedding
 TYPE vector_similarity('hnsw', 'cosineDistance', <dim>)
-GRANULARITY 1
+GRANULARITY 1;
+
+-- Bloom filter on external_ids values for fast point-lookup by ID:
+ALTER TABLE kg_entities ADD INDEX external_ids_bloom
+mapValues(external_ids)
+TYPE bloom_filter
+GRANULARITY 1;
 ```
+
+The bloom filter lets queries like
+`WHERE external_ids['mitre_attack'] = 'T1059'` prune granules that
+don't contain the value, so the per-row Map lookup runs only on
+surviving granules. Generic across all connector namespaces (no
+schema change needed when a new connector starts using a new key).
 
 If the mention-embedding model differs from the chunk-embedding
 model (see Open Question 1), introduce a separate
@@ -547,8 +558,10 @@ the resolved target. The resolver writes `kg_alias_map` rows with
 
 1. Build `kg_entities` by aggregating per `entity_id`:
    - merge `aliases` (`groupUniqArray`),
-   - merge `properties_merged` (last-write-wins per key, with
-     `stix_*` keys preserved verbatim from Stage 1.5 lookup),
+   - merge `external_ids` (last-write-wins per namespace key —
+     identifiers should be stable, conflicts indicate upstream data
+     inconsistency and are logged),
+   - merge `properties_merged` (last-write-wins per key),
    - pick the most frequent surface form (among direct mentions
      only) as `canonical_name`,
    - **compute `representative_embedding` as the L2-normalized
