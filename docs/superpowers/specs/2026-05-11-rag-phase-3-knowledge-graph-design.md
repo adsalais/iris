@@ -148,13 +148,14 @@ via a view that applies `FINAL`. ANN index:
 ```sql
 ALTER TABLE kg_mentions_raw ADD INDEX mention_embedding_hnsw
 mention_embedding
-TYPE vector_similarity('hnsw', 'cosineDistance', <dim>)
+TYPE vector_similarity('hnsw', 'cosineDistance', ${RAG_EMBEDDING_VECTOR_SIZE})
 GRANULARITY 1
 ```
 
-The mention-embedding model may differ from the chunk-embedding
-model (see Open Question 1); the index dimension follows whichever is
-configured for mentions.
+The dimension reuses `RAG_EMBEDDING_VECTOR_SIZE` on the assumption
+that mentions and chunks share an embedding model (v1 default). If
+the mention-embedding model differs (see Open Question 1), introduce
+a separate `RAG_MENTION_EMBEDDING_VECTOR_SIZE` and reference it here.
 
 ### `kg_relations_raw` — extractor output, one row per relation
 
@@ -186,7 +187,7 @@ Same refresh semantics as `kg_mentions_raw`.
 | `entity_id` | `UUID` (`uuid5(NS, f"{canonical_name_normalized}::{entity_type}")` for LLM-extracted; STIX-native UUIDs for phase-4-bootstrapped entries) |
 | `entity_type` | `LowCardinality(String)` |
 | `canonical_name` | `String` |
-| `canonical_name_normalized` | `String` | Normalized form (the input to `entity_id`'s uuid5). Stored explicitly so Stage 1.5 lookups can use the `by_normalized_name` projection instead of recomputing per query. |
+| `canonical_name_normalized` | `String` | Normalized form (the input to `entity_id`'s uuid5). Stored explicitly so Stage 1.5 can do a primary-key lookup on the table's ORDER BY tuple `(entity_type, canonical_name_normalized)` instead of recomputing per query. |
 | `aliases` | `Array(String)` |
 | `mitre_attack_id` | `LowCardinality(Nullable(String))` — hoisted from `properties_merged` for DFIR analyst lookups (`T1059.001`, etc.). Direct point-query target. |
 | `cve_id` | `LowCardinality(Nullable(String))` — hoisted; same rationale (`CVE-2024-1234`). |
@@ -201,29 +202,45 @@ Same refresh semantics as `kg_mentions_raw`.
 Engine:
 ```sql
 ENGINE = ReplacingMergeTree(resolution_version)
-ORDER BY entity_id
--- projection for Stage 1.5 fast lookup by normalized name
-PROJECTION by_normalized_name (
-    SELECT entity_id, entity_type, canonical_name_normalized,
-           canonical_name, aliases, representative_embedding,
-           mitre_attack_id, cve_id, stix_id, auth_ids
-    ORDER BY (entity_type, canonical_name_normalized)
-)
+ORDER BY (entity_type, canonical_name_normalized)
 ```
+
+The `(entity_type, canonical_name_normalized)` tuple is the entity's
+logical primary key — `entity_id` is `uuid5(canonical_name_normalized
+|| entity_type)` for LLM-extracted entries, and STIX-bootstrapped
+entries get distinct normalized names by virtue of distinct STIX
+content. ReplacingMergeTree dedup by this tuple matches the semantic
+invariant ("one canonical entity per type + normalized name") and
+makes Stage 1.5's lookup a direct primary-key match without an
+auxiliary projection.
+
+Direct point-lookups by `entity_id` (`WHERE entity_id = ?`) scan, but
+all entity_id access in practice is JOIN-shaped (`kg_alias_map ⨝
+kg_entities`, `kg_edges ⨝ kg_entities`) which CH executes as a hash
+JOIN; ORDER BY doesn't affect hash JOIN performance. So the
+reordering is a free win for Stage 1.5 with no impact on the
+downstream graph-path JOINs.
 
 ANN index:
 ```sql
 ALTER TABLE kg_entities ADD INDEX repr_embedding_hnsw
 representative_embedding
-TYPE vector_similarity('hnsw', 'cosineDistance', <dim>)
+TYPE vector_similarity('hnsw', 'cosineDistance', ${RAG_EMBEDDING_VECTOR_SIZE})
 GRANULARITY 1
 ```
+
+The dimension reuses `RAG_EMBEDDING_VECTOR_SIZE` (phase-1 .rag_env)
+on the assumption that the mention-embedding model is the same as
+the chunk-embedding model (v1 default). If an operator picks a
+different mention-embedding model (see Open Question 1), add a
+separate `RAG_MENTION_EMBEDDING_VECTOR_SIZE` and use that here.
 
 ### `kg_entity_aliases_mv` — alias → entity lookup (materialized view)
 
 Stage 1.5's "OR `normalized_name` appears in `aliases`" clause cannot
-use the `by_normalized_name` projection because aliases is an Array.
-A small materialized view unnests the array and indexes by it:
+use the main table's `(entity_type, canonical_name_normalized)`
+primary key because aliases is an Array. A small materialized view
+unnests the array and indexes by it:
 
 ```sql
 CREATE MATERIALIZED VIEW kg_entity_aliases_mv

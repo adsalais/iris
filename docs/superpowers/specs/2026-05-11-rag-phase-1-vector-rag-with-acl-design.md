@@ -80,18 +80,27 @@ many times per granule) and accelerates `redocument(doc_id)` deletes.
 
 ```sql
 ALTER TABLE rag_embeddings ADD INDEX embedding_hnsw embedding
-TYPE vector_similarity('hnsw', 'cosineDistance', <dim>)
+TYPE vector_similarity('hnsw', 'cosineDistance', ${RAG_EMBEDDING_VECTOR_SIZE})
 GRANULARITY 1
 ```
 
-`<dim>` matches the embedding model's output (e.g., 1536 for OpenAI
-`text-embedding-3-large`). The index lets ANN queries (`ORDER BY
-cosineDistance(embedding, $q) LIMIT k`) prune granules instead of
+The dimension is read from `RAG_EMBEDDING_VECTOR_SIZE` in `.rag_env`
+at table-creation time. Common values: 768 (BGE-base), 1024
+(Voyage-3, Cohere-v3), 1536 (OpenAI `text-embedding-3-small`), 3072
+(OpenAI `text-embedding-3-large`). The index lets ANN queries (`ORDER
+BY cosineDistance(embedding, $q) LIMIT k`) prune granules instead of
 scanning. Falls back to brute force if disabled or unavailable in
 the CH version. ClickHouse's vector-similarity index is in active
 development; pin the CH version supported by ops and document a
 fallback path (`SETTINGS allow_experimental_vector_similarity_index = 1`
 where required).
+
+**Changing the embedding model post-deployment** requires re-embedding
+every chunk AND rebuilding the index with a new dimension. Iris's
+DDL helper refuses to ALTER the dimension on an existing table; the
+migration path is "create rag_embeddings_v2 with the new
+RAG_EMBEDDING_VECTOR_SIZE, re-embed into it, atomically swap via a
+view". Out of v1 scope but flagged here so the constraint is visible.
 
 **`tlp` is metadata, not access control.** Authorization is enforced
 exclusively by `auth_id` + `rag_acl` + the row policy. Operators may
@@ -336,6 +345,7 @@ file lookup, exactly the same pattern as iris's existing
 RAG_EMBEDDING_URL=https://api.openai.com/v1
 RAG_EMBEDDING_MODEL=text-embedding-3-large
 RAG_EMBEDDING_API_KEY=sk-...
+RAG_EMBEDDING_VECTOR_SIZE=3072   # 768 BGE / 1024 Voyage / 1536 OAI-small / 3072 OAI-large
 
 # --- Synthesis LLM (OpenAI-compatible /v1/chat/completions) ---
 RAG_LLM_URL=https://api.openai.com/v1
@@ -413,7 +423,7 @@ Required vars (must all be present for tests to run):
 - `CLICKHOUSE_HOST` — iris's standard CH var, **not** a RAG-specific
   one (other `CLICKHOUSE_*` vars get sensible defaults; the same set
   iris uses everywhere else).
-- `RAG_EMBEDDING_URL`, `RAG_EMBEDDING_MODEL`, `RAG_EMBEDDING_API_KEY`.
+- `RAG_EMBEDDING_URL`, `RAG_EMBEDDING_MODEL`, `RAG_EMBEDDING_API_KEY`, `RAG_EMBEDDING_VECTOR_SIZE`. The vector size is needed at table-creation time (the HNSW index dimension is fixed once the table exists); changing the model later requires re-embedding + a new table.
 - `RAG_LLM_URL`, `RAG_LLM_MODEL`, `RAG_LLM_API_KEY`.
 
 Reranker vars (`RAG_RERANKER_URL`, `RAG_RERANKER_MODEL`,
