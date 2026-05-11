@@ -67,7 +67,7 @@ namespace:
 |---|---|
 | `doc_id` | `uuid5(NS_DOC, <doc_identifier_string>)` |
 | `chunk_id` | `uuid5(doc_id, <chunk_identifier_string>)` |
-| `mention_id` | `uuid5(chunk_id, <mention_identifier_string>)` |
+| `mention_id` | `uuid5(chunk_id, <mention_identifier_string>)`. `<mention_identifier_string>` is `f"{span_start}::{span_end}"` for Phase-3 LLM-extracted mentions, `"stix:synthetic"` for the single synthetic mention emitted per Phase-4 STIX SDO chunk, and `f"coref::{entity_id}"` for Phase-3 cross-document coreference mentions (no `resolution_version` — re-runs of the coref pass must produce identical mention_ids so `ReplacingMergeTree` can collapse them). |
 | `relation_id` | `uuid5(chunk_id, <relation_identifier_string>)` |
 | `entity_id` | `uuid5(NS_ENTITY, f"{entity_type}::{canonical_name_normalized}")` for LLM-extracted; the STIX-native UUID for Phase-4-bootstrapped entries. |
 | `edge_id` | `uuid5(NS_EDGE, f"{source_entity_id}::{relation_type}::{target_entity_id}")` |
@@ -169,36 +169,105 @@ out in operator runbooks.
   worst-case revocation lag.
 - Dict miss returns `[]` ⇒ deny. Deny-by-default.
 
-### Row policy on `rag_embeddings`
+### Row policies on `rag_embeddings`
 
-Attached to **the user-facing tier roles only** — `*_USER` and `*_GRP`.
-Admin tiers (`*_DBADMIN`, `*_DBWRITER`, `*_DBREADER`) are not in the
-policy's `TO …` list and remain unrestricted at the table level, which
-is how iris admin paths read across all rows.
+**N policies, one per user-facing tier role.** Iris installs one
+PERMISSIVE policy per `<username>_USER` and `<group>_GRP` role, each
+attached to exactly that role. ClickHouse OR-merges PERMISSIVE policies
+across the roles a user holds, so a user sees a row when at least one
+of their roles' policies matches — equivalent to "user's roles ∩
+`allowed_roles[auth_id]` non-empty."
+
+For role `R`, the per-role policy is:
 
 ```sql
-USING arrayExists(r -> has(
+CREATE ROW POLICY IF NOT EXISTS <generated_name>
+ON rag_docs.rag_embeddings
+FOR SELECT USING has(
   dictGet('rag_docs.rag_acl_dict', 'allowed_roles', auth_id),
-  r
-), currentRoles())
+  'R'
+)
+TO R
 ```
 
-Plain English: "this row is visible iff at least one of the caller's
-current roles appears in the document's `allowed_roles`."
+Admin tiers (`*_DBADMIN`, `*_DBWRITER`, `*_DBREADER`) are not in the
+TO list of these per-role policies. Each `add_row_dict_policy` call
+additionally installs `USING 1` wildcard policies for
+`iris_global_admin` and `<database>_DBADMIN` (deterministic
+idempotent names), so admins continue to see every row.
 
-Iris already runs user queries through `query_as_user(...)` on a
-`DatabaseSession`, which sets `currentRoles()` to the user's tier roles.
-The policy expresses both "users granted DB access individually" and
-"anyone in group X" with the same machinery.
+Install via repeated `iris.clickhouse.policies.add_row_dict_policy(...)`
+calls — one call per user-facing role at RAG-database-enable time,
+with `role = value = <that_role>`.
 
-Install via `iris.clickhouse.policies.add_row_dict_policy(...)`.
+**Maintenance hooks.** The set of `*_USER` / `*_GRP` roles changes over
+time as users log in for the first time and as groups are provisioned.
+Iris hooks into the existing role-creation paths in
+`iris.clickhouse.users.provision_user` and `iris.clickhouse.grants`
+(`grant_tier_to_user`, `grant_tier_to_group`) so that, when a new
+user-facing role appears, iris detects every database that carries
+RAG tables and installs the per-role policies on each of those tables
+for the new role. Symmetric cleanup runs via `revoke_row_dict_policy`
+when a role is dropped everywhere it was held.
 
-### Required grants
+The bookkeeping cost (M tables × N roles policies per RAG database) is
+the trade-off for keeping each USING expression a single
+`has(dictGet(...))` call. CH optimizes that shape well; the alternative
+(`arrayExists(r -> has(...), currentRoles())` as a single policy)
+would collapse the policy count but is less ergonomic with the
+existing `add_row_dict_policy` helper.
 
-Every role attached to the policy needs `GRANT dictGet ON rag_docs.rag_acl_dict`.
-Without it CH raises `Code: 497` server-side and the policy fails closed
-— the user sees zero rows. Iris's create-database flow installs both
-the dict grant and the row policy.
+### Worker account
+
+Phase 2's ingestion worker and phase 3's extraction / resolution
+workers do **not** run as iris-managed tier roles. They run under a
+**dedicated ClickHouse user account** the operator provisions out of
+band. Credentials live in `.rag_env`:
+
+```
+RAG_WORKER_USER=iris_rag_worker
+RAG_WORKER_PASSWORD=...
+```
+
+At RAG-database-enable time iris:
+
+1. Grants the worker `SELECT, INSERT, ALTER, DELETE` on every RAG-owned
+   table in the RAG database (phase 2 / phase 3 enumerate the tables).
+2. Grants the worker `SELECT` on `rag_acl` so it can validate
+   incoming `auth_id`s at intake.
+3. Installs a wildcard PERMISSIVE row policy on every row-policied
+   RAG table:
+
+   ```sql
+   CREATE ROW POLICY IF NOT EXISTS rag_<table>_worker_wildcard
+   ON rag_docs.<table>
+   FOR SELECT USING 1
+   TO <RAG_WORKER_USER>
+   ```
+
+The worker therefore reads/writes the whole RAG database regardless of
+`auth_id`. It connects to ClickHouse directly using its own
+credentials; it does not flow through iris's session machinery, and it
+does not need `dictGet ON rag_acl_dict` (the wildcard policy avoids
+dict lookup at row-access time).
+
+This separation is deliberate: workers must aggregate across every
+tenant's `auth_id`s to compute centroid embeddings, derive
+`kg_entities`, and run extraction over the entire corpus. Forcing
+them through `query_as_user` and `rag_acl` membership would couple
+worker visibility to dictionary refresh cadence (~1h) and put the
+operator on the hook for keeping the worker's group memberships in
+sync with every new `auth_id`.
+
+### Required grants on user-facing roles
+
+Every user-facing tier role attached to a per-role restrictive policy
+needs `GRANT dictGet ON rag_docs.rag_acl_dict`. Without it CH raises
+`Code: 497` server-side and the policy fails closed — the user sees
+zero rows. Iris's RAG-database-enable flow installs both the dict
+grant and the row policies for every existing user-facing role at
+install time and for newly-created roles via the maintenance hooks
+above. The worker user does **not** need this grant.
 
 ### Row policies apply to SELECTs only
 
@@ -335,7 +404,9 @@ A new `src/iris/features/rag/`:
   to that database, the session-resolver raises and the route
   returns 403 before `synthesize()` is reached.
 - `service.py` — `synthesize(session, question, *, vector_k=24, final_n=12)`;
-  runs on a `DatabaseSession` so `currentRoles()` is correct.
+  runs on a `DatabaseSession` whose `query_as_user` impersonates the
+  user against ClickHouse, so the user's tier roles are active and the
+  N per-role row policies on `rag_embeddings` apply correctly.
 - `templates/rag/answer.html` — Datastar template rendering answer +
   cited sources. Streaming is out of v1 (see Non-goals); the route
   returns the full JSON payload and the shell re-renders the answer
@@ -380,6 +451,22 @@ file lookup, exactly the same pattern as iris's existing
 # _VERIFY / _CA_CERT_PATH, per CLAUDE.md). The RAG feature picks the
 # CH database to use per-request via the route's `database` field;
 # there's no global RAG_CLICKHOUSE_DATABASE.
+
+# --- Worker account (dedicated CH user, NOT an iris-managed role) ---
+# Operator provisions this account out of band (CREATE USER ...).
+# Iris reads the credentials, grants table-level read/write on the
+# RAG database tables, and installs a wildcard row policy on every
+# row-policied RAG table so the worker sees all rows.
+RAG_WORKER_USER=iris_rag_worker
+RAG_WORKER_PASSWORD=...
+
+# --- Ingestion buffer cap (phase 2) ---
+# Hard cap on the number of rows in `rag_ingestion_buffer`. The API
+# ingest path checks the row count before accepting a new document
+# and returns 429 when at-or-above this number. Protects against
+# unbounded buffer growth when the embedding API is degraded or the
+# single ingestion worker is offline.
+RAG_INGESTION_BUFFER_MAX_ROWS=100000
 
 # --- Embedding model (OpenAI-compatible /v1/embeddings) ---
 RAG_EMBEDDING_URL=https://api.openai.com/v1
@@ -463,6 +550,12 @@ Required vars (must all be present for tests to run):
 - `CLICKHOUSE_HOST` — iris's standard CH var, **not** a RAG-specific
   one (other `CLICKHOUSE_*` vars get sensible defaults; the same set
   iris uses everywhere else).
+- `RAG_WORKER_USER`, `RAG_WORKER_PASSWORD` — dedicated worker CH
+  account (provisioned by the operator). Required even for phase-1
+  tests because iris's RAG-database-enable flow grants the wildcard
+  row policy + table grants to this account; without it, the
+  install path can't complete.
+- `RAG_INGESTION_BUFFER_MAX_ROWS` — defaults to `100000` if absent.
 - `RAG_EMBEDDING_URL`, `RAG_EMBEDDING_MODEL`, `RAG_EMBEDDING_API_KEY`, `RAG_EMBEDDING_VECTOR_SIZE`. The vector size is needed at table-creation time (the HNSW index dimension is fixed once the table exists); changing the model later requires re-embedding + a new table.
 - `RAG_LLM_URL`, `RAG_LLM_MODEL`, `RAG_LLM_API_KEY`.
 
@@ -491,11 +584,14 @@ is committed with placeholder values.
 | Concern | Owner |
 |---|---|
 | `rag_embeddings` / `rag_acl` / `rag_acl_dict` schema (DDL helpers) | Iris (extend Authorization feature's create-database flow) |
-| Attaching the row policy on `rag_embeddings` | Iris |
-| Granting `dictGet` on `rag_acl_dict` to each tier role | Iris |
+| Installing N per-role row policies on `rag_embeddings` (one per `*_USER` / `*_GRP`) | Iris |
+| Maintaining per-role policies as roles are created / dropped (hooks in `provision_user` / `grant_tier_to_*`) | Iris |
+| Installing the wildcard row policy + table grants for `RAG_WORKER_USER` | Iris |
+| Granting `dictGet` on `rag_acl_dict` to each user-facing tier role | Iris |
 | Synthesis service + route + audit | Iris |
 | `.rag_env` parsing + test fixture | Iris |
 | Provisioning the CH database itself | Operator |
+| **Provisioning the worker CH account** (`CREATE USER ...`; credentials in `.rag_env`) | Operator |
 | Populating `rag_acl` rows | Operator |
 | Inserting chunks into `rag_embeddings` (phase 1: manual; phase 2: pipeline) | Operator |
 | Choosing embedding / LLM / reranker endpoint URLs, model names, and API keys | Operator (via `.rag_env`) |

@@ -20,8 +20,8 @@ service.
 **Two stages decouple intake from embedding.** The operator submits
 a document; the intake stage parses, chunks, and writes the chunks to
 a buffer table (`rag_ingestion_buffer`) — fast and synchronous; the
-operator's call returns once the chunks are buffered. A separate
-async worker pool reads from the buffer, runs the slow stages
+operator's call returns once the chunks are buffered. A **single
+async worker process** reads from the buffer, runs the slow stages
 (embed, store in `rag_embeddings`, KG handoff), then **deletes the
 processed rows from the buffer** via ClickHouse's lightweight delete.
 
@@ -32,6 +32,18 @@ time, and an outage of that service blocks all uploads. With the
 buffer, intake survives embedding-service outages — documents queue
 up and the worker drains the buffer when the service is healthy
 again.
+
+Why one worker (not a pool): a single-writer model removes claim
+races on the buffer table outright. ClickHouse is not a queue and
+its `ALTER TABLE UPDATE` mutations are not transactional locks;
+implementing a correct multi-writer claim protocol on top of CH
+would require either an external coordinator (Postgres advisory
+lock, Consul session) or accepting that two workers occasionally
+do the same work. Throughput is bounded by the embedding API
+rate-limit and batch parallelism *within* the worker, not by the
+worker count — the embedding API call is the bottleneck, and a
+single worker batching 16–64 chunks per request saturates that
+without contention.
 
 Builds on phase-1's `rag_embeddings` schema. Also writes **extraction
 tasks** to `kg_extraction_queue` so the phase-3 extraction worker
@@ -94,16 +106,18 @@ Two stages, separated by `rag_ingestion_buffer`.
 
 ```
 ─── INTAKE (sync) ──────────────────────────────────────
+[ admit (buffer-cap check) ]
+            ↓
 [ acquire ] → [ detect ] → [ parse ] → [ clean ] → [ chunk ]
                                                        ↓
                               [ buffer-write ] ← [ enrich ]
                                        ↓
                             rag_ingestion_buffer
 
-─── PROCESSING (async worker) ──────────────────────────
+─── PROCESSING (single async worker) ───────────────────
               rag_ingestion_buffer
                        ↓
-              [ claim batch ]
+              [ select batch ]
                        ↓
               [ dedup ] → [ embed ] → [ store-rag_embeddings ]
                                                        ↓
@@ -112,14 +126,76 @@ Two stages, separated by `rag_ingestion_buffer`.
 
 Each stage is a function with typed inputs/outputs. Intake stages are
 synchronous on the operator's submit call — they finish in the time
-budget of "parse a doc + compute a few hashes". The processing
-stages run on a separate worker pool that pulls from the buffer.
+budget of "parse a doc + compute a few hashes". A **single ingestion
+worker process** drains the buffer; this constraint is operational
+(see "Worker concurrency model" below) and is what lets the buffer
+table get away without a multi-writer claim protocol.
 
 **Structured-data connectors short-circuit.** If the connector
 yielded `pre_extracted` + empty `raw_bytes` (e.g. a STIX SRO with no
 description), intake skips parse → clean → chunk and writes a single
 buffer row with `content` empty + `pre_extracted_json` populated. The
 worker likewise skips dedup → embed and goes straight to KG handoff.
+
+## Worker concurrency model
+
+**Exactly one ingestion worker process runs at any time, system-wide.**
+This is an operational constraint enforced by the operator's
+deployment (single Kubernetes Deployment with `replicas: 1` and a
+strict update strategy, a systemd unit with `Restart=on-failure`, or
+equivalent). Iris does not provide a distributed lock or leader
+election; "single worker" is the entire claim-collision-avoidance
+strategy.
+
+**Why this works.** The buffer table records pending chunks; the
+worker selects a batch, processes it, deletes the rows on success.
+With no concurrent writers there is no claim race. ALTER UPDATEs on
+the buffer (to increment `attempts` after a failure) happen one at a
+time and don't need lightweight-update semantics for correctness.
+
+**Failure mode: worker crash mid-batch.** Rows the worker had already
+embedded but not yet deleted remain in the buffer. The deterministic
+`chunk_id` derivation means a re-run produces an identical
+`rag_embeddings` row, so the duplicate insert is a no-op
+(`ReplacingMergeTree` on `extracted_at` collapses it, or — since
+`rag_embeddings` is plain `MergeTree` — the row exists once after the
+first run and once more after the second; an idempotent INSERT
+pattern in the worker, `INSERT ... SELECT WHERE NOT EXISTS`, avoids
+the duplicate). On restart the worker resumes from the head of the
+buffer.
+
+**Operational consequence: ingestion stalls when the worker is
+down.** Intake continues to buffer documents (subject to the
+back-pressure cap below), but no chunks become queryable until the
+worker is restarted. This is acceptable for the design's batch
+nature; deployments that need HA should run a hot/standby pair under
+external lease management (Kubernetes `leaderElection`, Consul
+session, Postgres advisory lock) and treat the lease holder as the
+"single worker" — but that is out of v1 scope.
+
+## Back-pressure on intake
+
+The intake API checks
+`SELECT count() FROM rag_ingestion_buffer` against
+`RAG_INGESTION_BUFFER_MAX_ROWS` (from `.rag_env`, default `100000`)
+before accepting any new document. If the buffer is at-or-above the
+cap, the API returns `HTTP 429 Too Many Requests` with a
+`Retry-After` header derived from a rolling-window estimate of the
+worker's drain rate (`buffer_depth / chunks_per_second_last_5_min`,
+clamped to `[30, 3600]` seconds; falls back to a fixed 5-minute
+suggestion when no recent throughput data is available).
+
+The count query is cheap (`count()` on a MergeTree without a WHERE
+hits the per-part counts) and runs once per ingest call. The cap is
+the only protection against unbounded buffer growth when the
+embedding API degrades or the single worker is offline — without it,
+intake will OOM the CH server before the operator notices.
+
+Filesystem / S3 / IMAP connectors that invoke ingest directly (not
+through the API) honor the same cap by querying it themselves before
+each batch. The connector's submit helper raises `BufferFullError`
+which the operator's scheduling layer interprets as "pause this
+batch, retry on the next tick."
 
 ## Intake (synchronous)
 
@@ -155,12 +231,26 @@ class PreExtractedMention:
 
 @dataclass(frozen=True)
 class PreExtractedRelation:
-    source_local_id: int  # refers to a local mention in this doc
-    target_local_id: int  # may also refer to a mention in ANOTHER doc
-                          # the same connector emitted -- the loader
-                          # resolves cross-doc local_ids by name.
+    """Endpoint references can be in-document (local_id) or cross-document
+    (mention_id, pre-resolved by the connector). Exactly one of
+    {source_local_id, source_mention_id} must be set; same for target.
+    Mixing per-endpoint is fine — e.g., a STIX SRO with no description
+    sets both endpoints' mention_id, while an LLM extractor uses
+    local_id for both."""
     relation_type: str
     evidence: str
+    # In-document references — integer keys into the same PreExtractedKG's
+    # `mentions` list. The loader resolves these to mention_ids after
+    # writing the mentions for this document.
+    source_local_id: int | None = None
+    target_local_id: int | None = None
+    # Cross-document references — fully-resolved mention_ids that the
+    # connector computed deterministically from another document the
+    # same run emitted. The loader uses these verbatim, bypassing
+    # local_id resolution. Used by phase-4 STIX SROs whose source/target
+    # mentions live in the SDO documents.
+    source_mention_id: str | None = None  # UUID
+    target_mention_id: str | None = None  # UUID
 
 @dataclass(frozen=True)
 class PreExtractedKG:
@@ -327,53 +417,63 @@ in `pre_extracted_json`. For documents with empty `raw_bytes`
 string; the processing worker recognizes this shape and skips the
 embed step.
 
-## Processing (async worker)
+## Processing (single async worker)
 
-These stages run on a separate worker pool, decoupled from the
-operator's submit call. Workers can be scaled independently of intake
-based on embedding-API throughput.
+These stages run in a single worker process, decoupled from the
+operator's submit call. The single-worker constraint (see "Worker
+concurrency model" above) is what lets the buffer table get away
+without a multi-writer claim protocol — there's no concurrent reader
+to race with.
 
-**Worker access model.** Same as the phase-3 workers — runs under
-`query_as_user(worker_session, ...)` with a regular iris user
-(`rag-ingest-worker`), NOT a tier admin. The worker's groups must be
-listed in `rag_acl.allowed_roles` for every `auth_id` it should
-process. Row policies apply normally; `GRANT INSERT` on
-`rag_embeddings` is granted explicitly to the worker.
+**Worker access model.** Runs as the dedicated ClickHouse user
+`<RAG_WORKER_USER>` configured in `.rag_env` (see phase-1 "Worker
+account"). The worker connects to ClickHouse directly with the
+`<RAG_WORKER_PASSWORD>` from `.rag_env`; it does **not** go through
+iris's `query_as_user` / session machinery, and it does **not** hold
+any iris-managed tier role.
 
-### 8. Claim batch
+Iris's RAG-database-enable path grants the worker
+`SELECT, INSERT, ALTER, DELETE` on every RAG table and installs a
+wildcard `USING 1` row policy on every row-policied RAG table
+(including `rag_ingestion_buffer` and `kg_extraction_queue`). The
+worker therefore reads/writes every row regardless of `auth_id` —
+necessary for cross-tenant centroid computation and KG aggregation,
+and consistent with phase 3's resolution workflow.
 
-The worker reads a batch of unclaimed rows from
-`rag_ingestion_buffer` and claims them atomically via a
-**ClickHouse lightweight update**:
+The worker reads `rag_acl` directly (operator-curated table; the
+worker has `SELECT rag_acl`) to validate incoming `auth_id`s at
+intake.
+
+### 8. Select batch
+
+The single worker selects a batch of pending rows from
+`rag_ingestion_buffer`:
 
 ```sql
--- 1. Read candidate task ids
-SELECT chunk_id
+SELECT *
 FROM rag_ingestion_buffer
-WHERE claimed_by IS NULL
-   OR claimed_at < now() - INTERVAL 10 MINUTE  -- re-claim stale
-ORDER BY buffered_at
-LIMIT 64
-SETTINGS apply_mutations_on_fly = 1
-
--- 2. Claim them
-ALTER TABLE rag_ingestion_buffer
-UPDATE claimed_by = '<worker_id>', claimed_at = now()
-WHERE chunk_id IN (...)
-  AND (claimed_by IS NULL OR claimed_at < now() - INTERVAL 10 MINUTE)
-SETTINGS materialize_ttl_after_modify = 0
+WHERE attempts < {max_attempts:UInt8}
+ORDER BY buffered_at, chunk_id
+LIMIT {batch_size:UInt32}
 ```
 
-The `UPDATE` is a **lightweight update** (CH 24.3+) — it writes the
-change to a separate part-level structure instead of rewriting the
-underlying part. Reads with `apply_mutations_on_fly = 1` see the
-updated values immediately. This is what makes a CH-backed buffer
-viable as a claim queue.
+No claim metadata, no atomic update, no stale-claim recovery — the
+single-worker constraint makes those unnecessary. `attempts` is
+incremented (via `ALTER TABLE … UPDATE attempts = attempts + 1`,
+plain mutation — order doesn't matter because no concurrent writer)
+only after a failed processing attempt, so the next iteration of the
+batch picks up the row again, with `attempts` reflecting the prior
+failure. After `max_attempts` (default 5) the worker writes the row
+into `ingest_failures` and lightweight-deletes it from the buffer.
 
-Stale-claim recovery (`claimed_at < now() - 10 minutes`) handles
-worker crashes: another worker re-claims the row and re-processes
-it. Re-processing is safe because chunk_ids are deterministic and the
-final INSERT into `rag_embeddings` produces an identical row.
+On worker restart, rows that were mid-process (embedded but not
+deleted) get re-selected; the deterministic `chunk_id` makes the
+re-INSERT into `rag_embeddings` produce an identical row, so the
+re-process is idempotent at the storage layer. The worker uses
+`INSERT INTO rag_embeddings SELECT ... FROM input WHERE NOT EXISTS
+(SELECT 1 FROM rag_embeddings WHERE chunk_id = input.chunk_id)` to
+short-circuit re-embedding on resume; the embedding API cost of a
+re-run is non-trivial.
 
 ### 9. Dedup
 
@@ -413,17 +513,26 @@ There are two branches:
 **Branch A — `pre_extracted` is set** (structured-data connector;
 e.g. phase-4 STIX). Write the KG rows synchronously:
 
-1. For each `PreExtractedMention`, compute `mention_id` (phase-1 UUID
-   derivation: `uuid5(chunk_id, <mention_identifier>)` for content-bearing
-   docs; the connector supplies a stable identifier for content-less
-   relation-only docs). Insert into `kg_mentions_raw` with the
-   document's `auth_id`.
+1. For each `PreExtractedMention`, compute `mention_id` per phase-1
+   UUID derivation: `uuid5(chunk_id, <mention_identifier>)`. The
+   `<mention_identifier>` value is connector-specific and must be
+   deterministic — phase-4 STIX SDOs pin it to `"stix:synthetic"`,
+   yielding one synthetic mention per SDO chunk. Insert into
+   `kg_mentions_raw` with the document's `auth_id`.
 2. If the mention carries `canonical_entity_id`, insert a
    `kg_alias_map` row tying the synthetic mention to the canonical
    directly (`resolution_method = 'exact'`, `confidence = 1.0`). If
    not, leave it to the next phase-3 resolution run.
-3. For each `PreExtractedRelation`, insert a `kg_relations_raw` row
-   referencing the resolved source/target `mention_id`s.
+3. For each `PreExtractedRelation`, resolve the source / target
+   mention_ids and insert into `kg_relations_raw`:
+   - If `source_local_id` is set: look up the corresponding mention
+     in the same `PreExtractedKG.mentions` list (by `local_id`),
+     compute its `mention_id`, use that as `source_mention_id`.
+   - If `source_mention_id` is set: use it verbatim (cross-doc
+     reference, fully resolved by the connector).
+   - Same logic for target. The connector guarantees exactly one of
+     `{local_id, mention_id}` per endpoint; the loader raises on
+     ambiguous input.
 4. **No extraction-queue task is enqueued.** Pre-extracted content
    bypasses the LLM extractor entirely.
 
@@ -433,7 +542,7 @@ connector). Enqueue extraction tasks, one per chunk just written:
 ```sql
 INSERT INTO kg_extraction_queue (
     task_id, chunk_id, doc_id, auth_id,
-    enqueued_at, status, claimed_by, claimed_at, completed_at, error
+    enqueued_at, status, completed_at, error, attempts
 )
 VALUES (...)
 ```
@@ -462,28 +571,33 @@ via the `_row_exists` virtual column without rewriting the
 underlying part. Reads filter out deleted rows immediately; the
 physical purge happens at the next merge.
 
-Atomicity matters here: a worker crash between "store to
-rag_embeddings" and "delete from buffer" leaves the buffer row in
-place, and stale-claim recovery (stage 8) will eventually re-claim
-it. The duplicate INSERT into `rag_embeddings` produces an identical
-row (deterministic chunk_id), so no harm. Same for the KG handoff:
-the queue task is keyed by `task_id = uuid5(chunk_id, "extract")`,
-so re-enqueue is idempotent.
+A worker crash between "store to rag_embeddings" and "delete from
+buffer" leaves the buffer row in place. On restart, the worker
+re-selects the row at the head of the buffer; the `WHERE NOT EXISTS`
+guard on the `rag_embeddings` INSERT short-circuits the embedding
+API call, and the worker proceeds to the KG-handoff step. The KG
+handoff is idempotent: pre-extracted mention/relation rows use
+deterministic UUIDs (per phase 1's derivation table), and queue
+tasks are keyed by `task_id = uuid5(chunk_id, "extract")`, so a
+re-enqueue is a no-op under `ReplacingMergeTree`.
 
 ### Buffer-table failure modes
 
 If a buffer row fails repeatedly (parse OK at intake but embed fails
 permanently — chunk too large, embedding model unavailable for too
-long, content corruption), it accumulates retry attempts. After N
-failed claims (default `max_attempts = 5`), the worker moves the row
-to a sibling `ingest_failures` audit table (see below) and
-lightweight-deletes from the buffer. The operator sees the failure
-on the audit dashboard.
+long, content corruption), the worker increments `attempts` on each
+attempt. After `max_attempts` (default 5), the worker copies the row
+into the sibling `ingest_failures` audit table and
+lightweight-deletes it from the buffer. The operator sees the
+failure on the audit dashboard and decides whether to fix the source
+material + re-ingest, drop it, or change the embedding config.
 
 The buffer table also has a TTL safety net: rows older than 7 days
 get TTL-deleted regardless of state, on the theory that anything
 that hasn't completed in a week is stuck for non-recoverable
-reasons.
+reasons. With a single worker, TTL-hit rows are an "operator
+investigate" signal: either the worker has been offline for a week
+or the row is poison.
 
 ## `rag_ingestion_buffer` table
 
@@ -503,9 +617,12 @@ reasons.
 | `pipeline_version` | `LowCardinality(String)` | |
 | `pre_extracted_json` | `Nullable(String)` | Serialized `PreExtractedKG` if the connector supplied it; else `NULL`. |
 | `buffered_at` | `DateTime` | |
-| `claimed_by` | `LowCardinality(Nullable(String))` | Worker id; `NULL` when unclaimed. |
-| `claimed_at` | `Nullable(DateTime)` | |
-| `attempts` | `UInt8` DEFAULT 0 | Incremented on each claim; gates the max_attempts cutoff. |
+| `attempts` | `UInt8` DEFAULT 0 | Incremented after each failed processing attempt; gates the `max_attempts` cutoff. |
+| `last_error` | `Nullable(String)` | Last error message; cleared on successful processing (but the row is deleted on success anyway). |
+
+There are **no claim columns** (`claimed_by`, `claimed_at`). The
+single-worker constraint makes them unnecessary; introducing them
+would suggest a multi-writer model the design deliberately rejects.
 
 Engine:
 ```sql
@@ -513,24 +630,36 @@ ENGINE = MergeTree
 PARTITION BY toYYYYMM(buffered_at)
 ORDER BY (buffered_at, chunk_id)
 TTL buffered_at + INTERVAL 7 DAY DELETE
-SETTINGS
-    apply_mutations_on_fly = 1,         -- lightweight UPDATE visible to subsequent reads
-    materialize_ttl_after_modify = 0    -- don't re-materialize TTL on each mutation
 ```
 
 The TTL is a safety net — under normal operation, the worker
 lightweight-deletes rows long before TTL kicks in. Rows that hit the
-TTL are stuck-and-unrecovered; their absence from the audit table is
-itself a signal the operator should investigate.
+TTL with the worker running mean repeated failures: either the
+operator's intake threw bad data past `max_attempts` and somehow
+the failure-table write didn't land (audit it), or the worker has
+been offline long enough to matter.
 
-### Backpressure on the buffer
+### Row policies on `rag_ingestion_buffer`
 
-If the worker pool can't keep up with intake (sustained input >
-sustained embedding throughput), the buffer grows unboundedly. v1 has
-no explicit backpressure mechanism — operators monitor buffer depth
-via `SELECT count() FROM rag_ingestion_buffer WHERE claimed_by IS NULL`
-and provision more workers when needed. v1.1 may add an intake-side
-rate limit triggered by buffer depth.
+Same per-role-policy + worker-wildcard pattern as `rag_embeddings`
+(phase 1):
+
+- **Per user-facing tier role** (`*_USER`, `*_GRP`): one PERMISSIVE
+  policy per role via `add_row_dict_policy(database=<rag>,
+  table='rag_ingestion_buffer', auth_id='auth_id',
+  dictionary='rag_acl_dict', authorisations='allowed_roles',
+  role=R, value=R)`. Defense in depth — end users typically don't
+  query the buffer, but a stray SELECT shouldn't leak chunks
+  awaiting embed.
+- **Wildcard for the worker**: `CREATE ROW POLICY ... USING 1 TO
+  <RAG_WORKER_USER>` so the worker can read every row regardless
+  of `auth_id`.
+- **Wildcards for `iris_global_admin` and `<database>_DBADMIN`**:
+  installed automatically by `add_row_dict_policy`.
+
+The dict-keyed policy for user-facing roles requires `GRANT dictGet
+ON rag_docs.rag_acl_dict` on those roles — already granted as part
+of the phase-1 row-policy install.
 
 ### `kg_extraction_queue` table
 
@@ -542,13 +671,17 @@ does both).
 | `task_id` | `UUID` | `uuid5(chunk_id, "extract")`. Deterministic; the same chunk re-enqueued for any reason produces the same task_id. |
 | `chunk_id` | `UUID` | |
 | `doc_id` | `UUID` | |
-| `auth_id` | `String` | Inherited from the chunk; lets per-tenant workers filter by their granted auth_ids. |
+| `auth_id` | `String` | Inherited from the chunk. Gates per-row visibility for the user-facing policies; the worker's wildcard policy ignores it. |
 | `enqueued_at` | `DateTime` | |
-| `status` | `Enum8('pending' = 1, 'claimed' = 2, 'completed' = 3, 'failed' = 4)` | |
-| `claimed_by` | `LowCardinality(Nullable(String))` | Worker identifier. |
-| `claimed_at` | `Nullable(DateTime)` | |
+| `status` | `Enum8('pending' = 1, 'completed' = 2, 'failed' = 3)` | |
 | `completed_at` | `Nullable(DateTime)` | |
 | `error` | `Nullable(String)` | Last error message on failed tasks. |
+| `attempts` | `UInt8` DEFAULT 0 | Incremented by the phase-3 extraction worker on each failure; gates the worker's max-attempts cutoff. |
+
+There are **no claim columns** — same rationale as
+`rag_ingestion_buffer`. The phase-3 extraction worker is also a
+single process (see phase 3), so the queue uses `status` for state
+transitions without needing a claim protocol.
 
 Engine:
 ```sql
@@ -558,19 +691,31 @@ ORDER BY task_id
 TTL completed_at + INTERVAL 30 DAY DELETE WHERE status = 'completed'
 ```
 
-The worker claims tasks with a **lightweight update** (`ALTER TABLE
-kg_extraction_queue UPDATE status='claimed', claimed_by=...,
-claimed_at=now() WHERE task_id IN (...) AND status='pending' SETTINGS
-materialize_ttl_after_modify = 0`), re-claims stuck tasks
-(`status='claimed' AND claimed_at < now() - 10 minutes`), and marks
-done or failed. The lightweight-update mechanism (CH 24.3+) avoids
-part rewrites; reads with `apply_mutations_on_fly = 1` see the
-claim immediately. Same pattern as the ingestion-buffer claim.
+The phase-3 extraction worker selects pending tasks
+(`WHERE status = 'pending' AND attempts < max_attempts ORDER BY
+enqueued_at LIMIT N`), processes them, and transitions `status` to
+`'completed'` or `'failed'` via plain `ALTER TABLE UPDATE`
+(non-lightweight; correctness doesn't depend on mutation latency
+because no concurrent writer exists). Re-running the ingestion
+pipeline on an already-extracted chunk produces an identical
+`task_id`; `ReplacingMergeTree(enqueued_at)` collapses to one row,
+and the worker re-processes only if that row's `status` is
+`'pending'`.
 
-Re-running the ingestion pipeline on an already-extracted chunk:
-deterministic `task_id` lets `ReplacingMergeTree(enqueued_at)` dedupe
-naturally; the worker sees one row and re-processes only if `status` is
-`pending` or stale-`claimed`.
+### Row policies on `kg_extraction_queue`
+
+Same shape as `rag_ingestion_buffer`:
+
+- **Per user-facing tier role**: one PERMISSIVE policy per
+  `*_USER` / `*_GRP` via `add_row_dict_policy(table='kg_extraction_queue',
+  auth_id='auth_id', dictionary='rag_acl_dict',
+  authorisations='allowed_roles', role=R, value=R)`. End users don't
+  typically query the queue, but the policy keeps queue contents
+  partitioned along the same auth_id boundary as the chunks.
+- **Wildcard for `<RAG_WORKER_USER>`**: `USING 1` so the worker can
+  see every task.
+- **Wildcards for `iris_global_admin` and `<database>_DBADMIN`**:
+  installed automatically by `add_row_dict_policy`.
 
 ## How `auth_id` reaches the pipeline
 
@@ -662,7 +807,7 @@ silent authorization bug waiting to happen.
 |---|---|
 | `run_id` | `UUID` |
 | `source_uri` | `String` |
-| `stage` | `Enum8('acquire', 'detect', 'parse', 'clean', 'chunk', 'enrich', 'buffer_write', 'claim', 'dedup', 'embed', 'store', 'kg_handoff')` |
+| `stage` | `Enum8('acquire', 'detect', 'parse', 'clean', 'chunk', 'enrich', 'buffer_write', 'select', 'dedup', 'embed', 'store', 'kg_handoff')` |
 | `error_kind` | `LowCardinality(String)` |
 | `error_message` | `String` |
 | `failed_at` | `DateTime` |
@@ -713,10 +858,16 @@ configured in `.rag_env` (phase-1 — no per-vendor SDK).
 | Implementing the pipeline (~500 LOC Python) | Iris |
 | Built-in connectors (FS walker, S3 lister, IMAP fetcher, web crawler, API endpoint) | Iris (pluggable) |
 | Audit tables (`ingest_runs`, `ingest_failures`) | Iris |
+| `rag_ingestion_buffer` + `kg_extraction_queue` schema, row policies, and worker wildcards | Iris |
+| API-side back-pressure check against `RAG_INGESTION_BUFFER_MAX_ROWS` | Iris |
+| Running the single ingestion worker process (the worker binary itself) | Iris |
+| **Provisioning the worker CH account** (`CREATE USER`, password, network reachability) | Operator |
+| **Enforcing the single-worker constraint** (one Deployment replica, lease, systemd unit, etc.) | Operator |
 | **Assigning `auth_id` to each document** | Operator's classification process |
 | Wiring `auth_id` into manifests / dirs / API calls | Operator |
 | Provisioning `rag_acl` rows before documents arrive | Operator |
 | Choosing and configuring the embedding model (`.rag_env`) | Operator |
+| Setting `RAG_INGESTION_BUFFER_MAX_ROWS` (`.rag_env`) | Operator |
 | Scheduling pipeline runs | Operator |
 | Reviewing `ingest_failures` and acting on rejected documents | Operator |
 | OCR vendor selection (Tesseract default, commercial swap) | Operator |

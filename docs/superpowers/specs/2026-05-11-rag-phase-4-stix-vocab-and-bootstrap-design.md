@@ -427,9 +427,38 @@ direct alias-map row pointing at the STIX-native canonical
 next run picks up the new `kg_entities` row (deterministic by
 `entity_id`, which is the STIX UUID) and aggregates it normally.
 
+**Synthetic mention_id for the single SDO mention.** Phase 1's
+mention_id derivation is `uuid5(chunk_id, <mention_identifier>)`
+where `<mention_identifier>` is the span tuple for LLM-extracted
+mentions. SDO synthetic mentions have no span, so the connector
+pins `<mention_identifier> = "stix:synthetic"`:
+
+```
+mention_id = uuid5(chunk_id, "stix:synthetic")
+```
+
+One synthetic mention per SDO chunk, deterministic, refresh-safe.
+The connector pre-computes the chunk_id from
+`uuid5(doc_id, f"stix:{stix_id}:description")` (per phase 2's
+chunk_id formula for STIX SDO chunks) and the mention_id from
+that — both values feed into the SRO yield below.
+
 ### For each STIX SRO (relationship) — one content-less relation-only document
 
+The SRO references mentions in *other* documents (the SDOs that hold
+its source and target). The connector resolves those references
+deterministically before yielding, using the
+`source_mention_id` / `target_mention_id` fields on
+`PreExtractedRelation`:
+
 ```python
+def _sdo_mention_id(stix_id: str, bundle_doc_id: UUID) -> UUID:
+    """Recompute the synthetic mention_id of an SDO emitted earlier
+    in this same connector run. Deterministic from stable STIX inputs.
+    """
+    chunk_id = uuid5(bundle_doc_id, f"stix:{stix_id}:description")
+    return uuid5(chunk_id, "stix:synthetic")
+
 AcquiredDocument(
     source_uri = f"stix:{sro.id}",
     raw_bytes  = b"",                # no content; relation-only
@@ -438,12 +467,14 @@ AcquiredDocument(
     pre_extracted = PreExtractedKG(
         mentions = [],
         relations = [PreExtractedRelation(
-            source_local_id = -1,    # cross-document: refers to the
-                                     #   synthetic mention emitted by
-                                     #   the SDO document at sro.source_ref
-            target_local_id = -2,    # likewise for sro.target_ref
             relation_type = <per the relation mapping>,
             evidence = sro.get("description", "") or f"[stix_relationship_type={sro.relationship_type}]",
+            # Cross-doc references: the source/target SDOs have their
+            # own AcquiredDocument earlier in the same connector run;
+            # the connector recomputes those mention_ids here.
+            source_mention_id = str(_sdo_mention_id(sro.source_ref, bundle_doc_id)),
+            target_mention_id = str(_sdo_mention_id(sro.target_ref, bundle_doc_id)),
+            # source_local_id / target_local_id left unset.
         )],
     ),
 )
@@ -451,15 +482,13 @@ AcquiredDocument(
 
 The phase-2 pipeline detects empty `raw_bytes` and **skips parse →
 chunk → embed → store**. It still validates `auth_id` and writes the
-`kg_relations_raw` row in Stage 9. The cross-document `local_id`
-references (negative values, or any sentinel the connector designs) are
-resolved by the connector before yielding: the connector knows the
-SDO chunk_ids ahead of time (deterministic from
-`uuid5(doc_id, f"stix:{stix_id}:description")`) so it can compute the
-target mention_ids directly. The relation row gets the per-bundle
-`doc_id` for grouping and the operator-supplied `auth_id` (matching
-the source/target SDOs by default; manifest overrides per SRO if
-needed).
+`kg_relations_raw` row in Stage 9, using the fully-resolved
+`source_mention_id` / `target_mention_id` directly (no in-document
+local-id lookup, since the SRO emits no mentions of its own).
+
+The relation row gets the per-bundle `doc_id` for grouping and the
+operator-supplied `auth_id` (matching the source/target SDOs by
+default; manifest overrides per SRO if needed).
 
 **`kg_edges`** — the connector does not insert directly. The next
 phase-3 resolution-job run derives `kg_edges` from `kg_relations_raw`

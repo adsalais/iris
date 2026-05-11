@@ -74,17 +74,54 @@ local path.
 about entities or edges leaks to a user who has no authorized evidence
 for them.
 
-Two flavors of row policy are needed:
+KG tables come in two shapes:
 
 1. **Per-row tables** (`kg_mentions_raw`, `kg_relations_raw`,
-   `kg_alias_map`) carry a single `auth_id String` column, inherited
-   from the source chunk. Same policy expression as `rag_embeddings`.
-2. **Aggregated tables** (`kg_entities`, `kg_edges`) carry an
-   `auth_ids Array(String)` column — the union of `auth_id`s of all
-   contributing mentions / relations. Row policy uses ANY-match
-   semantics.
+   `kg_alias_map`, `kg_extraction_queue`) carry a single
+   `auth_id String` column, inherited from the source chunk.
+2. **Aggregated tables** (`kg_entities`, `kg_edges`,
+   `kg_entity_aliases_mv`) carry an `auth_ids Array(String)` column —
+   the union of `auth_id`s of all contributing mentions / relations.
 
-**Visibility semantics:**
+Both shapes follow the same **N-policies-per-role** install pattern
+introduced in phase 1: one PERMISSIVE policy per user-facing tier
+role (`*_USER`, `*_GRP`), each attached only to that role. ClickHouse
+OR-merges PERMISSIVE policies across the roles a user holds.
+
+For role `R` on a per-row table:
+
+```sql
+USING has(dictGet('rag_docs.rag_acl_dict', 'allowed_roles', auth_id), 'R')
+TO R
+```
+
+For role `R` on an aggregated table:
+
+```sql
+USING arrayExists(
+  a -> has(dictGet('rag_docs.rag_acl_dict', 'allowed_roles', a), 'R'),
+  auth_ids
+)
+TO R
+```
+
+Iris's `iris.clickhouse.policies.add_row_dict_policy` is extended
+in this phase to inspect the `auth_id` column type via
+`system.columns`; when the type is `String` it emits the per-row
+form, and when the type is `Array(String)` it emits the
+`arrayExists`-wrapped form. Same helper, same call site, different
+column shape.
+
+**Worker access.** The phase-2/3 background workers all run under
+the dedicated ClickHouse user `<RAG_WORKER_USER>` configured in
+`.rag_env` (see phase 1 "Worker account"). Iris installs a wildcard
+`USING 1 TO <RAG_WORKER_USER>` row policy on every KG table at
+RAG-database-enable time, so the extraction and resolution paths
+see every row regardless of `auth_id`. This is necessary for
+cross-tenant centroid embeddings, `kg_entities` aggregation, and
+`kg_edges` derivation.
+
+**Visibility semantics (end users):**
 
 - A user can see an entity iff they can read at least one chunk that
   mentions it.
@@ -98,10 +135,15 @@ Two flavors of row policy are needed:
   column-level; the synthesis stage's structural-block filter masks
   the unauthorized `chunk_id`s before they reach the LLM prompt.
 
-**Performance note.** The aggregated-table policy does `arrayExists`
-over `auth_ids × currentRoles()` with a `dictGet` per pair. Cost
-scales with `|auth_ids| × |currentRoles|`. Worth monitoring if popular
-entities accumulate hundreds of `auth_ids`.
+**Performance note.** The aggregated-table policy expression
+`arrayExists(a -> has(dictGet(...), 'R'), auth_ids)` does one
+`dictGet` per row's `auth_ids` element until the first match. Cost
+scales with `|auth_ids|` per row (per-user constant per role, since
+each user holds one policy per role). Worth monitoring if popular
+entities accumulate hundreds of `auth_ids`. The N-policies-per-role
+shape keeps the per-policy expression simple — no
+`arrayExists(r -> ..., currentRoles())` nesting — at the cost of
+more policy rows server-side.
 
 ## Schema (starter, operator-editable)
 
@@ -346,65 +388,73 @@ ReplacingMergeTree dedup semantics are preserved without a separate
 ### Row policies on KG tables
 
 Installed by iris's Authorization feature alongside the
-`rag_embeddings` policy.
+`rag_embeddings` policies. For each KG table (`kg_mentions_raw`,
+`kg_relations_raw`, `kg_alias_map`, `kg_entities`, `kg_edges`,
+`kg_entity_aliases_mv`), iris's RAG-database-enable flow:
 
-**Per-row tables**:
+1. Iterates every existing `*_USER` and `*_GRP` role and calls
+   `add_row_dict_policy(database=<rag>, table=<kg_table>,
+   auth_id=<auth_id|auth_ids>, dictionary='rag_acl_dict',
+   authorisations='allowed_roles', role=R, value=R)` per role. The
+   extended helper inspects the column's CH type and emits the
+   per-row `has(dictGet(...))` form or the aggregated
+   `arrayExists(a -> has(dictGet(...)))` form accordingly.
+2. Installs the wildcard `USING 1 TO <RAG_WORKER_USER>` policy so
+   the extraction / resolution workers see every row.
+3. Relies on `add_row_dict_policy`'s built-in wildcards for
+   `iris_global_admin` and `<database>_DBADMIN`.
 
-```sql
-USING arrayExists(r -> has(
-  dictGet('rag_docs.rag_acl_dict', 'allowed_roles', auth_id),
-  r
-), currentRoles())
-```
+The maintenance hooks introduced in phase 1 (install policies for
+newly-created `*_USER` / `*_GRP` roles, drop them on revocation)
+already cover the KG tables once those tables exist; no additional
+hook surface is needed.
 
-**Aggregated tables**, ANY-match:
-
-```sql
-USING arrayExists(a -> arrayExists(r -> has(
-  dictGet('rag_docs.rag_acl_dict', 'allowed_roles', a),
-  r
-), currentRoles()), auth_ids)
-```
-
-Required grants: every tier role attached needs
+Required grants: every tier role attached to a per-role policy needs
 `GRANT dictGet ON rag_docs.rag_acl_dict`. Single grant covers
-phase-1's `rag_embeddings` and all five phase-3 KG tables.
+phase-1's `rag_embeddings` and all phase-3 KG tables. The worker
+user does **not** need this grant (its wildcard policy bypasses
+dictGet).
 
 ## Extraction worker (async, queue-driven)
 
 **Extraction runs asynchronously**, not in-band with phase-2 ingest.
 The phase-2 pipeline writes a row into `kg_extraction_queue` (defined
 in phase 2) for every chunk that landed via a non-`pre_extracted`
-connector; a separate worker pool consumes the queue and writes
-`kg_mentions_raw` / `kg_relations_raw`.
+connector; a **single extraction worker process** consumes the queue
+and writes `kg_mentions_raw` / `kg_relations_raw`.
 
 **Consistency window.** The chunk is queryable via the phase-1 vector
 path immediately after ingest. It becomes queryable via the phase-3
 graph path only after the extraction worker processes it — typically
-within minutes, but the SLA is operator-tunable based on worker pool
-size and LLM rate limits. There is no time-based ordering guarantee:
-older chunks may finish extracting after newer ones if the older one
-hit a transient retry.
+within minutes, bounded by the LLM rate limit and the worker's
+batch size. There is no time-based ordering guarantee: older chunks
+may finish extracting after newer ones if the older one hit a
+transient retry.
 
-**Worker access model.** Runs under `query_as_user(worker_session,
-...)` where `worker_session` belongs to a regular iris user (e.g.,
-`kg-extractor`), NOT a tier admin. The worker's groups must be
-explicitly listed in `rag_acl.allowed_roles` for every `auth_id` the
-worker should extract from. Row policies apply normally on reads;
-INSERTs are gated by table-level `GRANT INSERT` on the KG tables.
-**Same access pattern as the phase-2 ingest worker and the
-resolution worker below** — three iris workers, three explicit user
-identities, all granted via the same `rag_acl`-row mechanism. The
-extraction worker may be the same iris user as the resolution worker
-or a separate one with a smaller scope.
+**Worker access model.** Same `<RAG_WORKER_USER>` ClickHouse account
+introduced in phase 1 and used by the phase-2 ingest worker.
+Connects directly with credentials from `.rag_env`; does not use
+`query_as_user` / iris session machinery. Reads / writes every row
+via the wildcard policy. **Concurrency: exactly one extraction
+worker process system-wide**, same operational constraint as the
+phase-2 ingest worker — enforced by the operator's deployment, not
+by iris.
+
+In v1 the ingest worker and extraction worker may run as the same
+operating-system process (one binary, one CH connection), or as
+separate processes sharing the `<RAG_WORKER_USER>` credentials.
+Either way there is one logical ingest worker and one logical
+extraction worker at any time.
 
 ### Per-task workflow
 
-For each task claimed from `kg_extraction_queue`:
+For each task selected from `kg_extraction_queue`:
 
-1. **Fetch chunk content** from `rag_embeddings`. Row policy filters
-   apply; if the worker can't see the chunk, mark the task `failed`
-   with `error = 'unauthorized'` (a misconfiguration signal).
+1. **Fetch chunk content** from `rag_embeddings`. The worker's
+   wildcard row policy makes every chunk visible regardless of
+   `auth_id`; if the chunk is missing entirely (rare — the queue
+   shouldn't carry tasks for non-existent chunks) mark the task
+   `failed` with `error = 'chunk_missing'`.
 2. **Call the schema-guided LLM extractor** — fixed vocabulary, JSON
    output, small context window of neighboring chunks. Extractor
    emits direct mentions + (optionally) in-document coreference
@@ -416,27 +466,45 @@ For each task claimed from `kg_extraction_queue`:
 5. **Insert** into `kg_mentions_raw` and `kg_relations_raw`,
    propagating `auth_id` onto every row and setting `mention_kind`
    per emission.
-6. **Mark the task** `completed` (or `failed` with retry budget).
+6. **Transition the task** to `completed` (or `failed` with retry
+   budget) via `ALTER TABLE kg_extraction_queue UPDATE status = …
+   WHERE task_id = …` — plain mutation; correctness doesn't depend
+   on mutation latency because the worker is single-process and no
+   concurrent writer races it.
 
-### Task claim semantics
+### Task selection semantics
 
-Workers claim a batch of pending tasks via a **ClickHouse lightweight
-update** (CH 24.3+): `ALTER TABLE kg_extraction_queue UPDATE status =
-'claimed', claimed_by = <worker_id>, claimed_at = now() WHERE
-task_id IN (<read-then-claim batch>) AND status = 'pending'`.
-Lightweight updates avoid part rewrites; reads with
-`apply_mutations_on_fly = 1` see the claim immediately, so two
-workers don't double-claim the same task. Stale claims
-(`status = 'claimed' AND claimed_at < now() - 10 minutes`) get
-re-claimed by another worker, since the deterministic
-`task_id = uuid5(chunk_id, "extract")` makes re-processing
-idempotent at the chunk level — if both workers happen to finish,
-`ReplacingMergeTree(extracted_at)` on `kg_mentions_raw` keeps the
-newest row.
+The single extraction worker selects pending tasks:
 
-Same `ALTER … UPDATE` mechanism the phase-2 ingest worker uses on
-`rag_ingestion_buffer` (stage 8). Both queues rely on CH's
-lightweight-mutation guarantees.
+```sql
+SELECT *
+FROM kg_extraction_queue
+WHERE status = 'pending'
+  AND attempts < {max_attempts:UInt8}
+ORDER BY enqueued_at
+LIMIT {batch_size:UInt32}
+```
+
+No claim metadata, no lightweight-update assumptions. The
+`task_id = uuid5(chunk_id, "extract")` derivation makes
+re-enqueue idempotent under `ReplacingMergeTree(enqueued_at)`; if
+the worker crashes mid-task the row stays in `status = 'pending'`
+and is re-selected on restart. The downstream INSERT into
+`kg_mentions_raw` / `kg_relations_raw` uses deterministic
+`mention_id` / `relation_id`, and those tables'
+`ReplacingMergeTree(extracted_at)` engine collapses any duplicates
+to the newest row — so re-running a task is safe at the storage
+layer (it does cost a second LLM call).
+
+After processing, the worker transitions the task via plain
+`ALTER TABLE kg_extraction_queue UPDATE`. The mutation is async by
+default; the worker doesn't wait for it because no other process
+reads or writes the same `task_id`. Subsequent SELECTs with
+`SETTINGS apply_mutations_on_fly = 1` see the new status; without
+that setting they may briefly see the old status, which doesn't
+affect correctness (the worker won't re-select a still-pending row
+it already processed in the same iteration because its own
+in-memory state tracks the batch).
 
 Extractor prompt shape:
 
@@ -468,22 +536,22 @@ Constraints:
 Batch job at operator-controlled cadence (e.g. nightly). Each run
 bumps `resolution_version`.
 
-**Worker access model.** Same as the extraction worker, with a
-different iris user (e.g., `kg-resolver`) whose groups are granted
-in `rag_acl.allowed_roles` for every `auth_id` the operator wants
-the worker to aggregate over.
+**Worker access model.** Same `<RAG_WORKER_USER>` ClickHouse account
+as the phase-2 ingest worker and the phase-3 extraction worker.
+Same wildcard row policy across every RAG table. Same
+single-process-system-wide concurrency constraint, enforced by the
+operator's deployment.
 
-Two common shapes:
-
-1. **Single global-ish worker** — granted via every `rag_acl` row.
-   Cross-`auth_id` canonical entities (e.g., a public STIX
-   `AttackPattern` referenced in a customer chunk resolves to the same
-   canonical).
-2. **Per-tenant workers** — strict tenant isolation; no cross-tenant
-   canonicals.
-
-Deployments sharing canonical entities across tenants (e.g.
-public-STIX bundles, company-wide glossaries) typically want shape (1).
+The wildcard policy means the resolver always aggregates across
+every `auth_id` — there's no "per-tenant resolver" deployment in
+v1. Cross-`auth_id` canonical entities (a public STIX
+`AttackPattern` referenced in a customer chunk and in a different
+customer chunk both resolve to the same canonical with
+`auth_ids = [customer:a, customer:b, public:stix]`) are the default.
+Deployments that need strict tenant isolation can either (a) run
+separate RAG databases per tenant — each with its own
+`<RAG_WORKER_USER>` and no cross-database joins — or (b) post-filter
+the resolver's output via a custom job. Neither is in v1 scope.
 
 ### Stage 1 — deterministic normalization + exact-match merge
 
@@ -613,10 +681,13 @@ references via a JSON field: `unresolved_references: [{span, hint}]`.
      ```
    - For each non-null answer above the cutoff:
      - Synthesize a `kg_mentions_raw` row. `mention_id` is derived as
-       `uuid5(chunk_id, f"coref::{entity_id}::{resolution_version}")`
-       (chunk_id as namespace, like direct mentions; the name encodes
-       coref-specific disambiguation since synthetic mentions have no
-       span).
+       `uuid5(chunk_id, f"coref::{entity_id}")` — chunk_id as
+       namespace (like direct mentions), with `resolution_version`
+       deliberately **omitted** from the derivation so re-runs of
+       the coreference pass produce identical `mention_id`s and
+       `ReplacingMergeTree(extracted_at)` collapses them to one row
+       per `(chunk_id, mention_id)`. Including `resolution_version`
+       would let coref mentions accumulate on every re-run.
      - `mention_kind = 'coreference_cross_doc'`, `auth_id` from the
        chunk, `name_surface` = the referring expression text.
      - Write `kg_alias_map` row pointing at the resolved `entity_id`
@@ -747,14 +818,16 @@ Phase-3 internal steps that differ from phase 1:
 | Concern | Owner |
 |---|---|
 | Maintaining schema config (entity types, relation types, normalization rules) | Operator |
-| Provisioning the extraction-worker user (`kg-extractor`) and granting its groups in `rag_acl.allowed_roles` | Operator |
-| Provisioning the resolution-worker user (`kg-resolver`) and granting its groups in `rag_acl.allowed_roles` | Operator |
-| Running the extraction worker pool (consumes `kg_extraction_queue`, calls the LLM extractor, writes `kg_mentions_raw` / `kg_relations_raw`) | Iris (worker process; operator scales it) |
-| Running the resolution batch job (Stages 1–5) as `query_as_user(kg-resolver, ...)` on the operator's cron | Iris (worker process; operator schedules and scales) |
-| Running the cross-document coreference pass (optional) | Iris (worker process; operator schedules and scales) |
+| **Worker CH account is shared with phase 2** (`RAG_WORKER_USER` / `RAG_WORKER_PASSWORD` in `.rag_env`); operator provisions, iris grants + wildcards | Operator (account) / Iris (grants & wildcard policies) |
+| **Enforcing single extraction worker + single resolution worker** (deployment-level constraint; iris does not enforce) | Operator |
+| Running the single extraction worker (consumes `kg_extraction_queue`, calls the LLM extractor, writes `kg_mentions_raw` / `kg_relations_raw`) | Iris (worker binary; operator runs one replica) |
+| Running the resolution batch job (Stages 1–5) on the operator's cron | Iris (worker binary; operator schedules) |
+| Running the cross-document coreference pass (optional) | Iris (worker binary; operator schedules) |
 | Propagating `auth_id` from `rag_embeddings` onto KG rows | Extraction worker (queue-driven) / phase-2 pipeline (for `pre_extracted` connectors) |
 | Provisioning the 5 KG tables + `kg_entity_aliases_mv` with the right engines | Iris (extend Authorization feature's create-database flow) |
-| Attaching row policies to the 5 KG tables + MV | Iris |
+| Installing N per-role row policies on every KG table (per-row form for `auth_id`, aggregated form for `auth_ids`) | Iris |
+| Installing the wildcard `USING 1 TO <RAG_WORKER_USER>` policy on every KG table | Iris |
+| Extending `add_row_dict_policy` to detect `String` vs `Array(String)` `auth_id` columns | Iris |
 | Graph-path execution + structural-block build | Iris RAG feature module |
 | Updated synthesis prompt template | Iris |
 
@@ -800,16 +873,30 @@ Additional test surface:
    run if the active rules hash diverges from the most recent
    `kg_entities` row, unless the operator passes
    `--rewrite-entity-ids` (a deliberate destructive flag).
-4. **Aggregated-table policy cost at scale.** `arrayExists × arrayExists`
-   with a `dictGet` inside is O(|auth_ids| × |currentRoles|) per row.
-   Fine for small arrays; measure if popular entities accumulate
-   hundreds of `auth_ids`.
+4. **Aggregated-table policy cost at scale.** With N policies per
+   role (one per user-facing tier role), each row evaluates one
+   `arrayExists(a -> has(dictGet(...), '<role>'), auth_ids)` per
+   user role until the first match. Cost per row is
+   O(|user's roles| × |auth_ids|) `dictGet` calls in the
+   worst case (no match short-circuits early). Fine for small
+   arrays; measure if popular entities accumulate hundreds of
+   `auth_ids`. The N-policies pattern also multiplies the count of
+   row policies CH evaluates per query — at M aggregated tables ×
+   N user-facing roles that's M × N policies in `system.row_policies`.
+   Worth monitoring policy-load on heavily-shared deployments.
 5. **Coreference confidence cutoff.** Default 0.75; tune after measuring
    false-merge rate.
-6. **Worker scope shape.** Single global-ish vs. per-tenant.
-   Deployments with shared cross-tenant content (public threat intel,
-   company-wide glossaries) favor global-ish; strict tenant isolation
-   favors per-tenant.
+6. **Strict tenant isolation deployments.** v1 uses a single
+   `<RAG_WORKER_USER>` with a wildcard policy across every RAG
+   table — cross-`auth_id` canonical entities (e.g. a public STIX
+   `AttackPattern` referenced from two different customers) resolve
+   to the same canonical by default. Deployments that need strict
+   tenant isolation (no cross-tenant canonicals at all) must run
+   separate RAG databases per tenant, each with its own
+   `<RAG_WORKER_USER>` configured in a tenant-scoped `.rag_env`. A
+   single-database multi-worker-per-tenant deployment is *not*
+   supported in v1; it would require auth_id-bound table grants
+   that iris doesn't currently model.
 7. **Graph-path query performance.** Step 4 of the graph path traverses
    `kg_entities → kg_edges → kg_alias_map → kg_mentions_raw →
    rag_embeddings` — four joins, all on UUIDs, all row-policy
