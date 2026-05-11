@@ -15,7 +15,10 @@
 
   <aside class="iris-left-panel">
     {% include "shell/_top_buttons.html" %}
-    {{ nav_html | safe }}
+    <div class="iris-nav-wrap">
+      {{ nav_html | safe }}
+    </div>
+    {% include "shell/_bottom_user.html" %}
   </aside>
 
   <main class="iris-right-panel">

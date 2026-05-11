@@ -32,3 +32,32 @@ def test_home_includes_account_popover(authed_client):
     r = authed_client.get("/")
     assert "iris-account-popover" in r.text
     assert "Sign out" in r.text
+
+
+def test_home_renders_bottom_user_element(authed_client):
+    """The user element pins to the bottom of the left panel and carries the
+    display name (visible when expanded, hidden via CSS when collapsed)."""
+    r = authed_client.get("/")
+    assert r.status_code == 200
+    body = r.text
+    assert "iris-bottom-user" in body
+    assert "iris-user-btn" in body
+    assert "iris-user-name" in body
+    assert "Alice" in body
+    aside_start = body.index('class="iris-left-panel"')
+    aside_end = body.index("</aside>", aside_start)
+    aside = body[aside_start:aside_end]
+    assert aside.index("iris-nav-wrap") < aside.index("iris-bottom-user")
+
+
+def test_home_top_buttons_no_longer_include_account(authed_client):
+    """The account toggle moved to the bottom user element; the top row keeps
+    only the nav toggle and the settings placeholder."""
+    r = authed_client.get("/")
+    body = r.text
+    top_start = body.index("iris-top-buttons")
+    top_end = body.index("</div>", top_start)
+    top = body[top_start:top_end]
+    assert "iris-toggle-nav" in top
+    assert "Settings" in top
+    assert "$account_open" not in top
