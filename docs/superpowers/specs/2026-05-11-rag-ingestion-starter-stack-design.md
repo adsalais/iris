@@ -171,10 +171,30 @@ once per distinct `auth_id` per batch, caching the result for the run. A
 missing `auth_id` causes the whole document to be rejected (not just the
 chunk) — see "Error handling".
 
+**Re-chunking cost.** Because `chunk_id` derivation includes `ordinal`,
+changing the chunking strategy (size, overlap, section boundaries)
+renumbers chunks within a document → every chunk gets a new `chunk_id`
+→ every downstream KG row keyed by the old `chunk_id`
+(`kg_mentions_raw`, `kg_relations_raw`, `kg_alias_map`, and the
+`evidence_chunks` arrays in `kg_edges`) is orphaned. A chunking-strategy
+change therefore requires re-running KG extraction + resolution for
+every affected document, not just re-embedding. Operators should change
+chunking strategy deliberately and rarely; bump `pipeline_version` on
+every change so old vs. new chunk_id provenance is visible.
+
 ### 7. Dedup
 
-- **Exact**: skip if `content_hash` already exists in `rag_embeddings`
-  for the same `doc_id`. Catches re-ingestion of unchanged documents.
+Two distinct concerns, often conflated:
+
+- **Same-document re-ingestion** (the dedup this stage actually does):
+  skip a chunk if `(doc_id, content_hash)` already exists. Catches
+  re-running the pipeline on an unchanged document.
+- **Cross-document duplicate content** (e.g., the same vendor PDF
+  appearing under two `source_uri`s, producing two different `doc_id`s
+  but identical chunks): **not** deduplicated in v1. The same content
+  can exist under multiple `(doc_id, auth_id)` pairs. Two reasons:
+  preserving per-document audit trails, and avoiding cross-tenant
+  content correlation through dedup. See Open Question 1.
 - **Near-duplicate** (optional, off by default): MinHash via
   `datasketch`, Jaccard threshold ~0.85, scoped strictly within the same
   `auth_id` to avoid leaking content existence across tenants.
@@ -346,9 +366,10 @@ selects.
 
 1. **Cross-`auth_id` dedup policy.** A vendor whitepaper might be tagged
    `tlp:white` in one ingest and `customer:acme` in another (attached to
-   a case file). v1: dedup only within `(doc_id, auth_id)`, so the same
-   content can exist under multiple `auth_id`s. Revisit if storage cost
-   becomes uncomfortable.
+   a case file). v1: dedup only within `doc_id`; cross-doc duplicates
+   are preserved, and the same content can exist under multiple
+   `(doc_id, auth_id)` pairs. Revisit if storage cost becomes
+   uncomfortable; the trade-off is auditability vs. storage efficiency.
 2. **Re-classification of an already-ingested document.** If a document
    already ingested as `tlp:white` arrives later with `auth_id =
    customer:acme`, should the pipeline warn ("previously classified

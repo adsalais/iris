@@ -280,9 +280,31 @@ before insert. Coreference emissions with a `refers_to_local_id` get a
 ## Hybrid resolution pipeline
 
 Batch job at operator-controlled cadence (e.g. nightly, or on-demand after a
-large ingest). Each run bumps `resolution_version`. **The job must run with
-service-tier privilege** (`query_as_service`, not a user session) so it can
-read all mentions/relations across `auth_id`s to perform the aggregation.
+large ingest). Each run bumps `resolution_version`.
+
+**Worker access model.** The job runs under `query_as_user(worker_session, ...)`
+where `worker_session` belongs to a regular iris user (e.g., `kg-resolver`),
+NOT a tier admin. The worker's groups (e.g., `KG_RESOLVER_GRP`) must be
+explicitly added to `rag_acl.allowed_roles` for every `auth_id` the operator
+wants the worker to aggregate over. Row policies apply normally; the worker
+sees exactly the auth_ids the operator deliberately granted. No service-tier
+bypass.
+
+Two common shapes:
+
+1. **Single global-ish worker.** One worker user granted via every `rag_acl`
+   row. Effectively "see everything" — but via explicit grants, auditable in
+   `rag_acl` itself. Best when cross-auth_id entity correlation matters
+   (e.g., LLM-extracted "T1059" in a customer chunk should resolve into the
+   public STIX `AttackPattern` canonical).
+2. **Per-tenant workers.** One worker per tenant + the public auth_ids the
+   tenant references. Strict tenant isolation; no cross-tenant entity
+   correlation. Multiple resolution runs (one per worker) into the same
+   shared tables.
+
+Pick based on whether canonical entities should span auth_id boundaries.
+DFIR deployments typically want shape (1) so customer mentions of public
+STIX entities resolve correctly.
 
 ### Stage 1 — deterministic normalization + exact-match merge
 
@@ -299,6 +321,31 @@ Captures 60–80% of direct mentions cheaply in typical corpora.
 Coreference mentions are not clustered — they're resolved separately
 (see "Cross-document coreference" below).
 
+### Stage 1.5 — merge into pre-existing canonicals
+
+**Critical for the STIX bootstrap to work end-to-end.** Before creating
+any *new* canonical from Stage 1's groups, look up whether an existing
+`kg_entities` row already covers this canonical_name + entity_type:
+
+1. For each Stage 1 group `(entity_type, normalized_name)`, query
+   `kg_entities` for any row whose `entity_type` matches AND
+   (`canonical_name` normalizes to the same value OR `normalized_name`
+   appears in `aliases`).
+2. If exactly one match: assign that pre-existing `entity_id` to every
+   mention in the group. Write `kg_alias_map` rows with
+   `resolution_method = 'exact'`, `confidence = 1.0`. Do NOT create a new
+   canonical.
+3. If multiple matches: defer to Stage 3 (LLM pairwise judge) to pick
+   the right one.
+4. If no match: proceed to create a new canonical in Stage 2 / 5 with
+   `entity_id = uuid5(NS, f"{canonical_name_normalized}::{entity_type}")`.
+
+This is what lets LLM-extracted mentions ("T1059", "Mimikatz", "APT29")
+from later corpus ingests resolve into the STIX-sourced canonicals
+(whose `entity_id` is a STIX-native UUID, not the `uuid5` form).
+Without Stage 1.5, the resolver would silently fork — one entity per
+ID-derivation scheme — and traversal queries would split.
+
 ### Stage 2 — embedding clustering, within entity_type
 
 For direct mentions not assigned in Stage 1 (plus a sampled fraction of
@@ -306,8 +353,12 @@ those that were, to detect under-merging):
 
 1. Within each `entity_type`, run agglomerative clustering on
    `mention_embedding` with a tight cosine threshold (start: 0.90).
-2. If a cluster overlaps an existing Stage 1 canonical entity, merge into
-   it; otherwise create a new canonical entity.
+2. For each cluster, **first check for overlap with any pre-existing
+   `kg_entities` row** by computing the cluster centroid's nearest
+   neighbours in `kg_entities` (within `entity_type`) — if the nearest
+   pre-existing canonical exceeds the threshold, merge into it. Then
+   fall back to Stage 1 / 1.5 canonicals; otherwise create a new
+   canonical.
 3. Write `kg_alias_map` with `resolution_method = 'embedding_cluster'` and
    `confidence = cluster_cohesion`.
 
@@ -386,9 +437,15 @@ output: `unresolved_references: [{span: str, hint: str}]`).
       Answer JSON: [{span, entity_id|null, confidence}]
       ```
    c. For each non-null answer above the confidence cutoff:
-      - Synthesize a `kg_mentions_raw` row with
-        `mention_kind = 'coreference_cross_doc'`, `auth_id` from the chunk,
-        `name_surface` = the referring expression text.
+      - Synthesize a `kg_mentions_raw` row. Because synthetic mentions
+        don't have a span in the chunk's tokens, `mention_id` is derived
+        as `uuid5(NS, f"{chunk_id}::coref::{entity_id}::{resolution_version}")`
+        (not the `chunk_id::span_start::span_end` form). The
+        `resolution_version` term keeps the id stable within a run and
+        re-derivable on the next run.
+      - Set `mention_kind = 'coreference_cross_doc'`, `auth_id` from the
+        chunk, `name_surface` = the referring expression text,
+        `extractor_version = "coref-pass-<version>"`.
       - Write a `kg_alias_map` row pointing at the resolved `entity_id`
         with `resolution_method = 'coreference'`.
 
@@ -406,14 +463,20 @@ Builds the structural index that makes "global" questions tractable
 (e.g., "what are the dominant themes in our incident history?"). Runs
 after entity resolution + coreference + edge derivation.
 
+**Worker access model.** Same as the resolution job — runs under
+`query_as_user(worker_session, ...)` with the worker's groups granted in
+`rag_acl` for every auth_id it should index. The community-detection
+worker may be the same user as the resolution worker or a separate one
+(e.g., `kg-communities`) with a smaller scope.
+
 ### Partitioning rule
 
-**Detection runs per `auth_id` partition, not over the global graph.**
-For each distinct `auth_id` value in `rag_acl`, build a separate
-sub-graph from `kg_edges` whose `auth_ids` contains that partition value,
-limited to that partition's slice. Communities are computed and
-summarized within the partition only. Each `kg_communities` row's
-`auth_id_partition` records which partition it came from.
+**Detection runs per `auth_id` partition, not over the worker's full
+visible graph.** For each distinct `auth_id` the worker can see, build
+a separate sub-graph from `kg_edges` whose `auth_ids` contains that
+partition value, limited to that partition's slice. Communities are
+computed and summarized within the partition only. Each `kg_communities`
+row's `auth_id_partition` records which partition it came from.
 
 Why: a community whose member entities span multiple `auth_id`s would
 inherit a union `auth_ids` that's correct at the row-policy level but
@@ -456,11 +519,27 @@ For each community at each level:
 4. Cache by `hash(sorted_entity_ids || sorted_edge_ids)`; only
    re-summarize when membership or edge support actually changed.
 
-### Refresh cadence
+### Budgeting and caps
 
 The community job is **expensive** — it makes O(communities × LLM-call)
-calls. Run less often than the entity resolution job (e.g., weekly vs.
-nightly). Operator-tunable.
+calls. To keep the cost bounded:
+
+- **Minimum community size.** Skip communities with fewer than
+  `min_members = 5` member entities (singletons and tiny pairs aren't
+  useful summary targets and dominate the long tail).
+- **Per-partition hard cap.** `max_communities_per_partition = 500` per
+  level. If Leiden produces more, drop the smallest by `support_count`.
+  Tune after measurement.
+- **Resummarization gate.** Cache by
+  `hash(sorted_entity_ids || sorted_supporting_edge_ids || resolution_version)`;
+  re-summarize only when membership or supporting evidence actually
+  changed. Pure `resolution_version` bumps that don't move membership
+  reuse cached summaries.
+
+### Refresh cadence
+
+Run less often than the entity resolution job (e.g., weekly vs. nightly).
+Operator-tunable.
 
 ## Query path alongside vector RAG
 
@@ -536,9 +615,10 @@ three inputs to the pre-synthesis pipeline:
 | Maintaining schema config (entity types, relation types, normalization rules) | Operator |
 | Running the extraction LLM (including in-doc coreference emission), computing mention embeddings, loading raw tables | Ingestion pipeline (out of scope for iris) |
 | Propagating `auth_id` from `rag_embeddings` onto KG rows at ingest | Ingestion pipeline |
-| Running the resolution batch job under service-tier privilege | Ingestion pipeline |
-| Running the cross-document coreference pass under service-tier privilege | Ingestion pipeline |
-| Running the community detection + summarization job under service-tier privilege | Ingestion pipeline |
+| Provisioning the worker user (`kg-resolver` or per-tenant equivalents) and granting its groups in `rag_acl.allowed_roles` | Operator |
+| Running the resolution batch job as `query_as_user(worker_session, ...)` | Ingestion pipeline |
+| Running the cross-document coreference pass under the same worker session | Ingestion pipeline |
+| Running the community detection + summarization job under the same (or a separate, smaller-scope) worker session | Ingestion pipeline |
 | Provisioning the 6 KG tables with the right engines | Iris (extend Authorization feature's create-database flow) |
 | Attaching row policies to the 6 KG tables | Iris |
 | Granting roles `dictGet` on `rag_acl_dict` (single grant, covers all 7 tables) | Iris |
@@ -593,3 +673,8 @@ three inputs to the pre-synthesis pipeline:
 8. **Community summary refresh trigger.** v1 re-summarizes when
    membership or edge support changes. A more aggressive cache (e.g.,
    "only resummarize if support changed by ≥10%") is worth measuring.
+9. **Worker scope shape.** Single global-ish worker vs. per-tenant
+   workers (see Worker access model). DFIR deployments with
+   public-STIX-shared canonicals favor the single worker; strict
+   multi-tenancy favors per-tenant. Operator decision encoded in
+   `rag_acl` grants — no code change required to switch.

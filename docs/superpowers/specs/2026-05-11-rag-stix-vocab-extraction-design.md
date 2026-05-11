@@ -275,7 +275,9 @@ STIX feeds (vendor CTI, MISP exports), and merge the per-bundle vocabs.
 1. Operator runs `scan_stix_vocab.py` against every bundle the deployment
    ingests.
 2. Merge per-bundle entity/relation counters.
-3. Take the top ~15 entity types and top ~15 relation types by frequency.
+3. Take up to ~15 entity types and up to ~15 relation types by frequency
+   (MITRE-CTI alone yields ~10 entity types and ~6 relation types — the
+   cap is an upper bound, not a target).
 4. Eyeball the list — drop unwanted types (`marking-definition`, `bundle`,
    purely-organizational `x-mitre-matrix`).
 5. Apply the rename tables.

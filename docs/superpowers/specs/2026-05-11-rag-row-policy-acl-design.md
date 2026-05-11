@@ -50,8 +50,20 @@ because iris does not own `rag_acl`; call it out in operator runbooks.
 
 ## Enforcement
 
-A single row policy on `rag_embeddings`, attached to every tier role that may
-read the database:
+A single row policy on `rag_embeddings`, attached to **the user-facing
+tier roles only** — `*_USER` and `*_GRP`. Admin tiers (`*_DBADMIN`,
+`*_DBWRITER`, `*_DBREADER`) are not in the policy's `TO …` list and
+remain unrestricted at the table level; that's how iris admin paths
+read across all rows.
+
+**The KG resolution worker (see the KG spec) does NOT use admin tier
+access.** It runs as a regular iris user (e.g., `kg-resolver`) whose
+groups must be explicitly listed in `rag_acl.allowed_roles` for every
+`auth_id` the operator wants the worker to aggregate over. No magic
+bypass; access is by deliberate grant, auditable and revocable like any
+other user's. This keeps "the resolution worker can see X" answerable
+by reading `rag_acl` — no global service-tier authority hidden inside
+iris.
 
 ```sql
 USING arrayExists(r -> has(

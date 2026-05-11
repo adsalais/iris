@@ -22,7 +22,8 @@ only unstructured corpus content (incident reports, blog posts, PDFs).
 
 In scope:
 1. STIX SDO / SRO → iris schema (entity/relation type) mapping.
-2. Where STIX content lands across `rag_embeddings` and the 5 KG tables.
+2. Where STIX content lands across `rag_embeddings` and the 6 KG tables
+   (mentions, relations, entities, alias_map, edges, communities).
 3. Authorization: TLP marking → `auth_id` mapping.
 4. ID-assignment rules (use STIX-native UUIDs for entities).
 5. Refresh / idempotency strategy.
@@ -85,9 +86,12 @@ Canonical mapping:
 | `subtechnique-of` (MITRE) | `PART_OF` |
 | `revoked-by` | *not stored as edge — treated as a soft-delete signal* |
 
-Unmapped relationship types fall back to `RELATED_TO`, with the original
-string preserved as `stix_relationship_type` on the relation row. Falls
-are logged so the operator can extend the mapping.
+Unmapped relationship types fall back to `RELATED_TO`. Since
+`kg_relations_raw` has no dedicated column for the original string, the
+loader prefixes the `evidence` field with a structured marker:
+`f"[stix_relationship_type={original}] {sro_description_if_present}"`.
+This keeps the original visible without schema changes. Falls are also
+logged so the operator can extend the mapping table directly.
 
 ### Property preservation
 
@@ -156,6 +160,7 @@ chunk above:
 | `entity_type` | per the mapping table |
 | `name_surface` | SDO's `name` |
 | `aliases` | SDO's `aliases` list |
+| `mention_kind` | `'direct'` (always — STIX SDOs are direct mentions of named entities) |
 | `properties` | the property set above |
 | `mention_embedding` | embedding of `f"{entity_type}: {name} | {description[:200]}"` |
 | `extractor_version` | `"stix-bootstrap-<version>"` |
@@ -193,17 +198,34 @@ and target mentions (looked up by their STIX SDO ids):
 | Column | Value |
 |---|---|
 | `relation_id` | `uuid5(NS, f"{stix_relationship_id}")` |
-| `chunk_id` | `f"stix:{stix_relationship_id}"` (logical, no chunk row) |
+| `chunk_id` | `f"stix:{stix_relationship_id}"` (logical — see note below) |
 | `auth_id` | strictest of source / target / relationship markings |
 | `source_mention_id` | the synthetic mention of the SRO's source SDO |
 | `target_mention_id` | the synthetic mention of the SRO's target SDO |
 | `relation_type` | per the relation mapping |
-| `evidence` | the SRO's `description` (if present) or empty |
+| `evidence` | the SRO's `description` if present; prefixed with `[stix_relationship_type=<orig>]` when the type fell back to `RELATED_TO` |
+
+**Note on `chunk_id` for SRO-derived relation rows.** This `chunk_id`
+has no corresponding `rag_embeddings` row. The downstream consequence:
+when Stage 5 of the resolution job derives `kg_edges.evidence_chunks` by
+`groupArray(chunk_id)` over the relations, STIX-derived edges will carry
+`stix:<sro_id>` entries that don't fetch. The synthesis stage filters
+these out when computing `authorized_chunk_ids` (the chunks the user can
+actually read from `rag_embeddings`). STIX-derived edges therefore
+appear in the structural block only when they share evidence with a
+fetchable chunk (e.g., an SDO description chunk that also mentions both
+endpoints) — otherwise the edge surfaces via the entity-traversal path
+and the model grounds its claim in the source/target SDOs' description
+chunks, which **are** fetchable.
 
 **6. `kg_edges`** — the loader does **not** insert directly. The next
 resolution-job run picks the new relations up via the standard derivation
 path (`kg_relations_raw + kg_alias_map → kg_edges`). This preserves the
 single `kg_edges`-derivation invariant from the KG spec.
+
+**7. `kg_communities`** — not produced by the loader. The community
+detection job runs separately (per the KG spec) and will pick STIX-only
+auth_id partitions (e.g., `tlp:white`) up automatically.
 
 **Operator step:** run the resolution job after each bootstrap load so the
 edges materialize. Until that runs, traversal still works on
@@ -221,7 +243,8 @@ Map TLP markings to `auth_id`:
 |---|---|
 | `TLP:CLEAR` / `TLP:WHITE` | `"tlp:white"` |
 | `TLP:GREEN` | `"tlp:green"` |
-| `TLP:AMBER` / `TLP:AMBER+STRICT` | `"tlp:amber"` (note: STRICT loses fidelity in v1) |
+| `TLP:AMBER` | `"tlp:amber"` |
+| `TLP:AMBER+STRICT` | **must be configured explicitly** — see security note below |
 | `TLP:RED` | `"tlp:red"` |
 | (no marking) | `"tlp:white"` (treat as public by default; operator-configurable) |
 
@@ -242,6 +265,27 @@ strictest of `{source_marking, target_marking, sro_marking}`. Rationale:
 a `TLP:GREEN` `attributed-to` edge whose target is a `TLP:AMBER`
 threat-actor reveals that the actor exists — must be at least `TLP:AMBER`
 itself.
+
+### Security note: TLP:AMBER+STRICT
+
+`TLP:AMBER+STRICT` means "no further dissemination outside the recipient
+organization." Plain `TLP:AMBER` allows wider need-to-know dissemination
+within the recipient organization and its clients. **Collapsing STRICT
+into plain AMBER is a real authorization downgrade**, not a fidelity
+quirk.
+
+v1 requires the operator to choose one of:
+
+1. **Reject** TLP:AMBER+STRICT-marked content at load (loader option;
+   logs the rejection).
+2. **Carry it as its own `auth_id`** (`"tlp:amber-strict"`) with a
+   separate `rag_acl` row whose `allowed_roles` is a tighter group
+   (e.g., `["TLP_AMBER_STRICT_GRP"]`). Operator must provision both.
+3. **Explicitly accept the downgrade** via a loader flag
+   (`--accept-amber-strict-downgrade`) which maps to `"tlp:amber"`. The
+   flag exists to make the downgrade auditable, not to be the default.
+
+Default: option (1) — reject. Loader does not silently collapse.
 
 ## Loader workflow
 
