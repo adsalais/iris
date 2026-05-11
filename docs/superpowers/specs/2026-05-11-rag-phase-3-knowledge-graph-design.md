@@ -134,7 +134,14 @@ Five tables, colocated with phase-1's `rag_embeddings`.
 | `extractor_version` / `prompt_version` | `LowCardinality(String)` | |
 | `extracted_at` | `DateTime` | |
 
-Engine: `MergeTree ORDER BY (chunk_id, mention_id)`. Append-only.
+Engine: `ReplacingMergeTree(extracted_at) ORDER BY (chunk_id, mention_id)`.
+Re-running extraction over the same chunk (e.g. STIX bundle refresh
+with updated SDO content, or LLM extractor with a new
+`prompt_version`) keeps the newest row by `extracted_at`. Read via a
+view that applies `FINAL`. The trade-off: we lose strict
+"every extraction is preserved forever" — for that, archive
+`extractor_version`-tagged snapshots externally before each
+re-extraction run.
 
 ### `kg_relations_raw` — extractor output, one row per relation
 
@@ -148,7 +155,8 @@ Engine: `MergeTree ORDER BY (chunk_id, mention_id)`. Append-only.
 | `extractor_version` / `prompt_version` | `LowCardinality(String)` |
 | `extracted_at` | `DateTime` |
 
-Engine: `MergeTree ORDER BY (chunk_id, relation_id)`. Append-only.
+Engine: `ReplacingMergeTree(extracted_at) ORDER BY (chunk_id, relation_id)`.
+Same refresh semantics as `kg_mentions_raw`.
 
 ### `kg_entities` — canonical entities after resolution
 
@@ -159,7 +167,9 @@ Engine: `MergeTree ORDER BY (chunk_id, relation_id)`. Append-only.
 | `canonical_name` | `String` |
 | `aliases` | `Array(String)` |
 | `properties_merged` | `Map(String, String)` |
+| `representative_embedding` | `Array(Float32)` — centroid of contributing direct-mention `mention_embedding`s, computed at Stage 5. Used by Stage 2's pre-existing-canonical lookup AND by the graph-path query's question-entity matching. For STIX-bootstrapped entities with one synthetic mention, the centroid equals that single mention's embedding. |
 | `auth_ids` | `Array(String)` — union over contributing mentions. ANY-match policy. |
+| `normalization_rules_hash` | `LowCardinality(String)` — hash of the normalization rules used to compute this entity's `canonical_name`. Lets drift be detected: when the rules-hash changes, the operator knows entity_ids must be re-derived. |
 | `resolution_version` | `LowCardinality(String)` |
 | `first_seen` / `last_seen` | `DateTime` |
 
@@ -359,9 +369,21 @@ the resolved target. The resolver writes `kg_alias_map` rows with
 
 ### Stage 5 — derive `kg_entities` and `kg_edges`
 
-1. Build `kg_entities` by aggregating per `entity_id`: merge aliases,
-   merge properties, pick most frequent surface form as
-   `canonical_name`, set `auth_ids = groupUniqArray(auth_id)`.
+1. Build `kg_entities` by aggregating per `entity_id`:
+   - merge `aliases` (`groupUniqArray`),
+   - merge `properties_merged` (last-write-wins per key, with
+     `stix_*` keys preserved verbatim from Stage 1.5 lookup),
+   - pick the most frequent surface form (among direct mentions
+     only) as `canonical_name`,
+   - **compute `representative_embedding` as the L2-normalized
+     centroid of contributing direct-mention `mention_embedding`s**;
+     coreference mentions are excluded from the centroid to avoid
+     biasing it with anaphora context,
+   - set `auth_ids = groupUniqArray(auth_id)` over ALL contributing
+     mentions (direct + coreference) so the visibility policy
+     reflects everywhere the entity is referenced,
+   - set `normalization_rules_hash` to the hash of the active
+     normalization-rules config (Stage 1 / Stage 1.5 inputs).
 2. Derive `kg_edges` by joining `kg_relations_raw` to `kg_alias_map`
    on both endpoints, aggregating to
    `(source_entity_id, relation_type, target_entity_id)` with
@@ -380,8 +402,14 @@ references via a JSON field: `unresolved_references: [{span, hint}]`.
 **Pass workflow** (after Stage 5):
 
 1. For each chunk with unresolved references:
-   - Assemble candidates (chunk's own direct mentions + parent doc's
-     top-K + neighbor chunks' top-K).
+   - Assemble candidates capped at **K=10 per pool, 30 total**:
+     - The chunk's own direct-mention entities (all, up to 10).
+     - The parent document's top-10 most-mentioned entities (by
+       count of direct mentions in the doc).
+     - The neighboring chunks' (window: ±2 chunks by ordinal) top-10
+       most-mentioned entities, excluding any already covered above.
+   - Deduplicate by `entity_id` so the same entity doesn't appear in
+     two pools.
    - Prompt the LLM:
      ```
      In this chunk, does any unresolved referring expression refer to
@@ -495,9 +523,17 @@ async def synthesize(
     vector_k: int = 24,
     graph_hops: int = 2,
     final_n: int = 12,
-    structural_edges_cap: int = 50,
+    structural_block_max_tokens: int = 1024,
 ) -> SynthesisResult: ...
 ```
+
+The structural block is bounded by **token budget**, not edge count.
+Edges are added in order of `relevance_to_question_entities × support_count`
+until the rendered block (entity names + types + relation type +
+evidence list) reaches `structural_block_max_tokens`. This keeps a
+predictable prompt size regardless of how verbose canonical names get
+in a given corpus (a `course-of-action` entity with a long mitigation
+title eats far more tokens than a `Person` entity).
 
 Phase-3 internal steps that differ from phase 1:
 
@@ -559,12 +595,39 @@ Additional test surface:
    for short-string tasks usually fine. Pick after benchmark.
 2. **Stage 2 / Stage 3 thresholds.** Tune on real data. Start 0.90 /
    0.75–0.90.
-3. **`uuid5` namespace stability.** Fix once and never rotate.
-4. **Aggregated-table policy cost at scale.** Measure if popular
-   entities accumulate hundreds of `auth_ids`.
+3. **`uuid5` namespace AND normalization-rules stability.** Both are
+   load-bearing inputs to `entity_id` derivation. Fix the namespace
+   UUID once at deployment and never rotate. Treat the normalization-
+   rules config (suffix-strip lists, diacritic handling, etc.) as
+   equally immutable; any change requires a full re-resolution that
+   rewrites `entity_id`s and rebuilds the alias map. The
+   `kg_entities.normalization_rules_hash` column lets drift be
+   detected automatically — a resolution-job preflight refuses to
+   run if the active rules hash diverges from the most recent
+   `kg_entities` row, unless the operator passes
+   `--rewrite-entity-ids` (a deliberate destructive flag).
+4. **Aggregated-table policy cost at scale.** `arrayExists × arrayExists`
+   with a `dictGet` inside is O(|auth_ids| × |currentRoles|) per row.
+   Fine for small arrays; measure if popular entities accumulate
+   hundreds of `auth_ids`.
 5. **Coreference confidence cutoff.** Default 0.75; tune after measuring
    false-merge rate.
 6. **Worker scope shape.** Single global-ish vs. per-tenant. DFIR
    with public STIX favors global-ish.
-7. **When to revisit communities.** Add a metric: count of questions
-   that fail the local path. Re-evaluate after a few months.
+7. **Graph-path query performance.** Step 4 of the graph path traverses
+   `kg_entities → kg_edges → kg_alias_map → kg_mentions_raw →
+   rag_embeddings` — four joins, all on UUIDs, all row-policy
+   filtered. Measure end-to-end latency on a representative corpus
+   before committing to no materialization. If hot, materialize an
+   `entity_chunks_mv` (`entity_id, chunk_id, auth_id`) view that
+   collapses `kg_alias_map ⨝ kg_mentions_raw` and lets the graph path
+   skip two joins. The materialized view inherits the per-row policy
+   shape and stays consistent with the underlying tables via standard
+   CH MV semantics.
+8. **When to revisit communities.** Trigger metric: ratio of
+   `synthesize()` calls returning the explicit
+   "sources don't support an answer" refusal text (parsed
+   post-hoc from the audit record) to total calls, computed over a
+   rolling 14-day window. Re-evaluate communities if this ratio
+   exceeds 10% sustained — that's the empirical signal that the
+   local path is missing aggregative answers.

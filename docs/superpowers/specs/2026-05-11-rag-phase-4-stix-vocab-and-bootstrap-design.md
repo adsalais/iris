@@ -402,10 +402,29 @@ For each STIX SRO (relationship):
 |---|---|
 | `relation_id` | `uuid5(NS, f"{stix_relationship_id}")` |
 | `chunk_id` | `f"stix:{stix_relationship_id}"` (logical — no `rag_embeddings` row) |
-| `auth_id` | same as the SDOs in the bundle |
+| `auth_id` | resolved by the precedence rules below |
 | `source_mention_id` / `target_mention_id` | synthetic mentions of the SRO's endpoints |
 | `relation_type` | per the relation mapping |
 | `evidence` | SRO `description` if present; prefixed with `[stix_relationship_type=<orig>]` for fall-back types |
+
+**SRO `auth_id` precedence** (apply in order; first match wins):
+
+1. **Manifest entry for the SRO's own `stix_id`.** Operator explicitly
+   chose the auth_id for this relationship. Use it.
+2. **Strictest of the two endpoint SDO `auth_id`s,** where "strictest"
+   is determined by the operator-configured ordering. Default ordering
+   (most-restrictive first):
+   `tlp:red > tlp:amber_strict > tlp:amber > tlp:green > tlp:clear`,
+   with `customer:*` entries treated as incomparable across customers
+   (a relationship between two different `customer:*` SDOs is rejected
+   with `error_kind = 'cross_tenant_sro'` — the operator must split
+   the bundle or add an explicit manifest entry).
+3. **Per-bundle `--auth-id` default.**
+
+Operators can override the default strictness ordering via a config
+file (`--strictness-config <path.json>`). The chosen `auth_id` must
+already exist in `rag_acl` for the SRO to load; otherwise it's
+rejected like any other unknown-auth_id row.
 
 **Note on `chunk_id` for SRO-derived relation rows.** This `chunk_id`
 has no corresponding `rag_embeddings` row. Consequence: when phase-3's
@@ -431,7 +450,19 @@ A new CLI entry point: `uv run iris stix-bootstrap <bundle.json> [opts]`.
    - Validate every referenced auth_id exists in rag_acl.
    - Reject the bundle if any auth_id is missing.
 3. Build the marking-definition table:
-   marking_id -> tlp_string (for the rag_embeddings.tlp column only).
+   marking_id -> tlp_string -> tlp_enum_value, per the mapping below.
+   STIX 2.0 markings (definition_type="tlp" with definition.tlp) and
+   STIX 2.1 markings (extension-definition--<TLP2.0-UUID> form) are
+   both supported:
+     - TLP:WHITE (2.0)         -> 'clear'
+     - TLP:CLEAR (2.1)         -> 'clear'
+     - TLP:GREEN               -> 'green'
+     - TLP:AMBER               -> 'amber'
+     - TLP:AMBER+STRICT (2.1)  -> 'amber_strict'
+     - TLP:RED                 -> 'red'
+     - missing / unrecognized  -> 'clear' (the column default)
+   The mapping populates rag_embeddings.tlp only (informational); it
+   never feeds auth_id.
 4. First pass: SDOs.
    For each entity-like object:
      a. If revoked == True:

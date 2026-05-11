@@ -77,11 +77,26 @@ straightforward; no framework required.
 
 ### 1. Acquire
 
-A source-specific connector yields tuples:
+A source-specific connector implements `IngestionConnector`:
 
+```python
+from typing import Iterator, Protocol
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class AcquiredDocument:
+    source_uri: str
+    raw_bytes: bytes
+    auth_id: str
+    source_metadata: dict[str, str]  # may carry `tlp` and other hints
+
+class IngestionConnector(Protocol):
+    name: str
+    def acquire(self) -> Iterator[AcquiredDocument]: ...
 ```
-(source_uri: str, raw_bytes: bytes, auth_id: str, source_metadata: dict)
-```
+
+Built-in connectors (filesystem walker, S3 lister, IMAP fetcher, web
+crawler, API endpoint) all implement this. Operators can add their own.
 
 `source_metadata` is the catch-all for fields the connector knows up
 front. The pipeline reads:
@@ -182,6 +197,27 @@ downstream rows keyed by the old `chunk_id` (the future phase-3 KG
 tables) are orphaned. Bump `pipeline_version` on every chunking-strategy
 change so provenance is visible.
 
+The pipeline provides a `redocument(doc_id)` helper that the operator
+calls when re-chunking. It runs as a single transaction-like
+sequence:
+
+1. `ALTER TABLE rag_embeddings DELETE WHERE doc_id = :doc_id` — purge
+   the document's chunks.
+2. `ALTER TABLE kg_mentions_raw DELETE WHERE doc_id = :doc_id` (phase 3 table; skipped if phase 3 isn't yet deployed).
+3. `ALTER TABLE kg_relations_raw DELETE WHERE doc_id = :doc_id` (phase 3 table; skipped if phase 3 isn't yet deployed).
+4. Re-ingest the document from its source.
+5. Operator runs the phase-3 resolution job at next cadence — it
+   re-derives `kg_entities` / `kg_edges`, naturally dropping orphan
+   contributions from the deleted mentions/relations.
+
+The destructive `DELETE`s are scoped by `doc_id` (a single document's
+worth of rows). They run as part of the ingestion identity's
+permissions, which already has `ALTER` on these tables for normal
+operations. This is **the** supported way to re-chunk a document.
+Operators who want to keep old chunks alongside new ones (for
+provenance audit) snapshot the tables before `redocument()` rather
+than trying to coexist two `pipeline_version`s of the same `doc_id`.
+
 ### 7. Dedup
 
 Two distinct concerns, often conflated:
@@ -195,8 +231,12 @@ Two distinct concerns, often conflated:
   `(doc_id, auth_id)` pairs. Two reasons: per-document audit trails;
   avoiding cross-tenant content correlation through dedup.
 - **Near-duplicate** (optional, off by default): MinHash via
-  `datasketch`, Jaccard ~0.85, scoped strictly within the same
-  `auth_id` to avoid cross-tenant content leakage.
+  `datasketch` over **word-level 5-shingles** (`shingle(text) = {tuple(words[i:i+5]) for i in ...}`),
+  num_perm=128, Jaccard threshold 0.85. Scoped strictly within the
+  same `auth_id` to avoid cross-tenant content leakage. The token
+  unit and shingle width are fixed in the spec so two implementations
+  produce the same dedup decisions; changing either is a
+  `pipeline_version` bump.
 
 ### 8. Embed + store
 
@@ -268,7 +308,8 @@ The operator picks one or supports several through distinct connectors.
 | Document without `auth_id` | Reject at acquisition; do not parse. `error_kind = 'missing_auth_id'`. |
 | `auth_id` not present in `rag_acl` | Reject at metadata enrichment; no chunks embedded. `error_kind = 'unknown_auth_id'`. |
 | Invalid `tlp` value | Reject the document with `error_kind = 'invalid_tlp'`. |
-| Parse failure | Mark document failed; do **not** partial-ingest a subset of chunks. |
+| Parse failure | Mark document failed; do **not** partial-ingest a subset of chunks. `error_kind = 'parse_failure'`. |
+| Empty document (parse succeeded but yielded zero chunks; e.g., image-only PDF with no OCR layer) | Reject with `error_kind = 'no_extractable_text'`. The operator's response is re-OCR + re-ingest. Counted in `documents_failed_parse`. |
 | Embed-API failure (transient) | Retry with exponential backoff. After N retries, mark failed. |
 | Embed-API failure (permanent on isolated chunk) | Mark chunk failed but continue the document; if >X% chunks fail, fail the whole document. |
 | Dedup hit (exact) | Skip silently; increment counter. |

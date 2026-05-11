@@ -54,7 +54,7 @@ database (e.g. `rag_docs`).
 | Column | Type | Notes |
 |---|---|---|
 | `doc_id` | `String` | Parent document. Many chunks share. Used for grouping / display, **not** for auth. |
-| `chunk_id` | `String` | Stable per-chunk id (UUIDv5 or hash-derived). |
+| `chunk_id` | `String` | `uuid5(NS_CHUNK, f"{doc_id}::{content_hash}")` — `content_hash = sha256(chunk_text)`. Phase 2 extends to `uuid5(NS_CHUNK, f"{doc_id}::{ordinal}::{content_hash}")` so two chunks with identical content but different positions stay distinct; Phase 1 has no ordinal because there's no automated chunking yet. `NS_CHUNK` is fixed once at deployment and never rotated. |
 | `auth_id` | `String` | Authorization key. References `rag_acl.auth_id`. |
 | `tlp` | `Enum8('clear' = 1, 'green' = 2, 'amber' = 3, 'amber_strict' = 4, 'red' = 5)` DEFAULT `'clear'` | Informational TLP marker for analyst awareness. **Not used for authorization.** UI surfaces it next to retrieved chunks so analysts know dissemination constraints when sharing. |
 | `embedding` | `Array(Float32)` | Vector. Optional ANN index (HNSW). |
@@ -123,6 +123,16 @@ Without it CH raises `Code: 497` server-side and the policy fails closed
 — the user sees zero rows. Iris's create-database flow installs both
 the dict grant and the row policy.
 
+### Row policies apply to SELECTs only
+
+ClickHouse row policies gate `SELECT` only — `INSERT`, `UPDATE`, and
+`ALTER` succeed regardless of policy membership. Write access is
+controlled separately by table-level `GRANT INSERT`. This is correct
+for the design: the ingestion pipeline (phase 2) writes whatever
+chunks it's told to ingest with the correct `auth_id`; the row policy
+then determines who can read them. Don't add defensive insert-side
+checks expecting the row policy to gate writes — it doesn't.
+
 ## Synthesis (vector-only)
 
 A single LLM call grounds a cited answer in the retrieved chunks.
@@ -182,10 +192,10 @@ Output format:
    cited, with their doc_id.
 
 [SOURCES]
-[C1] doc_id=<doc_id>, chunk_id=<chunk_id>, score=0.91
+[C1] doc_id=<doc_id>, chunk_id=<chunk_id>, source=<source_uri>, tlp=<tlp>, page=<page>, section="<section_path[0]>", score=0.91
 <chunk content verbatim>
 
-[C2] doc_id=<doc_id>, chunk_id=<chunk_id>, score=0.84
+[C2] doc_id=<doc_id>, chunk_id=<chunk_id>, source=<source_uri>, tlp=<tlp>, page=<page>, section="<section_path[0]>", score=0.84
 <chunk content verbatim>
 
 ...
@@ -196,6 +206,12 @@ Output format:
 
 `QUESTION` is placed last so it stays in the recency window even at
 long context. SOURCES are ordered by rerank score (highest first).
+
+The widened source header travels with citations into analyst notes —
+`tlp` in particular is load-bearing for DFIR write-ups (TLP:AMBER
+content must not be quoted in a TLP:WHITE report). Fields whose value
+is empty or missing render as `(none)` rather than being omitted, so
+the positional structure stays parseable.
 
 ### Citation enforcement
 
@@ -234,10 +250,19 @@ A new `src/iris/features/rag/`:
   capability on at least one database carrying `rag_embeddings`.
 - `routes.py` — one POST route `/feature/rag/ask` accepting
   `{question: str, database: str}`, returning
-  `{answer, sources_cited, sources_unused, audit_record}`.
+  `{answer, sources_cited, sources_unused, audit_record}`. The
+  handler resolves `database` to a `DatabaseSession` via iris's
+  existing per-database session machinery (the same path the
+  Authorization feature uses for its database-scoped routes — see
+  `iris.auth.views.DatabaseSession`); if the user has no admission
+  to that database, the session-resolver raises and the route
+  returns 403 before `synthesize()` is reached.
 - `service.py` — `synthesize(session, question, *, vector_k=24, final_n=12)`;
   runs on a `DatabaseSession` so `currentRoles()` is correct.
-- `templates/rag/answer.html` — renders answer + cited sources.
+- `templates/rag/answer.html` — Datastar template rendering answer +
+  cited sources. Streaming is out of v1 (see Non-goals); the route
+  returns the full JSON payload and the shell re-renders the answer
+  panel as a single SSE `datastar-patch-elements` event.
 
 ## Test environment (`.rag_env`)
 
@@ -251,6 +276,19 @@ The phase-1 test suite needs four external resources:
 These live in a `.rag_env` file at the repo root (sibling to `.env`).
 The file is **never committed** — it's in `.gitignore` from day one.
 
+**`.rag_env` is iris's RAG config source for BOTH runtime and tests**
+— a single file, loaded by:
+
+- The iris service at startup (alongside `.env`), so production
+  reads the same vars.
+- The pytest `rag_env` fixture (described below) for the test suite.
+
+This keeps "where do RAG keys live?" answerable in one place.
+Operators who don't want a file on disk (CI, containers) set the vars
+directly in the environment and pass `RAG_SKIP_DOTENV=1` to bypass the
+file lookup, exactly the same pattern as iris's existing
+`IRIS_SKIP_DOTENV=1`.
+
 ### File layout
 
 ```
@@ -262,21 +300,70 @@ RAG_CLICKHOUSE_DATABASE=rag_docs_test
 RAG_CLICKHOUSE_USER=default
 RAG_CLICKHOUSE_PASSWORD=
 
-# --- Embedding model --------------------------------------
-RAG_EMBEDDING_PROVIDER=openai
+# --- Embedding model (OpenAI-compatible /v1/embeddings) ---
+RAG_EMBEDDING_URL=https://api.openai.com/v1
 RAG_EMBEDDING_MODEL=text-embedding-3-large
 RAG_EMBEDDING_API_KEY=sk-...
 
-# --- Synthesis LLM ----------------------------------------
-RAG_LLM_PROVIDER=anthropic
-RAG_LLM_MODEL=claude-opus-4-6
-RAG_LLM_API_KEY=sk-ant-...
+# --- Synthesis LLM (OpenAI-compatible /v1/chat/completions) ---
+RAG_LLM_URL=https://api.openai.com/v1
+RAG_LLM_MODEL=gpt-4o
+RAG_LLM_API_KEY=sk-...
 
-# --- Reranker (optional) ----------------------------------
-RAG_RERANKER_PROVIDER=voyage
+# --- Reranker (optional; Voyage/Cohere-style /v1/rerank) ---
+RAG_RERANKER_URL=https://api.voyageai.com/v1
 RAG_RERANKER_MODEL=rerank-2
 RAG_RERANKER_API_KEY=
 ```
+
+### Talking to providers: one HTTP client, three endpoint shapes
+
+Iris does NOT carry per-vendor SDK adapters. All three external
+services speak HTTP with one of three well-known JSON shapes; the
+runtime uses a single `httpx`-based client.
+
+- **Embeddings.** OpenAI-compatible `POST <URL>/embeddings` with
+  `{"model": ..., "input": [...]}` returning `{"data": [{"embedding": [...]}, ...]}`.
+- **LLM.** OpenAI-compatible `POST <URL>/chat/completions` with
+  `{"model": ..., "messages": [...]}` returning the standard
+  completions envelope.
+- **Reranker.** Voyage/Cohere/Mixedbread/Jina-style
+  `POST <URL>/rerank` with `{"model": ..., "query": str, "documents": [str, ...], "top_k": int}`
+  returning `{"results": [{"index": int, "relevance_score": float}, ...]}`.
+
+Any service that speaks one of these shapes at the configured URL
+works. The two operator-supportable defaults are:
+
+- **OpenAI directly** — `RAG_LLM_URL=https://api.openai.com/v1`,
+  `RAG_EMBEDDING_URL=https://api.openai.com/v1`. OpenAI's own models
+  for both. Works out of the box.
+- **OpenRouter** — `RAG_LLM_URL=https://openrouter.ai/api/v1`,
+  same shape (OpenRouter IS OpenAI-compatible — the `/chat/completions`
+  endpoint accepts the standard payload and adds optional fields
+  iris ignores). Use this when you want to pick a non-OpenAI LLM
+  (Claude, Gemini, Llama) under one API key without standing up a
+  proxy.
+
+OpenAI vs. OpenRouter is **not** an architectural distinction for
+iris — both flow through the same single HTTP client. The choice is
+billing/sourcing convenience.
+
+Other compatible endpoints (Voyage for embeddings + rerank, Cohere
+for rerank, Together, Groq, a local LiteLLM proxy, vLLM/Ollama for
+self-hosted models) all work the same way: pick the URL, pick the
+model name, set the API key. Authentication is `Authorization:
+Bearer <RAG_*_API_KEY>` for all three.
+
+If a target service doesn't speak one of the three shapes natively
+(e.g., Anthropic's `/v1/messages` differs from OpenAI's
+`/v1/chat/completions`), front it with OpenRouter or a LiteLLM proxy
+— that's iris's recommended path for non-OpenAI-native models.
+
+A reranker entry with `RAG_RERANKER_API_KEY` empty is treated as
+"reranker URL configured but no key supplied" → the rerank step is
+skipped entirely (the fixture exposes `rag_env.reranker is None`).
+This lets a developer enable the reranker selectively per test
+without editing the file.
 
 ### Test fixture
 
@@ -292,11 +379,12 @@ A session-scoped `rag_env` fixture (`tests/conftest.py` or
 Required vars (must all be present for tests to run):
 
 - `RAG_CLICKHOUSE_HOST` (other CH vars get sensible defaults).
-- `RAG_EMBEDDING_PROVIDER`, `RAG_EMBEDDING_MODEL`, `RAG_EMBEDDING_API_KEY`.
-- `RAG_LLM_PROVIDER`, `RAG_LLM_MODEL`, `RAG_LLM_API_KEY`.
+- `RAG_EMBEDDING_URL`, `RAG_EMBEDDING_MODEL`, `RAG_EMBEDDING_API_KEY`.
+- `RAG_LLM_URL`, `RAG_LLM_MODEL`, `RAG_LLM_API_KEY`.
 
-Reranker vars are optional — tests that need a reranker check
-`rag_env.reranker is not None` and skip individually otherwise.
+Reranker vars (`RAG_RERANKER_URL`, `RAG_RERANKER_MODEL`,
+`RAG_RERANKER_API_KEY`) are optional — tests that need a reranker
+check `rag_env.reranker is not None` and skip individually otherwise.
 
 ### Dotenv interaction
 
@@ -328,7 +416,8 @@ placeholder values.
 | Provisioning the CH database itself | Operator |
 | Populating `rag_acl` rows | Operator |
 | Inserting chunks into `rag_embeddings` (phase 1: manual; phase 2: pipeline) | Operator |
-| Choosing embedding / LLM / reranker providers and keys | Operator (via `.rag_env`) |
+| Choosing embedding / LLM / reranker endpoint URLs, model names, and API keys | Operator (via `.rag_env`) |
+| Running a LiteLLM / OpenRouter / similar proxy if the target backend isn't natively OpenAI-compatible | Operator |
 
 ## Non-goals
 
