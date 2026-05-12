@@ -318,9 +318,8 @@ the model's context for SOURCES.
 
 **Over-fetching note.** ANN indexes return top-K *before* row-policy
 filtering. If a user has access to a small subset of the corpus, the
-engine may scan deeper to surface enough authorized neighbors. Start
-`k' = 2 × final_n` and tune; for users with tiny allowed slices,
-consider falling back to exhaustive scan (no ANN).
+engine may scan deeper to surface enough authorized neighbors.
+Fetch more candidates from the index before applying filters using `SETTINGS vector_search_index_fetch_multiplier = 10.0 `
 
 ### Prompt template
 
@@ -606,7 +605,6 @@ is committed with placeholder values.
 - No automatic question rewriting / expansion before retrieval.
 
 ## Open questions
-
 1. **ANN index choice + `k'` heuristic.** Benchmark on representative
    data; defer until a dataset exists.
 2. **Admin-UI surfacing of missing `dictGet` grants.** Already an open
